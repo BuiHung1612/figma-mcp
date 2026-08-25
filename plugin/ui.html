@@ -351,13 +351,17 @@
   <!-- Action Deck -->
   <footer class="action-deck">
     <button class="btn" onclick="clearLog()">Clear</button>
-    <button class="btn" onclick="autoDetectPort()">Scan</button>
-    <button class="btn primary" onclick="reconnect()">
+    <button class="btn primary" id="launch-btn" onclick="launchServer()" title="Auto-launch local Figma MCP server">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+      </svg>
+      <span id="launch-btn-label">⚡ Launch Server</span>
+    </button>
+    <button class="btn" onclick="reconnect()" title="Reconnect">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="23 4 23 10 17 10"></polyline>
         <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
       </svg>
-      Reconnect
     </button>
   </footer>
 
@@ -391,6 +395,8 @@
     var modeEl        = document.getElementById("mode-badge");
     var logCountEl    = document.getElementById("log-count");
     var sessionDispEl = document.getElementById("session-display");
+    var launchBtn     = document.getElementById("launch-btn");
+    var launchBtnLabel = document.getElementById("launch-btn-label");
 
     var READ_OPS = [
       "get_selection","get_design","get_page_nodes","screenshot",
@@ -402,6 +408,57 @@
       dotEl.className = "radar-dot " + state;
       statusEl.textContent = text;
       if (mode && modeEl) modeEl.textContent = mode;
+
+      if (launchBtn && launchBtnLabel) {
+        if (state === "green") {
+          launchBtnLabel.textContent = "Live";
+          launchBtn.classList.remove("primary");
+        } else if (state === "yellow") {
+          launchBtnLabel.textContent = "Connecting...";
+          launchBtn.classList.add("primary");
+        } else {
+          launchBtnLabel.textContent = "⚡ Launch Server";
+          launchBtn.classList.add("primary");
+        }
+      }
+    }
+
+    function launchServer() {
+      if (wsConnected) {
+        log("Server is already running and connected!", "ok");
+        return;
+      }
+      log("⚡ Launching Figma MCP via OS protocol (figma-mcp://start)...", "info");
+      setStatus("yellow", "Launching...");
+
+      // Invoke OS protocol scheme figma-mcp://start
+      var a = document.createElement("a");
+      a.href = "figma-mcp://start";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      // Fast-poll every 350ms to detect server coming up
+      var checks = 0;
+      var checker = setInterval(function() {
+        checks++;
+        fetch(BRIDGE + "/", { cache: "no-store" })
+          .then(function(res) {
+            if (res.ok) {
+              clearInterval(checker);
+              log("✓ Figma MCP server is online! Connecting...", "ok");
+              reconnect();
+            }
+          })
+          .catch(function() {
+            if (checks >= 25) {
+              clearInterval(checker);
+              log("💡 Tip: If server hasn't started, run 'npx figma-mcp' in terminal once to initialize protocol", "err");
+              setStatus("red", "Offline");
+            }
+          });
+      }, 350);
     }
 
     function log(msg, cls) {

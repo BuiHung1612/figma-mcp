@@ -2,6 +2,7 @@ pub mod bridge;
 pub mod docs;
 pub mod executor;
 pub mod mcp;
+pub mod protocol;
 
 use bridge::{start_bridge_server, BridgeHandle, HttpProxy, DEFAULT_PORT};
 use clap::Parser;
@@ -25,6 +26,14 @@ struct Args {
     /// Force stdio mode for JSON-RPC MCP clients (e.g. spawned subprocesses)
     #[arg(long)]
     stdio: bool,
+
+    /// Register figma-mcp:// URL protocol scheme with the OS
+    #[arg(long)]
+    register_scheme: bool,
+
+    /// URL or argument passed by OS protocol handler (e.g. figma-mcp://start)
+    #[arg(hide = true)]
+    protocol_url: Option<String>,
 }
 
 fn print_banner(port: u16) {
@@ -54,6 +63,23 @@ fn print_banner(port: u16) {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    if args.register_scheme {
+        match protocol::register_url_scheme() {
+            Ok(_) => {
+                eprintln!("[figma-mcp] ✓ Successfully registered figma-mcp:// URL scheme!");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[figma-mcp] ⚠️ Failed to register URL scheme: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Auto-register URL scheme in background on startup
+    let _ = protocol::register_url_scheme();
+
     let port = std::env::var("FIGMA_MCP_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
