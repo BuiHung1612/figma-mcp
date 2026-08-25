@@ -206,6 +206,12 @@ function findNodeById(id) {
     if (!cached.removed) return cached;
     nodeCache.delete(id);
   }
+  try {
+    if (typeof figma.getNodeById === "function") {
+      var node = figma.getNodeById(id);
+      if (node && !node.removed) return cacheNode(node);
+    }
+  } catch(e) {}
   // Check selection
   for (var i = 0; i < figma.currentPage.selection.length; i++) {
     if (figma.currentPage.selection[i].id === id) return cacheNode(figma.currentPage.selection[i]);
@@ -222,9 +228,17 @@ async function findNodeByIdAsync(id) {
     if (!cached.removed) return cached;
     nodeCache.delete(id);
   }
+  // Try synchronous lookup first (0ms)
+  try {
+    if (typeof figma.getNodeById === "function") {
+      var syncNode = figma.getNodeById(id);
+      if (syncNode && !syncNode.removed) return cacheNode(syncNode);
+    }
+  } catch(e) {}
+  // Fallback to async
   try {
     var node = await figma.getNodeByIdAsync(id);
-    if (node) return cacheNode(node);
+    if (node && !node.removed) return cacheNode(node);
   } catch(e) {}
   return null;
 }

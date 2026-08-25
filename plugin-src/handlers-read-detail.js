@@ -7,7 +7,7 @@ handlers.get_node_detail = async function(params) {
   var nodeName = params ? (params.name || params.nodeName) : null;
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
-  if (!node && nodeName) node = figma.currentPage.findOne(function(n) { return n.name === nodeName; });
+  if (!node && nodeName) node = findNodeByName(nodeName);
   if (!node) throw new Error("Node not found: " + (id || nodeName || "no id/name given") + ". Use figma_read get_page_nodes to get current node IDs.");
 
   var detail = {
@@ -360,7 +360,7 @@ handlers.get_design_context = async function(params) {
   var nodeName = params ? (params.name || params.nodeName) : null;
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
-  if (!node && nodeName) node = figma.currentPage.findOne(function(n) { return n.name === nodeName; });
+  if (!node && nodeName) node = findNodeByName(nodeName);
   if (!node) {
     // Fall back to current selection
     var sel = figma.currentPage.selection;
@@ -542,7 +542,7 @@ handlers.get_component_map = async function(params) {
   var nodeName = params ? (params.name || params.nodeName) : null;
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
-  if (!node && nodeName) node = figma.currentPage.findOne(function(n) { return n.name === nodeName; });
+  if (!node && nodeName) node = findNodeByName(nodeName);
   if (!node) {
     var sel = figma.currentPage.selection;
     node = sel && sel.length > 0 ? sel[0] : figma.currentPage;

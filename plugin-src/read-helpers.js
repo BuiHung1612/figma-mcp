@@ -77,7 +77,7 @@ function collectIconNames(node, maxItems) {
 // compact: + fill, stroke, cornerRadius, layout, text content — ~30% token cost
 // full:    + effects, segments, gradient details, boundVariables, inline SVG — 100% token cost
 // filterInvisible: true (default) = skip nodes with visible:false | false = include all nodes
-function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) {
+function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, tokenCollector) {
   if (!node || typeof node !== "object") return null;
   if (depth === undefined) depth = 0;
   if (maxDepth === undefined) maxDepth = 15;
@@ -102,13 +102,16 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
     height:"height" in node ? Math.round(node.height)  : undefined,
   };
 
+  if (tokenCollector && info.width) tokenCollector.sizes.add(info.width);
+  if (tokenCollector && info.height) tokenCollector.sizes.add(info.height);
+
   // Minimal: only basic info + childCount, skip all style properties
   if (isMinimal) {
     if ("children" in node && node.children.length) {
       info.childCount = node.children.length;
       if (node.type === "TEXT") { try { info.content = node.characters; } catch(e) {} }
       info.children = node.children
-        .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible); })
+        .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector); })
         .filter(Boolean);
     }
     return info;
@@ -120,6 +123,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
       var fills = node.fills;
       if (fills.length === 1 && fills[0].type === "SOLID") {
         info.fill = rgbToHex(fills[0].color);
+        if (tokenCollector && info.fill) tokenCollector.colors.add(info.fill);
         if (fills[0].opacity !== undefined && fills[0].opacity !== 1) {
           info.fillOpacity = Math.round(fills[0].opacity * 100) / 100;
         }
@@ -130,10 +134,13 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
           var fd = { type: f.type, visible: f.visible !== false };
           if (f.type === "SOLID") {
             fd.color = rgbToHex(f.color);
+            if (tokenCollector && fd.color) tokenCollector.colors.add(fd.color);
             if (f.opacity !== undefined && f.opacity !== 1) fd.opacity = Math.round(f.opacity * 100) / 100;
           } else if (f.type === "GRADIENT_LINEAR" || f.type === "GRADIENT_RADIAL" || f.type === "GRADIENT_ANGULAR") {
             fd.gradientStops = f.gradientStops ? f.gradientStops.map(function(gs) {
-              return { color: rgbToHex(gs.color), position: Math.round(gs.position * 100) / 100 };
+              var sc = rgbToHex(gs.color);
+              if (tokenCollector && sc) tokenCollector.colors.add(sc);
+              return { color: sc, position: Math.round(gs.position * 100) / 100 };
             }) : [];
             // Extract gradient angle from gradientTransform matrix
             try {
@@ -159,12 +166,16 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
       var strokes = node.strokes;
       if (strokes.length === 1 && strokes[0].type === "SOLID") {
         info.stroke = rgbToHex(strokes[0].color);
+        if (tokenCollector && info.stroke) tokenCollector.colors.add(info.stroke);
         if (node.strokeWeight) info.strokeWeight = node.strokeWeight;
         if (node.strokeAlign) info.strokeAlign = node.strokeAlign;
       } else {
         info.strokes = strokes.map(function(s) {
           var sd = { type: s.type };
-          if (s.type === "SOLID") sd.color = rgbToHex(s.color);
+          if (s.type === "SOLID") {
+            sd.color = rgbToHex(s.color);
+            if (tokenCollector && sd.color) tokenCollector.colors.add(sd.color);
+          }
           if (s.opacity !== undefined && s.opacity !== 1) sd.opacity = Math.round(s.opacity * 100) / 100;
           return sd;
         });
@@ -257,6 +268,9 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
       if (node.textDecoration && node.textDecoration !== "NONE") info.textDecoration = node.textDecoration;
       if (node.textTruncation && node.textTruncation !== "DISABLED") info.textTruncation = node.textTruncation;
       if (node.textAutoResize && node.textAutoResize !== "NONE") info.textAutoResize = node.textAutoResize;
+      if (tokenCollector && info.fontFamily && info.fontWeight) {
+        tokenCollector.fonts.add(info.fontFamily + "/" + info.fontWeight + "/" + (info.fontSize || 14) + "px");
+      }
     } catch(e) {
       // Mixed text styles — extract per-segment efficiently
       try {
@@ -282,6 +296,9 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
             info.fontWeight = info.segments[0].fontWeight;
             info.fontSize = info.segments[0].fontSize;
             info.fill = info.segments[0].fill;
+            if (tokenCollector && info.fontFamily && info.fontWeight) {
+              tokenCollector.fonts.add(info.fontFamily + "/" + info.fontWeight + "/" + (info.fontSize || 14) + "px");
+            }
           }
         } else {
           info.fill = getFillHex(node);
@@ -415,7 +432,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
       if (icons.length) info.iconNames = icons;
     } else {
       info.children = node.children
-        .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible); })
+        .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector); })
         .filter(Boolean);
     }
   }

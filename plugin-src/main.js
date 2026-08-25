@@ -42,27 +42,21 @@ figma.on("selectionchange", function() {
 // ─── DISPATCHER ───────────────────────────────────────────────────────────────
 
 // Sanitize data before postMessage — remove Symbol values (e.g. figma.mixed)
-// that cannot be serialized via structured clone / JSON
+// that cannot be serialized via structured clone / JSON.
+// Uses fast native JSON serialization with replacer instead of slow recursive JS allocations.
 function sanitizeForPostMessage(obj) {
   if (obj === null || obj === undefined) return obj;
-  if (typeof obj === "symbol") return "mixed";
-  if (typeof obj === "number" || typeof obj === "string" || typeof obj === "boolean") return obj;
-  if (Array.isArray(obj)) return obj.map(sanitizeForPostMessage);
-  if (typeof obj === "object") {
-    var clean = {};
-    for (var key in obj) {
-      if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        var val = obj[key];
-        if (typeof val === "symbol") {
-          clean[key] = "mixed";
-        } else {
-          clean[key] = sanitizeForPostMessage(val);
-        }
-      }
-    }
-    return clean;
+  var t = typeof obj;
+  if (t === "string" || t === "number" || t === "boolean") return obj;
+  if (t === "symbol") return "mixed";
+  try {
+    return JSON.parse(JSON.stringify(obj, function(_k, v) {
+      if (typeof v === "symbol") return "mixed";
+      return v;
+    }));
+  } catch(e) {
+    return obj;
   }
-  return obj;
 }
 
 figma.ui.onmessage = async (request) => {

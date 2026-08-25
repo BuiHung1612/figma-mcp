@@ -18,11 +18,15 @@ handlers.get_selection = async function(params) {
   var maxDepth = (params && params.depth !== undefined) ? (params.depth === "full" ? 50 : Number(params.depth)) : 15;
   var detailLevel = (params && params.detail) || "full";
   var filterInvisible = !(params && params.includeHidden === true);
-  var trees = nodes.map(function(n) { return extractDesignTree(n, 0, maxDepth, detailLevel, filterInvisible); });
+  var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
+  var trees = nodes.map(function(n) { return extractDesignTree(n, 0, maxDepth, detailLevel, filterInvisible, tokenCollector); });
   return {
     nodes: trees,
-    // Reuse already-computed tree instead of calling extractDesignTree twice
-    tokens: detailLevel !== "minimal" && trees.length === 1 ? extractTokens(trees[0]) : null,
+    tokens: tokenCollector ? {
+      colors: Array.from(tokenCollector.colors),
+      fonts: Array.from(tokenCollector.fonts),
+      sizes: Array.from(tokenCollector.sizes).sort(function(a, b) { return a - b; }),
+    } : null,
   };
 };
 
@@ -46,43 +50,50 @@ handlers.get_design = async function(params) {
   if (isNaN(maxDepth) || maxDepth < 1) maxDepth = 10;
 
   try {
-    var tree = extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible);
+    var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
+    var tree = extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible, tokenCollector);
 
-    // Post-process: inline SVG for icon nodes (full mode only, max 10, with time budget)
+    // SVG inlining: opt-in via inlineIcons/inlineSvg to avoid multi-second freezes on large designs
+    var inlineIcons = (p.inlineIcons === true || p.inlineSvg === true);
     var iconCount = 0;
-    var svgStartTime = Date.now();
-    var SVG_TIME_BUDGET_MS = 5000; // max 5s for SVG inlining — prevent timeout on heavy files
-    var SVG_MAX_ICONS = 10;
-    var skipInlineSvg = (detailLevel !== "full");
-    async function inlineSvgForIcons(node) {
-      if (!node || skipInlineSvg) return;
-      if (iconCount >= SVG_MAX_ICONS || (Date.now() - svgStartTime) > SVG_TIME_BUDGET_MS) return;
-      if (node.isIcon && node.id) {
-        try {
-          var figNode = await findNodeByIdAsync(node.id);
-          if (figNode) {
-            var svg = await exportNodeSvg(figNode);
-            if (svg && svg.length < 5000) {
-              node.svgMarkup = svg;
-              delete node.iconHint;
-              iconCount++;
-            }
-          }
-        } catch(e) { /* skip failed icon export */ }
-      }
-      if (node.children) {
-        for (var i = 0; i < node.children.length; i++) {
-          if ((Date.now() - svgStartTime) > SVG_TIME_BUDGET_MS) break;
-          await inlineSvgForIcons(node.children[i]);
+    if (inlineIcons && detailLevel === "full" && tree) {
+      var iconNodes = [];
+      function collectIcons(node) {
+        if (!node || iconNodes.length >= 10) return;
+        if (node.isIcon && node.id) iconNodes.push(node);
+        if (node.children) {
+          for (var i = 0; i < node.children.length; i++) collectIcons(node.children[i]);
         }
       }
-    }
-    await inlineSvgForIcons(tree);
+      collectIcons(tree);
 
-    var tokens = extractTokens(tree);
+      if (iconNodes.length > 0) {
+        var exportPromises = iconNodes.map(async function(node) {
+          try {
+            var figNode = await findNodeByIdAsync(node.id);
+            if (figNode) {
+              var svg = await exportNodeSvg(figNode);
+              if (svg && svg.length < 5000) {
+                node.svgMarkup = svg;
+                delete node.iconHint;
+                iconCount++;
+              }
+            }
+          } catch(e) {}
+        });
+        await Promise.all(exportPromises);
+      }
+    }
+
+    var tokens = tokenCollector ? {
+      colors: Array.from(tokenCollector.colors),
+      fonts: Array.from(tokenCollector.fonts),
+      sizes: Array.from(tokenCollector.sizes).sort(function(a, b) { return a - b; }),
+    } : undefined;
+
     var meta = { maxDepth: maxDepth, detail: detailLevel, nodeType: root.type };
-    if (detailLevel === "full") meta.inlinedIcons = iconCount;
-    return { tree: tree, tokens: (detailLevel !== "minimal" ? tokens : undefined), meta: meta };
+    if (inlineIcons && detailLevel === "full") meta.inlinedIcons = iconCount;
+    return { tree: tree, tokens: tokens, meta: meta };
   } catch(e) {
     throw new Error("[get_design] " + e.message + " nodeType=" + root.type + " id=" + root.id);
   }
@@ -401,14 +412,14 @@ handlers.screenshot = async function(params) {
   var node = null;
   var i;
 
-  // Search by ID — deep search only (skip redundant top-level loop)
+  // Search by ID — direct fast lookup
   if (id) {
-    node = figma.currentPage.findOne(function(n) { return n.id === id; });
+    node = await findNodeByIdAsync(id);
   }
 
-  // Search by name — deep search only
+  // Search by name — fast hierarchical lookup
   if (node === null && nodeName) {
-    node = figma.currentPage.findOne(function(n) { return n.name === nodeName; });
+    node = findNodeByName(nodeName);
   }
   // Fallback: any exportable top-level node (FRAME, COMPONENT, COMPONENT_SET, SECTION)
   if (node === null) {
@@ -480,7 +491,7 @@ handlers.export_svg = async function(params) {
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
   if (!node && nodeName) {
-    node = figma.currentPage.findOne(function(n) { return n.name === nodeName; });
+    node = findNodeByName(nodeName);
   }
   if (!node) node = figma.currentPage;
   if (!node) throw new Error("Node not found");
@@ -500,7 +511,7 @@ handlers.export_image = async function(params) {
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
   if (!node && nodeName) {
-    node = figma.currentPage.findOne(function(n) { return n.name === nodeName; });
+    node = findNodeByName(nodeName);
   }
   if (!node) throw new Error("Node not found for export");
 
