@@ -46,6 +46,7 @@ pub struct Session {
     pub queue: Vec<QueuedOp>,
     pub pending: HashMap<String, PendingOp>,
     pub long_poll: Option<oneshot::Sender<PollResponse>>,
+    pub ws_tx: Option<tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>>,
     pub stats: SessionStats,
 }
 
@@ -58,12 +59,13 @@ impl Session {
             queue: Vec::new(),
             pending: HashMap::new(),
             long_poll: None,
+            ws_tx: None,
             stats: SessionStats::default(),
         }
     }
 
     pub fn is_connected(&self) -> bool {
-        self.last_poll_at > 0 && (now_ms() - self.last_poll_at) < HEALTH_TTL_MS
+        self.ws_tx.is_some() || (self.last_poll_at > 0 && (now_ms() - self.last_poll_at) < HEALTH_TTL_MS)
     }
 }
 

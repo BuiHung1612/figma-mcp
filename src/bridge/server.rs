@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Query, State},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     response::Json,
     routing::{get, post},
     Router,
 };
+use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -144,29 +145,42 @@ impl BridgeState {
                 },
             );
 
-            session.queue.push(QueuedOp {
-                id: op_id.clone(),
-                operation: operation.to_string(),
-                params,
-            });
+            // Fast-path: If WebSocket is connected, dispatch instantly (< 0.1ms)!
+            let dispatched_via_ws = if let Some(ref ws_tx) = session.ws_tx {
+                let payload = json!({
+                    "id": op_id,
+                    "operation": operation,
+                    "params": params,
+                });
+                ws_tx.send(Message::Text(payload.to_string())).is_ok()
+            } else {
+                false
+            };
 
-            let responder_opt = session.long_poll.take();
-            let mut flushed_ops = Vec::new();
-            if responder_opt.is_some() {
-                session.last_poll_at = now_ms();
-                flushed_ops = std::mem::take(&mut session.queue);
+            if !dispatched_via_ws {
+                session.queue.push(QueuedOp {
+                    id: op_id.clone(),
+                    operation: operation.to_string(),
+                    params,
+                });
+
+                let responder_opt = session.long_poll.take();
+                let mut flushed_ops = Vec::new();
+                if responder_opt.is_some() {
+                    session.last_poll_at = now_ms();
+                    flushed_ops = std::mem::take(&mut session.queue);
+                }
+
+                if let Some(responder) = responder_opt {
+                    let _ = responder.send(PollResponse {
+                        requests: flushed_ops,
+                        mode: "ready".to_string(),
+                        session_id: sid.clone(),
+                    });
+                }
             }
 
             inner.op_to_session.insert(op_id.clone(), sid.clone());
-
-            if let Some(responder) = responder_opt {
-                let _ = responder.send(PollResponse {
-                    requests: flushed_ops,
-                    mode: "ready".to_string(),
-                    session_id: sid,
-                });
-            }
-
             (rx, op_id, timeout_ms)
         };
 
@@ -221,6 +235,7 @@ struct SessionQuery {
     session_id: Option<String>,
     #[serde(rename = "fileName")]
     file_name: Option<String>,
+    init: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -270,6 +285,8 @@ async fn handle_poll(
         headers.get("x-session-id").and_then(|h| h.to_str().ok()).map(|s| s.to_string())
     }).unwrap_or_else(|| "_default".to_string());
 
+    let is_init = query.init.unwrap_or(false);
+
     let (immediate_resp, rx) = {
         let mut inner = state.inner.lock().await;
         let session = inner
@@ -293,6 +310,16 @@ async fn handle_poll(
             (
                 Some(PollResponse {
                     requests: alive_ops,
+                    mode: "ready".to_string(),
+                    session_id: sid.clone(),
+                }),
+                None,
+            )
+        } else if is_init {
+            // Instant handshake on startup
+            (
+                Some(PollResponse {
+                    requests: Vec::new(),
                     mode: "ready".to_string(),
                     session_id: sid.clone(),
                 }),
@@ -463,6 +490,114 @@ async fn handle_clear(
     }))
 }
 
+async fn handle_ws(
+    ws: WebSocketUpgrade,
+    Query(query): Query<SessionQuery>,
+    State(state): State<BridgeState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, query, state))
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    query: SessionQuery,
+    state: BridgeState,
+) {
+    let sid = query.session_id.unwrap_or_else(|| "_default".to_string());
+    let (mut sender, mut receiver) = socket.split();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Register ws_tx in session and flush queued ops
+    {
+        let mut inner = state.inner.lock().await;
+        let session = inner
+            .sessions
+            .entry(sid.clone())
+            .or_insert_with(|| Session::new(sid.clone(), query.file_name.clone()));
+        if let Some(fn_name) = query.file_name {
+            session.file_name = fn_name;
+        }
+        session.ws_tx = Some(tx);
+        session.last_poll_at = now_ms();
+
+        // Flush any queued ops directly over WebSocket
+        let queued = std::mem::take(&mut session.queue);
+        for op in queued {
+            let msg = json!({
+                "id": op.id,
+                "operation": op.operation,
+                "params": op.params,
+            });
+            let _ = sender.send(Message::Text(msg.to_string())).await;
+        }
+    }
+
+    // Task to forward outgoing messages from tx -> WebSocket
+    let mut send_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if sender.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Task to receive incoming responses from WebSocket
+    let state_clone = state.clone();
+    let sid_clone = sid.clone();
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            match msg {
+                Message::Text(text) => {
+                    if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                        if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                            let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                            let data = val.get("data").cloned();
+                            let error = val.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                            let mut inner = state_clone.inner.lock().await;
+                            if let Some(s_id) = inner.op_to_session.remove(id) {
+                                if let Some(session) = inner.sessions.get_mut(&s_id) {
+                                    if let Some(pending) = session.pending.remove(id) {
+                                        let latency = now_ms() - pending.start_ms;
+                                        session.stats.ops += 1;
+                                        session.stats.avg_latency_ms = (session.stats.avg_latency_ms * 9 + latency) / 10;
+                                        inner.global_stats.ops += 1;
+
+                                        if success {
+                                            let _ = pending.sender.send(Ok(data.unwrap_or(Value::Null)));
+                                        } else {
+                                            let _ = pending.sender.send(Err(error.unwrap_or_else(|| "Unknown error".to_string())));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Message::Ping(_) => {
+                    let mut inner = state_clone.inner.lock().await;
+                    if let Some(s) = inner.sessions.get_mut(&sid_clone) {
+                        s.last_poll_at = now_ms();
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = (&mut send_task) => recv_task.abort(),
+        _ = (&mut recv_task) => send_task.abort(),
+    };
+
+    // Clean up session ws_tx when socket disconnects
+    let mut inner = state.inner.lock().await;
+    if let Some(s) = inner.sessions.get_mut(&sid) {
+        s.ws_tx = None;
+    }
+}
+
 pub fn create_router(state: BridgeState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -475,6 +610,7 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/poll", get(handle_poll))
         .route("/response", post(handle_response))
         .route("/exec", post(handle_exec))
+        .route("/ws", get(handle_ws))
         .route("/health", get(handle_health))
         .route("/clear", get(handle_clear).post(handle_clear))
         .layer(cors)

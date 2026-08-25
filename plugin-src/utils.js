@@ -139,25 +139,48 @@ const FONT_STYLE_MAP = {
 
 // ── Font Loading Cache ────────────────────────────────────────────────────────
 var loadedFonts = new Set();
+var fontLoadingPromises = new Map();
 
 async function ensureFontLoaded(family, style) {
   if (!family) family = "Inter";
   if (!style) style = "Regular";
   var key = family + ":" + style;
   if (loadedFonts.has(key)) return;
-  try {
-    await figma.loadFontAsync({ family: family, style: style });
-    loadedFonts.add(key);
-  } catch (e) {
-    // If specific style fails, try Regular or fallback to Inter
+  if (fontLoadingPromises.has(key)) return fontLoadingPromises.get(key);
+
+  var promise = (async function() {
     try {
-      await figma.loadFontAsync({ family: family, style: "Regular" });
-      loadedFonts.add(family + ":Regular");
-    } catch (e2) {
-      await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-      loadedFonts.add("Inter:Regular");
+      await figma.loadFontAsync({ family: family, style: style });
+      loadedFonts.add(key);
+    } catch (e) {
+      // If specific style fails, try Regular or fallback to Inter
+      try {
+        await figma.loadFontAsync({ family: family, style: "Regular" });
+        loadedFonts.add(family + ":Regular");
+      } catch (e2) {
+        try {
+          await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+          loadedFonts.add("Inter:Regular");
+        } catch (e3) {}
+      }
+    } finally {
+      fontLoadingPromises.delete(key);
     }
+  })();
+
+  fontLoadingPromises.set(key, promise);
+  return promise;
+}
+
+// ── Asset & SVG Memory Cache ──────────────────────────────────────────────────
+var assetCache = new Map();
+function getCachedAsset(key) { return assetCache.get(key) || null; }
+function setCachedAsset(key, data) {
+  if (assetCache.size > 500) {
+    var firstKey = assetCache.keys().next().value;
+    assetCache.delete(firstKey);
   }
+  assetCache.set(key, data);
 }
 
 // ── Node Lookup Cache ────────────────────────────────────────────────────────
