@@ -445,17 +445,12 @@
 
     var ws = null;
     var wsConnected = false;
+    var isLongPolling = false;
     var activeAbortController = null;
     var isFirstPoll = true;
-    var retryTimer = null;
 
     async function initConnection() {
       if (wsConnected) return;
-
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
 
       // 1. Instant Health Check on localhost (< 2ms)
       try {
@@ -544,79 +539,79 @@
         wsConnected = false;
         if (polling) {
           startLongPoll();
-          // Proactive auto-reconnect timer
-          if (!retryTimer) {
-            retryTimer = setTimeout(function() {
-              retryTimer = null;
-              if (!wsConnected && polling) {
-                initConnection();
-              }
-            }, 1500);
-          }
         }
       };
     }
 
     async function startLongPoll() {
-      if (wsConnected) return;
+      if (isLongPolling || wsConnected) return;
+      isLongPolling = true;
 
-      while (polling && !wsConnected) {
-        try {
-          var pollUrl = BRIDGE + "/poll";
-          var qs = [];
-          if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
-          if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
-          if (isFirstPoll) {
-            qs.push("init=true");
-            isFirstPoll = false;
-          }
-          if (qs.length) pollUrl += "?" + qs.join("&");
-
-          var fetchTimeout = consecutiveErrors > 0 ? SHORT_POLL_TIMEOUT : LONG_POLL_TIMEOUT;
-          activeAbortController = new AbortController();
-          var timeoutId = setTimeout(function() { activeAbortController.abort(); }, fetchTimeout);
-          var res;
+      try {
+        while (polling && !wsConnected) {
           try {
-            res = await fetch(pollUrl, { signal: activeAbortController.signal });
-          } finally {
-            clearTimeout(timeoutId);
-            activeAbortController = null;
-          }
+            var pollUrl = BRIDGE + "/poll";
+            var qs = [];
+            if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
+            if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
+            if (isFirstPoll) {
+              qs.push("init=true");
+              isFirstPoll = false;
+            }
+            if (qs.length) pollUrl += "?" + qs.join("&");
 
-          if (!res.ok) {
-            setStatus("yellow", "Busy");
+            var fetchTimeout = consecutiveErrors > 0 ? SHORT_POLL_TIMEOUT : LONG_POLL_TIMEOUT;
+            var ctrl = new AbortController();
+            activeAbortController = ctrl;
+            var timeoutId = setTimeout(function() { ctrl.abort(); }, fetchTimeout);
+            var res;
+            try {
+              res = await fetch(pollUrl, { signal: ctrl.signal });
+            } finally {
+              clearTimeout(timeoutId);
+              if (activeAbortController === ctrl) {
+                activeAbortController = null;
+              }
+            }
+
+            if (!res.ok) {
+              setStatus("yellow", "Busy");
+              consecutiveErrors++;
+              await sleep(getBackoff());
+              continue;
+            }
+
+            var body = await res.json();
+            var reqs = body.requests || [];
+            setStatus("green", reqs.length ? reqs.length + " cmd" : "Connected", body.mode || "ready");
+
+            consecutiveErrors = 0;
+            everConnected = true;
+            lastSuccessfulPollAt = Date.now();
+
+            for (var i = 0; i < reqs.length; i++) {
+              var req = reqs[i];
+              log("→ " + req.operation, READ_OPS.indexOf(req.operation) >= 0 ? "info" : "ok");
+              dispatchToMain(req);
+            }
+          } catch (e) {
+            if (!polling) break;
             consecutiveErrors++;
-            await sleep(getBackoff());
+            var backoff = getBackoff();
+            if (consecutiveErrors <= 5) {
+              setStatus("yellow", "Connecting (" + consecutiveErrors + ")");
+            } else if (consecutiveErrors <= 10) {
+              setStatus("yellow", "Retrying...");
+            } else {
+              setStatus("red", "Offline");
+            }
+            await sleep(backoff);
             continue;
           }
-
-          var body = await res.json();
-          var reqs = body.requests || [];
-          setStatus("green", reqs.length ? reqs.length + " cmd" : "Connected", body.mode || "ready");
-
-          consecutiveErrors = 0;
-          everConnected = true;
-          lastSuccessfulPollAt = Date.now();
-
-          for (var i = 0; i < reqs.length; i++) {
-            var req = reqs[i];
-            log("→ " + req.operation, READ_OPS.indexOf(req.operation) >= 0 ? "info" : "ok");
-            dispatchToMain(req);
-          }
-        } catch (e) {
-          consecutiveErrors++;
-          var backoff = getBackoff();
-          if (consecutiveErrors <= 5) {
-            setStatus("yellow", "Connecting (" + consecutiveErrors + ")");
-          } else if (consecutiveErrors <= 10) {
-            setStatus("yellow", "Retrying...");
-          } else {
-            setStatus("red", "Offline");
-          }
-          await sleep(backoff);
-          continue;
+          await sleep(POLL_MS);
         }
-        await sleep(POLL_MS);
+      } finally {
+        isLongPolling = false;
       }
     }
 
