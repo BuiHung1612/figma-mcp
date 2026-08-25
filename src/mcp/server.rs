@@ -3,8 +3,88 @@ use crate::docs::get_docs;
 use crate::executor::execute_code;
 use super::protocol::{CallToolParams, JsonRpcRequest, JsonRpcResponse, ToolResult};
 use super::tools::get_tools;
+use base64::prelude::*;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+async fn save_export_to_disk(
+    output_path: &str,
+    data: &Value,
+    default_ext: &str,
+) -> Result<Value, String> {
+    let path = std::path::Path::new(output_path);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create directory '{}': {}", parent.display(), e))?;
+        }
+    }
+
+    // Check if SVG string
+    if let Some(svg_str) = data.get("svg").and_then(|v| v.as_str()) {
+        tokio::fs::write(path, svg_str.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write SVG to '{}': {}", output_path, e))?;
+
+        let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let width = data.get("width").cloned().unwrap_or(json!(null));
+        let height = data.get("height").cloned().unwrap_or(json!(null));
+        let node_id = data.get("nodeId").cloned().unwrap_or(json!(null));
+
+        return Ok(json!({
+            "success": true,
+            "savedTo": abs_path.to_string_lossy(),
+            "relativePath": output_path,
+            "format": "svg",
+            "width": width,
+            "height": height,
+            "sizeBytes": svg_str.len(),
+            "nodeId": node_id
+        }));
+    }
+
+    // Check if base64 (from export_image: data["base64"] or screenshot: data["dataUrl"])
+    let (b64_str, fmt) = if let Some(b64) = data.get("base64").and_then(|v| v.as_str()) {
+        let fmt = data.get("format").and_then(|v| v.as_str()).unwrap_or(default_ext);
+        (b64, fmt)
+    } else if let Some(data_url) = data.get("dataUrl").and_then(|v| v.as_str()) {
+        let b64 = if let Some(idx) = data_url.find(',') {
+            &data_url[idx + 1..]
+        } else {
+            data_url
+        };
+        (b64, "png")
+    } else {
+        return Err("No exportable image or SVG data found in response".to_string());
+    };
+
+    let bytes = BASE64_STANDARD
+        .decode(b64_str.trim())
+        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+
+    tokio::fs::write(path, &bytes)
+        .await
+        .map_err(|e| format!("Failed to write image to '{}': {}", output_path, e))?;
+
+    let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let width = data.get("width").cloned().unwrap_or(json!(null));
+    let height = data.get("height").cloned().unwrap_or(json!(null));
+    let node_id = data.get("nodeId").cloned().unwrap_or(json!(null));
+    let node_name = data.get("nodeName").cloned().unwrap_or(json!(null));
+
+    Ok(json!({
+        "success": true,
+        "savedTo": abs_path.to_string_lossy(),
+        "relativePath": output_path,
+        "format": fmt,
+        "width": width,
+        "height": height,
+        "sizeBytes": bytes.len(),
+        "nodeId": node_id,
+        "nodeName": node_name
+    }))
+}
 
 pub async fn handle_jsonrpc_request(
     bridge: BridgeHandle,
@@ -150,6 +230,67 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             ToolResult::text(get_docs(section))
         }
 
+        "figma_get_selection" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            if !bridge.is_plugin_connected(session_id).await {
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+            let mut op_params = json!({});
+            if let Some(depth) = args.get("depth") { op_params["depth"] = depth.clone(); }
+            let detail = args.get("detail").and_then(|v| v.as_str()).unwrap_or("compact");
+            op_params["detail"] = json!(detail);
+
+            match bridge.send_operation("get_selection", op_params, session_id).await {
+                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                Err(e) => ToolResult::error(e),
+            }
+        }
+
+        "figma_inspect_node" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            if !bridge.is_plugin_connected(session_id).await {
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+            let mut op_params = json!({});
+            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
+            if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
+
+            match bridge.send_operation("get_design_context", op_params, session_id).await {
+                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                Err(e) => ToolResult::error(e),
+            }
+        }
+
+        "figma_export_asset" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            if !bridge.is_plugin_connected(session_id).await {
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+            let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("png").to_lowercase();
+            let mut op_params = json!({});
+            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
+            if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
+            if let Some(scale) = args.get("scale") { op_params["scale"] = scale.clone(); }
+            op_params["format"] = json!(format);
+
+            let operation = if format == "svg" { "export_svg" } else { "export_image" };
+            match bridge.send_operation(operation, op_params, session_id).await {
+                Ok(data) => {
+                    if let Some(output_path) = args.get("outputPath").and_then(|v| v.as_str()) {
+                        match save_export_to_disk(output_path, &data, &format).await {
+                            Ok(disk_res) => ToolResult::text(serde_json::to_string_pretty(&disk_res).unwrap_or_default()),
+                            Err(e) => ToolResult::error(e),
+                        }
+                    } else if format == "svg" {
+                        ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default())
+                    } else {
+                        ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default())
+                    }
+                }
+                Err(e) => ToolResult::error(e),
+            }
+        }
+
         "figma_read" => {
             let operation = match args.get("operation").and_then(|v| v.as_str()) {
                 Some(op) => op,
@@ -173,15 +314,25 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             if operation == "search_nodes" {
                 if let Some(obj) = args.as_object() {
                     for (k, v) in obj {
-                        if !["operation", "nodeId", "nodeName", "scale", "depth", "format", "detail", "includeHidden", "sessionId"].contains(&k.as_str()) {
+                        if !["operation", "nodeId", "nodeName", "scale", "depth", "format", "detail", "includeHidden", "outputPath", "sessionId"].contains(&k.as_str()) {
                             op_params[k] = v.clone();
                         }
                     }
                 }
             }
 
+            let output_path = args.get("outputPath").and_then(|v| v.as_str());
             match bridge.send_operation(operation, op_params, session_id).await {
                 Ok(data) => {
+                    if let Some(out_path) = output_path {
+                        if ["export_image", "export_svg", "screenshot"].contains(&operation) {
+                            match save_export_to_disk(out_path, &data, "png").await {
+                                Ok(disk_res) => return ToolResult::text(serde_json::to_string_pretty(&disk_res).unwrap_or_default()),
+                                Err(e) => return ToolResult::error(e),
+                            }
+                        }
+                    }
+
                     if operation == "screenshot" {
                         if let Some(data_url) = data.get("dataUrl").and_then(|v| v.as_str()) {
                             let b64 = if let Some(idx) = data_url.find(',') {

@@ -31,6 +31,86 @@ pub fn get_tools() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "figma_get_selection".to_string(),
+            description: "Get the design tree of currently selected element(s) in Figma with smart token compression. Fast single-call inspection for UI building.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "depth": {
+                        "type": "string",
+                        "description": "Tree depth: number (default 10) or 'full'."
+                    },
+                    "detail": {
+                        "type": "string",
+                        "enum": ["minimal", "compact", "full"],
+                        "description": "Detail level: 'compact' (recommended default), 'full', 'minimal'."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab."
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "figma_inspect_node".to_string(),
+            description: "Inspect a specific Figma node by ID (or name) — returns CSS styles, flex layout, tokens, typography, and fills in a clean format.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "nodeId": {
+                        "type": "string",
+                        "description": "The Figma node ID (e.g. '2413:27687')."
+                    },
+                    "nodeName": {
+                        "type": "string",
+                        "description": "The node name (alternative to nodeId)."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab."
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "figma_export_asset".to_string(),
+            description: "Export any Figma node as PNG, JPG, or SVG. Specify 'outputPath' to automatically save directly to a project folder (e.g. 'src/assets/logo.png') without bloating chat tokens with base64 data.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "nodeId": {
+                        "type": "string",
+                        "description": "Target node ID (omit to use current selection)."
+                    },
+                    "nodeName": {
+                        "type": "string",
+                        "description": "Target node name (alternative to nodeId)."
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["png", "jpg", "svg"],
+                        "description": "Export format: 'png' (default), 'jpg', or 'svg'."
+                    },
+                    "scale": {
+                        "type": "number",
+                        "description": "Export scale factor (default 2 for high-res PNG/JPG, ignored for SVG)."
+                    },
+                    "outputPath": {
+                        "type": "string",
+                        "description": "Optional file path to save the exported image/SVG directly to disk (e.g. 'assets/images/splash.png'). Parent directories are created automatically."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab."
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolDefinition {
             name: "figma_read".to_string(),
             description: "READ design data from Figma — extract node trees, colors, typography, spacing, and screenshots. Use to understand an existing design before generating code, or to inspect what's on the canvas.".to_string(),
             input_schema: json!({
@@ -48,10 +128,11 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     },
                     "nodeId": { "type": "string", "description": "Target node ID (optional — omit to use current selection)." },
                     "nodeName": { "type": "string", "description": "Target node name (alternative to nodeId)." },
-                    "scale": { "type": "number", "description": "Export scale for screenshot (default 1)." },
+                    "scale": { "type": "number", "description": "Export scale for screenshot / export_image (default 1 for screenshot, 2 for export_image)." },
                     "depth": { "type": "string", "description": "Tree depth for get_design/get_selection. Number (default 10) or 'full' for unlimited. Higher = more detail but larger output." },
                     "format": { "type": "string", "description": "Image format for export_image: 'png' (default) or 'jpg'." },
                     "detail": { "type": "string", "description": "Detail level for get_design/get_selection: 'minimal' (~5% tokens), 'compact' (~30%), 'full' (default, 100%). Use minimal for large files." },
+                    "outputPath": { "type": "string", "description": "Optional file path to save exported SVG/image directly to disk (for export_svg, export_image, or screenshot)." },
                     "includeHidden": { "type": "boolean", "description": "Include invisible nodes (visible:false) in results. Default false — hidden layers are skipped to reduce noise." },
                     "sessionId": { "type": "string", "description": "Target a specific Figma file/tab when multiple are connected. Omit to auto-select." }
                 },

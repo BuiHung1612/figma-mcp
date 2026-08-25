@@ -508,6 +508,8 @@
         return;
       }
 
+      var pingTimer = null;
+
       ws.onopen = function() {
         wsConnected = true;
         consecutiveErrors = 0;
@@ -515,6 +517,15 @@
         lastSuccessfulPollAt = Date.now();
         setStatus("green", "Connected", "ready");
         log("⚡ Connected to Figma MCP · " + currentPort, "ok");
+
+        if (pingTimer) clearInterval(pingTimer);
+        pingTimer = setInterval(function() {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify({ type: "ping" })); } catch(e) {}
+          } else {
+            clearInterval(pingTimer);
+          }
+        }, 15000);
       };
 
       ws.onmessage = function(event) {
@@ -536,6 +547,7 @@
       };
 
       ws.onclose = function() {
+        if (pingTimer) clearInterval(pingTimer);
         wsConnected = false;
         if (polling) {
           startLongPoll();
@@ -670,8 +682,17 @@
     document.addEventListener("visibilitychange", function() {
       if (document.visibilityState !== "visible" || !everConnected) return;
       var idleMs = Date.now() - lastSuccessfulPollAt;
-      if (consecutiveErrors > 0 || activeAbortController || idleMs > 20000) {
+      if (!wsConnected || consecutiveErrors > 0 || activeAbortController || idleMs > 20000) {
         log("Focus sync (" + Math.round(idleMs / 1000) + "s)", "info");
+        reconnect();
+      }
+    });
+
+    window.addEventListener("focus", function() {
+      if (!everConnected) return;
+      var idleMs = Date.now() - lastSuccessfulPollAt;
+      if (!wsConnected || consecutiveErrors > 0 || activeAbortController || idleMs > 20000) {
+        log("Window focus sync", "info");
         reconnect();
       }
     });

@@ -601,6 +601,14 @@ async fn handle_socket(
             match msg {
                 Message::Text(text) => {
                     if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                        if val.get("type").and_then(|v| v.as_str()) == Some("ping") || val.get("ping").is_some() {
+                            let mut inner = state_clone.inner.lock().await;
+                            if let Some(s) = inner.sessions.get_mut(&sid_clone) {
+                                s.last_poll_at = now_ms();
+                            }
+                            continue;
+                        }
+
                         if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
                             let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
                             let data = val.get("data").cloned();

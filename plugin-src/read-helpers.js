@@ -180,10 +180,13 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
       if (typeof node.cornerRadius === "number") {
         info.cornerRadius = node.cornerRadius;
       } else {
-        info.cornerRadius = {
-          tl: node.topLeftRadius || 0, tr: node.topRightRadius || 0,
-          br: node.bottomRightRadius || 0, bl: node.bottomLeftRadius || 0,
-        };
+        var tl = node.topLeftRadius || 0, tr = node.topRightRadius || 0,
+            br = node.bottomRightRadius || 0, bl = node.bottomLeftRadius || 0;
+        if (tl === tr && tr === br && br === bl) {
+          if (tl !== 0) info.cornerRadius = tl;
+        } else {
+          info.cornerRadius = { tl: tl, tr: tr, br: br, bl: bl };
+        }
       }
     }
   } catch(e) {}
@@ -206,7 +209,6 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
         var bvk = bvKeys[bvi];
         var binding = node.boundVariables[bvk];
         if (binding) {
-          // binding can be a single VariableAlias or array of them
           if (Array.isArray(binding)) {
             bv[bvk] = binding.map(function(b) { return b ? b.id : null; });
           } else {
@@ -240,26 +242,26 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
   if (node.type === "TEXT") {
     try {
       info.content = node.characters;
-      info.fill = getFillHex(node);
-      info.fontSize = node.fontSize;
-      info.fontFamily = node.fontName ? node.fontName.family : null;
-      info.fontWeight = node.fontName ? node.fontName.style : null;
+      var fillH = getFillHex(node);
+      if (fillH) info.fill = fillH;
+      if (node.fontSize) info.fontSize = node.fontSize;
+      if (node.fontName && node.fontName.family) info.fontFamily = node.fontName.family;
+      if (node.fontName && node.fontName.style && node.fontName.style !== "Regular") info.fontWeight = node.fontName.style;
       if (node.lineHeight) {
-        if (node.lineHeight.unit === "AUTO") info.lineHeight = "auto";
-        else if (node.lineHeight.unit === "PERCENT") info.lineHeight = Math.round(node.lineHeight.value) + "%";
-        else info.lineHeight = node.lineHeight.value;
+        if (node.lineHeight.unit === "PERCENT") info.lineHeight = Math.round(node.lineHeight.value) + "%";
+        else if (node.lineHeight.unit === "PIXELS") info.lineHeight = node.lineHeight.value;
       }
       if (node.letterSpacing && node.letterSpacing.value !== 0) info.letterSpacing = node.letterSpacing.value;
-      info.textAlign = node.textAlignHorizontal;
+      if (node.textAlignHorizontal && node.textAlignHorizontal !== "LEFT") info.textAlign = node.textAlignHorizontal;
       if (node.textAlignVertical && node.textAlignVertical !== "TOP") info.textAlignVertical = node.textAlignVertical;
       if (node.textDecoration && node.textDecoration !== "NONE") info.textDecoration = node.textDecoration;
       if (node.textTruncation && node.textTruncation !== "DISABLED") info.textTruncation = node.textTruncation;
-      if (node.textAutoResize) info.textAutoResize = node.textAutoResize;
+      if (node.textAutoResize && node.textAutoResize !== "NONE") info.textAutoResize = node.textAutoResize;
     } catch(e) {
       // Mixed text styles — extract per-segment efficiently
       try {
         info.content = node.characters;
-        info.textAlign = node.textAlignHorizontal;
+        if (node.textAlignHorizontal && node.textAlignHorizontal !== "LEFT") info.textAlign = node.textAlignHorizontal;
         info.mixedStyles = true;
 
         if (typeof node.getStyledTextSegments === "function") {
@@ -268,7 +270,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
             var seg = { text: s.characters, fontSize: s.fontSize };
             if (s.fontName) {
               seg.fontFamily = s.fontName.family;
-              seg.fontWeight = s.fontName.style;
+              if (s.fontName.style !== "Regular") seg.fontWeight = s.fontName.style;
             }
             if (s.fills && s.fills[0] && s.fills[0].type === "SOLID") {
               seg.fill = rgbToHex(s.fills[0].color);
@@ -288,23 +290,35 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible) 
     }
   }
 
-  // ── Auto Layout (comprehensive) ──
+  // ── Auto Layout (comprehensive & compact) ──
   try {
     if ("layoutMode" in node && node.layoutMode !== "NONE") {
-      var pt = node.paddingTop, pr = node.paddingRight, pb = node.paddingBottom, pl = node.paddingLeft;
-      info.layout = {
-        mode:    node.layoutMode,
-        itemSpacing: node.itemSpacing,
-        align:   node.primaryAxisAlignItems,
-        crossAlign: node.counterAxisAlignItems,
-        paddingTop: pt, paddingRight: pr, paddingBottom: pb, paddingLeft: pl,
+      var pt = node.paddingTop || 0, pr = node.paddingRight || 0, pb = node.paddingBottom || 0, pl = node.paddingLeft || 0;
+      var layoutObj = {
+        mode: node.layoutMode,
       };
-      // Counter axis spacing (gap between wrapped rows/columns)
-      try { if (node.counterAxisSpacing !== undefined && node.counterAxisSpacing !== 0) info.layout.counterAxisSpacing = node.counterAxisSpacing; } catch(e2) {}
-      // Sizing modes
-      if (node.primaryAxisSizingMode) info.layout.primarySizing = node.primaryAxisSizingMode;
-      if (node.counterAxisSizingMode) info.layout.counterSizing = node.counterAxisSizingMode;
-      if (node.layoutWrap && node.layoutWrap !== "NO_WRAP") info.layout.wrap = node.layoutWrap;
+      if (node.itemSpacing !== undefined && node.itemSpacing !== 0) layoutObj.itemSpacing = node.itemSpacing;
+      if (node.primaryAxisAlignItems && node.primaryAxisAlignItems !== "MIN") layoutObj.align = node.primaryAxisAlignItems;
+      if (node.counterAxisAlignItems && node.counterAxisAlignItems !== "MIN") layoutObj.crossAlign = node.counterAxisAlignItems;
+
+      if (pt === pr && pr === pb && pb === pl) {
+        if (pt !== 0) layoutObj.padding = pt;
+      } else if (pt === pb && pl === pr) {
+        if (pl !== 0) layoutObj.paddingX = pl;
+        if (pt !== 0) layoutObj.paddingY = pt;
+      } else {
+        if (pt !== 0) layoutObj.paddingTop = pt;
+        if (pr !== 0) layoutObj.paddingRight = pr;
+        if (pb !== 0) layoutObj.paddingBottom = pb;
+        if (pl !== 0) layoutObj.paddingLeft = pl;
+      }
+
+      try { if (node.counterAxisSpacing !== undefined && node.counterAxisSpacing !== 0) layoutObj.counterAxisSpacing = node.counterAxisSpacing; } catch(e2) {}
+      if (node.primaryAxisSizingMode && node.primaryAxisSizingMode !== "AUTO") layoutObj.primarySizing = node.primaryAxisSizingMode;
+      if (node.counterAxisSizingMode && node.counterAxisSizingMode !== "AUTO") layoutObj.counterSizing = node.counterAxisSizingMode;
+      if (node.layoutWrap && node.layoutWrap !== "NO_WRAP") layoutObj.wrap = node.layoutWrap;
+
+      info.layout = layoutObj;
     }
   } catch(e) {}
 
