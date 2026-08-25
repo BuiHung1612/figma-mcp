@@ -1,16 +1,23 @@
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Query, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Query, State,
+    },
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
-    response::Json,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Json,
+    },
     routing::{get, post},
     Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{stream::Stream, SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
@@ -20,6 +27,8 @@ use super::session::{
     PendingOp, PollResponse, QueuedOp, Session, SessionInfo, SessionStats, MAX_QUEUE,
     SESSION_EXPIRE_MS,
 };
+use super::BridgeHandle;
+use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 
 pub const DEFAULT_PORT: u16 = 38451;
 pub const PORT_RANGE: u16 = 10;
@@ -43,6 +52,7 @@ pub struct BridgeInner {
     pub sessions: HashMap<String, Session>,
     pub op_to_session: HashMap<String, String>,
     pub global_stats: SessionStats,
+    pub mcp_sse_clients: HashMap<String, tokio::sync::mpsc::UnboundedSender<JsonRpcResponse>>,
 }
 
 #[derive(Clone)]
@@ -58,8 +68,37 @@ impl BridgeState {
                 sessions: HashMap::new(),
                 op_to_session: HashMap::new(),
                 global_stats: SessionStats::default(),
+                mcp_sse_clients: HashMap::new(),
             })),
         }
+    }
+
+    pub async fn register_mcp_client(
+        &self,
+        session_id: &str,
+        tx: tokio::sync::mpsc::UnboundedSender<JsonRpcResponse>,
+    ) {
+        let mut inner = self.inner.lock().await;
+        inner.mcp_sse_clients.insert(session_id.to_string(), tx);
+    }
+
+    pub async fn remove_mcp_client(&self, session_id: &str) {
+        let mut inner = self.inner.lock().await;
+        inner.mcp_sse_clients.remove(session_id);
+    }
+
+    pub async fn send_mcp_response(&self, session_id: &str, resp: JsonRpcResponse) -> bool {
+        let inner = self.inner.lock().await;
+        if let Some(tx) = inner.mcp_sse_clients.get(session_id) {
+            tx.send(resp).is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub async fn get_mcp_client_count(&self) -> usize {
+        let inner = self.inner.lock().await;
+        inner.mcp_sse_clients.len()
     }
 
     pub async fn is_plugin_connected(&self, session_id: Option<&str>) -> bool {
@@ -259,15 +298,27 @@ async fn handle_root(State(state): State<BridgeState>) -> impl IntoResponse {
     let sessions = state.get_sessions().await;
     let connected = state.is_plugin_connected(None).await;
     let queue_len = state.get_queue_length().await;
+    let mcp_clients = state.get_mcp_client_count().await;
 
     Json(json!({
         "server": "figma-mcp",
         "version": "2.5.26",
         "port": port,
         "pluginConnected": connected,
+        "mcpClientsConnected": mcp_clients,
         "sessions": sessions,
         "queueLength": queue_len,
-        "endpoints": ["/health", "/poll", "/response", "/exec", "/clear", "/sessions"]
+        "endpoints": [
+            "/health",
+            "/poll",
+            "/response",
+            "/exec",
+            "/clear",
+            "/sessions",
+            "/sse",
+            "/message",
+            "/mcp"
+        ]
     }))
 }
 
@@ -297,6 +348,7 @@ async fn handle_poll(
         if let Some(fn_name) = query.file_name {
             session.file_name = fn_name;
         }
+        let is_first_poll = session.last_poll_at == 0;
         session.last_poll_at = now_ms();
 
         // Check if there are queued items that have active pending callers
@@ -315,7 +367,7 @@ async fn handle_poll(
                 }),
                 None,
             )
-        } else if is_init {
+        } else if is_init || is_first_poll {
             // Instant handshake on startup
             (
                 Some(PollResponse {
@@ -598,6 +650,110 @@ async fn handle_socket(
     }
 }
 
+struct McpSseStream {
+    session_id: String,
+    state: BridgeState,
+    initial_sent: bool,
+    rx: tokio::sync::mpsc::UnboundedReceiver<JsonRpcResponse>,
+}
+
+impl Stream for McpSseStream {
+    type Item = Result<Event, std::convert::Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if !self.initial_sent {
+            self.initial_sent = true;
+            let endpoint_url = format!("/message?sessionId={}", self.session_id);
+            let event = Event::default().event("endpoint").data(endpoint_url);
+            return Poll::Ready(Some(Ok(event)));
+        }
+
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(resp)) => {
+                let data_str = serde_json::to_string(&resp).unwrap_or_default();
+                let event = Event::default().event("message").data(data_str);
+                Poll::Ready(Some(Ok(event)))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for McpSseStream {
+    fn drop(&mut self) {
+        let state = self.state.clone();
+        let sid = self.session_id.clone();
+        tokio::spawn(async move {
+            state.remove_mcp_client(&sid).await;
+            eprintln!("[figma-mcp] 🤖 MCP Client disconnected (Session: {})", sid);
+        });
+    }
+}
+
+async fn handle_mcp_sse(
+    State(state): State<BridgeState>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let session_id = Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JsonRpcResponse>();
+
+    state.register_mcp_client(&session_id, tx).await;
+    eprintln!("[figma-mcp] 🤖 MCP Client connected via SSE (Session: {})", session_id);
+
+    let stream = McpSseStream {
+        session_id,
+        state,
+        initial_sent: false,
+        rx,
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("ping"),
+    )
+}
+
+#[derive(Deserialize)]
+struct McpMessageQuery {
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+}
+
+async fn handle_mcp_message(
+    State(state): State<BridgeState>,
+    Query(query): Query<McpMessageQuery>,
+    Json(req): Json<JsonRpcRequest>,
+) -> impl IntoResponse {
+    let bridge = BridgeHandle::Direct(state.clone());
+    let resp = crate::mcp::server::handle_jsonrpc_request(bridge, req).await;
+
+    if let Some(resp) = resp {
+        if let Some(ref sid) = query.session_id {
+            if state.send_mcp_response(sid, resp.clone()).await {
+                return (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response();
+            }
+        }
+        (StatusCode::OK, Json(serde_json::to_value(resp).unwrap_or(json!({})))).into_response()
+    } else {
+        (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
+    }
+}
+
+async fn handle_mcp_direct(
+    State(state): State<BridgeState>,
+    Json(req): Json<JsonRpcRequest>,
+) -> impl IntoResponse {
+    let bridge = BridgeHandle::Direct(state.clone());
+    let resp = crate::mcp::server::handle_jsonrpc_request(bridge, req).await;
+
+    if let Some(resp) = resp {
+        (StatusCode::OK, Json(serde_json::to_value(resp).unwrap_or(json!({})))).into_response()
+    } else {
+        (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
+    }
+}
+
 pub fn create_router(state: BridgeState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -613,6 +769,10 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/ws", get(handle_ws))
         .route("/health", get(handle_health))
         .route("/clear", get(handle_clear).post(handle_clear))
+        .route("/sse", get(handle_mcp_sse))
+        .route("/message", post(handle_mcp_message))
+        .route("/messages", post(handle_mcp_message))
+        .route("/mcp", post(handle_mcp_direct))
         .layer(cors)
         .with_state(state)
 }

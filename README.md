@@ -20,20 +20,21 @@ Enables AI agents (Claude Code, Cursor, Windsurf, Antigravity, VS Code, Zed) to 
 ## 🏛️ Architecture
 
 ```text
-[ AI Assistant ]  (Claude Code / Cursor / Antigravity)
-       │
-       ▼  (Stdio JSON-RPC 2.0)
-[ figma-mcp (Rust) ]
-  ├── MCP Protocol Handler
-  ├── Sandboxed JS Engine (Boa)
-  ├── Asset & Icon Resolver
-  └── Async HTTP Bridge (Axum / Tokio)
-       │
-       ▼  (HTTP Long-Polling: 127.0.0.1:38451)
-[ Figma MCP Bridge Plugin ]
-       │
-       ▼  (Figma Plugin Scenegraph API)
-[ Figma Canvas / Document ]
+┌─────────────────────────────────────────────────────────┐
+│               Terminal (Standalone Server)              │
+│                       figma-mcp                         │
+│  • MCP SSE Transport (/sse, /message)                   │
+│  • Sandboxed JS Runtime (Boa)                           │
+│  • Built-in Asset & Icon Resolver                       │
+│  • Async WebSocket & HTTP Long-Polling Bridge (Axum)    │
+└───────────────▲─────────────────────────▲───────────────┘
+                │ (ws://127.0.0.1:38451)  │ (http://127.0.0.1:38451/sse)
+                │                         │
+      ┌─────────┴─────────┐     ┌─────────┴─────────┐
+      │   Figma Desktop   │     │ AI Assistant(s)   │
+      │ (Plugin Bridge)   │     │ Antigravity/Cursor│
+      └───────────────────┘     │ Claude Code / Zed │
+                                └───────────────────┘
 ```
 
 ---
@@ -54,43 +55,65 @@ The optimized static binary will be generated at `target/release/figma-mcp`.
 
 ---
 
-### 2. Install the Figma Plugin
+### 2. Run in Terminal (Recommended)
+
+Run `figma-mcp` directly in your terminal:
+
+```bash
+./target/release/figma-mcp
+# or using cargo
+cargo run --release
+```
+
+This starts the standalone server with live logging, keeps the Figma connection permanently active, and exposes both WebSocket and MCP SSE endpoints.
+
+---
+
+### 3. Install the Figma Plugin
 
 1. Open **Figma Desktop**.
 2. Go to **Plugins** → **Development** → **Import plugin from manifest...**
 3. Select the file: `plugin/manifest.json` from this repository.
 4. Run the plugin (**Plugins** → **Development** → **Figma MCP Bridge**).
-5. The plugin UI will show a green dot (**Connected**) once `figma-mcp` is running.
+5. The plugin UI will show a green dot (**Connected**).
 
 ---
 
-### 3. Configure Your MCP Client
+### 4. Configure Your MCP Client
 
-#### Claude Code
-Add to your Claude Code settings or run:
-```bash
-claude mcp add figma-mcp -- /path/to/figma-mcp/target/release/figma-mcp
-```
-
-#### Cursor / Windsurf / VS Code
-Add to your `mcp.json` / `settings.json`:
+#### Google Antigravity (SSE Transport - Recommended)
+Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.json`:
 ```json
 {
   "mcpServers": {
     "figma-mcp": {
-      "command": "/path/to/figma-mcp/target/release/figma-mcp"
+      "serverUrl": "http://127.0.0.1:38451/sse"
     }
   }
 }
 ```
 
-#### Google Antigravity
-Add to your global or project `mcp_config.json`:
+#### Claude Code / Cursor / Windsurf / VS Code
+You can connect via SSE or stdio:
+
+**Option A: SSE Transport (Recommended)**
 ```json
 {
   "mcpServers": {
     "figma-mcp": {
-      "command": "/path/to/figma-mcp/target/release/figma-mcp"
+      "url": "http://127.0.0.1:38451/sse"
+    }
+  }
+}
+```
+
+**Option B: Stdio Subprocess**
+```json
+{
+  "mcpServers": {
+    "figma-mcp": {
+      "command": "/path/to/figma-mcp/target/release/figma-mcp",
+      "args": ["--stdio"]
     }
   }
 }

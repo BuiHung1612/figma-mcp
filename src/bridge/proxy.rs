@@ -32,6 +32,16 @@ impl HttpProxy {
         Self { port, client }
     }
 
+    pub async fn is_running(&self) -> bool {
+        let url = format!("http://127.0.0.1:{}/health", self.port);
+        self.client
+            .get(&url)
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await
+            .is_ok()
+    }
+
     pub async fn check_health(&self) -> HealthResponse {
         let url = format!("http://127.0.0.1:{}/health", self.port);
         match self.client.get(&url).timeout(Duration::from_millis(2000)).send().await {

@@ -8,8 +8,12 @@
   "editorType": ["figma", "dev"],
   "networkAccess": {
     "allowedDomains": [
-      "http://localhost:38451"
+      "http://localhost:38451",
+      "http://localhost:38452",
+      "http://localhost:38453",
+      "http://localhost:38454",
+      "http://localhost:38455"
     ],
-    "reasoning": "This plugin bridges Figma to a local MCP server running on port 38451. All communication stays on localhost — no external network access is made."
+    "reasoning": "This plugin bridges Figma to the local figma-mcp Rust server running on port 38451-38455."
   }
 }

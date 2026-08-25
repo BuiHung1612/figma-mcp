@@ -447,30 +447,49 @@
     var wsConnected = false;
     var activeAbortController = null;
     var isFirstPoll = true;
+    var retryTimer = null;
 
     async function initConnection() {
-      // 1. Instant Health Check (< 1ms)
-      try {
-        var res = await fetch("http://127.0.0.1:" + currentPort + "/health", { signal: AbortSignal.timeout(600) });
-        if (res.ok) {
-          BRIDGE = "http://127.0.0.1:" + currentPort;
-          setStatus("green", "Connected", "ready");
-          everConnected = true;
-          lastSuccessfulPollAt = Date.now();
-        }
-      } catch(e) {
-        try {
-          var res2 = await fetch("http://localhost:" + currentPort + "/health", { signal: AbortSignal.timeout(600) });
-          if (res2.ok) {
-            BRIDGE = "http://localhost:" + currentPort;
-            setStatus("green", "Connected", "ready");
-            everConnected = true;
-            lastSuccessfulPollAt = Date.now();
-          }
-        } catch(e2) {}
+      if (wsConnected) return;
+
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
       }
 
-      // 2. Attempt WebSocket
+      // 1. Instant Health Check on localhost (< 2ms)
+      try {
+        var res = await fetch("http://localhost:" + currentPort + "/health", { signal: AbortSignal.timeout(400) });
+        if (res.ok) {
+          BRIDGE = "http://localhost:" + currentPort;
+          everConnected = true;
+          lastSuccessfulPollAt = Date.now();
+          setStatus("green", "Connected", "ready");
+          connectWs();
+          return;
+        }
+      } catch(e) {}
+
+      // 2. Quick auto-detect ports 38451-38455 if currentPort is not answering
+      for (var p = 38451; p <= 38455; p++) {
+        if (p === currentPort) continue;
+        try {
+          var resScan = await fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(200) });
+          if (resScan.ok) {
+            currentPort = p;
+            BRIDGE = "http://localhost:" + p;
+            var pDisp = document.getElementById("port-display");
+            if (pDisp) pDisp.textContent = p;
+            everConnected = true;
+            lastSuccessfulPollAt = Date.now();
+            setStatus("green", "Connected", "ready");
+            connectWs();
+            return;
+          }
+        } catch(eScan) {}
+      }
+
+      // 3. Attempt WebSocket on currentPort
       connectWs();
     }
 
@@ -500,7 +519,7 @@
         everConnected = true;
         lastSuccessfulPollAt = Date.now();
         setStatus("green", "Connected", "ready");
-        log("⚡ WebSocket live · 0ms", "ok");
+        log("⚡ Connected to Figma MCP · " + currentPort, "ok");
       };
 
       ws.onmessage = function(event) {
@@ -523,9 +542,17 @@
 
       ws.onclose = function() {
         wsConnected = false;
-        // If WebSocket failed or closed, fall back to HTTP polling
         if (polling) {
           startLongPoll();
+          // Proactive auto-reconnect timer
+          if (!retryTimer) {
+            retryTimer = setTimeout(function() {
+              retryTimer = null;
+              if (!wsConnected && polling) {
+                initConnection();
+              }
+            }, 1500);
+          }
         }
       };
     }
@@ -678,14 +705,12 @@
       log("Scanning 38451-38460...", "info");
       for (var p = 38451; p <= 38460; p++) {
         try {
-          var res = await fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(500) });
+          var res = await fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(400) });
           if (res.ok) {
             var data = await res.json();
-            if (data.pluginConnected !== undefined) {
-              log("Detected port " + p, "ok");
-              setPort(p);
-              return;
-            }
+            log("Detected port " + p, "ok");
+            setPort(p);
+            return;
           }
         } catch(e) {}
       }
@@ -698,12 +723,16 @@
       if (!msg) return;
 
       if (msg.type === "session-info") {
+        var prevSid = sessionId;
         sessionId = msg.sessionId || null;
         fileName = msg.fileName || null;
         if (fileName && sessionDispEl) {
           sessionDispEl.textContent = fileName.length > 16 ? fileName.slice(0, 14) + ".." : fileName;
         }
         if (sessionId) log("Linked: " + (fileName || sessionId), "info");
+        if (sessionId && sessionId !== prevSid) {
+          reconnect();
+        }
         return;
       }
 
@@ -739,7 +768,7 @@
       await sendResponse(msg.id, msg.success, msg.data, msg.error);
     };
 
-    connectWs();
+    initConnection();
 
     // Smooth Drag Resize
     (function initResize() {

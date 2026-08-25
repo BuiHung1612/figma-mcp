@@ -82,11 +82,9 @@ impl BridgeHandle {
 }
 
 pub async fn start_bridge_server(port: u16) -> Result<(BridgeState, u16), String> {
-    kill_stale_bridges(port).await;
-
     for attempt in 0..PORT_RANGE {
         let current_port = port + attempt;
-        let addr = SocketAddr::from(([127, 0, 0, 1], current_port));
+        let addr = SocketAddr::from(([0, 0, 0, 0], current_port));
 
         match TcpListener::bind(addr).await {
             Ok(listener) => {
@@ -101,8 +99,40 @@ pub async fn start_bridge_server(port: u16) -> Result<(BridgeState, u16), String
 
                 return Ok((state, current_port));
             }
-            Err(e) => {
-                eprintln!("[figma-mcp] Port {} in use ({}) — trying {}...", current_port, e, current_port + 1);
+            Err(_) => {
+                // Check if existing process is responsive to health check
+                let proxy = HttpProxy::new(current_port);
+                let is_healthy = proxy
+                    .client
+                    .get(format!("http://127.0.0.1:{}/health", current_port))
+                    .timeout(std::time::Duration::from_millis(500))
+                    .send()
+                    .await
+                    .is_ok();
+
+                if !is_healthy {
+                    eprintln!(
+                        "[figma-mcp] Port {} occupied by unresponsive process — attempting cleanup...",
+                        current_port
+                    );
+                    kill_stale_bridges(current_port).await;
+                    if let Ok(listener) = TcpListener::bind(addr).await {
+                        let state = BridgeState::new(current_port);
+                        let app = server::create_router(state.clone());
+                        tokio::spawn(async move {
+                            if let Err(e) = axum::serve(listener, app).await {
+                                eprintln!("[figma-mcp bridge] Server error: {}", e);
+                            }
+                        });
+                        return Ok((state, current_port));
+                    }
+                }
+
+                eprintln!(
+                    "[figma-mcp] Port {} in use — trying {}...",
+                    current_port,
+                    current_port + 1
+                );
             }
         }
     }

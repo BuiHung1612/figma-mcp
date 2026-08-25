@@ -2,4 +2,4 @@ pub mod protocol;
 pub mod server;
 pub mod tools;
 
-pub use server::run_mcp_server;
+pub use server::{handle_jsonrpc_request, run_mcp_server};

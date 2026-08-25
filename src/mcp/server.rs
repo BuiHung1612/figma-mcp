@@ -6,6 +6,67 @@ use super::tools::get_tools;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+pub async fn handle_jsonrpc_request(
+    bridge: BridgeHandle,
+    req: JsonRpcRequest,
+) -> Option<JsonRpcResponse> {
+    match req.method.as_str() {
+        "initialize" => Some(JsonRpcResponse::success(
+            req.id,
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "serverInfo": {
+                    "name": "figma-mcp",
+                    "version": "2.5.26"
+                }
+            }),
+        )),
+        "notifications/initialized" => {
+            // Client notification, no response required
+            None
+        }
+        "tools/list" => Some(JsonRpcResponse::success(
+            req.id,
+            json!({
+                "tools": get_tools()
+            }),
+        )),
+        "tools/call" => {
+            let tool_name = req
+                .params
+                .as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let start = std::time::Instant::now();
+            let tool_res = handle_tool_call(bridge.clone(), req.params).await;
+            let elapsed = start.elapsed();
+
+            eprintln!(
+                "[figma-mcp] ⚡ Tool '{}' executed in {:.1}ms",
+                tool_name,
+                elapsed.as_secs_f64() * 1000.0
+            );
+
+            Some(JsonRpcResponse::success(
+                req.id,
+                serde_json::to_value(tool_res).unwrap_or(json!({})),
+            ))
+        }
+        "ping" => Some(JsonRpcResponse::success(req.id, json!({}))),
+        _ => Some(JsonRpcResponse::error(
+            req.id,
+            -32601,
+            format!("Method '{}' not found", req.method),
+        )),
+    }
+}
+
 pub async fn run_mcp_server(bridge: BridgeHandle) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -29,40 +90,11 @@ pub async fn run_mcp_server(bridge: BridgeHandle) -> Result<(), Box<dyn std::err
             }
         };
 
-        let resp = match req.method.as_str() {
-            "initialize" => {
-                JsonRpcResponse::success(req.id, json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {
-                        "tools": {}
-                    },
-                    "serverInfo": {
-                        "name": "figma-mcp",
-                        "version": "2.5.26"
-                    }
-                }))
-            }
-            "notifications/initialized" => {
-                // Client notification, no response required
-                continue;
-            }
-            "tools/list" => {
-                JsonRpcResponse::success(req.id, json!({
-                    "tools": get_tools()
-                }))
-            }
-            "tools/call" => {
-                let tool_res = handle_tool_call(bridge.clone(), req.params).await;
-                JsonRpcResponse::success(req.id, serde_json::to_value(tool_res).unwrap_or(json!({})))
-            }
-            _ => {
-                JsonRpcResponse::error(req.id, -32601, format!("Method '{}' not found", req.method))
-            }
-        };
-
-        let resp_str = serde_json::to_string(&resp)? + "\n";
-        stdout.write_all(resp_str.as_bytes()).await?;
-        stdout.flush().await?;
+        if let Some(resp) = handle_jsonrpc_request(bridge.clone(), req).await {
+            let resp_str = serde_json::to_string(&resp)? + "\n";
+            stdout.write_all(resp_str.as_bytes()).await?;
+            stdout.flush().await?;
+        }
     }
 
     Ok(())
