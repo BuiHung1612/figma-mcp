@@ -53,6 +53,7 @@ pub struct BridgeInner {
     pub op_to_session: HashMap<String, String>,
     pub global_stats: SessionStats,
     pub mcp_sse_clients: HashMap<String, tokio::sync::mpsc::UnboundedSender<JsonRpcResponse>>,
+    pub last_cleanup_at: u64,
 }
 
 #[derive(Clone)]
@@ -69,6 +70,7 @@ impl BridgeState {
                 op_to_session: HashMap::new(),
                 global_stats: SessionStats::default(),
                 mcp_sse_clients: HashMap::new(),
+                last_cleanup_at: 0,
             })),
         }
     }
@@ -142,6 +144,24 @@ impl BridgeState {
     pub async fn get_last_poll_at(&self) -> u64 {
         let inner = self.inner.lock().await;
         inner.sessions.values().map(|s| s.last_poll_at).max().unwrap_or(0)
+    }
+
+    pub async fn get_status_snapshot(&self) -> (Vec<SessionInfo>, bool, usize, usize, u16) {
+        let now = now_ms();
+        let inner = self.inner.lock().await;
+        let sessions: Vec<SessionInfo> = inner.sessions.values().map(|s| SessionInfo {
+            id: s.id.clone(),
+            file_name: s.file_name.clone(),
+            connected: s.is_connected(),
+            last_poll_ago_ms: if s.last_poll_at > 0 { Some(now - s.last_poll_at) } else { None },
+            queue_length: s.queue.len(),
+            ops: s.stats.ops,
+        }).collect();
+        let connected = inner.sessions.values().any(|s| s.is_connected());
+        let queue_len: usize = inner.sessions.values().map(|s| s.queue.len()).sum();
+        let mcp_clients = inner.mcp_sse_clients.len();
+        let port = inner.port;
+        (sessions, connected, queue_len, mcp_clients, port)
     }
 
     pub async fn send_operation(
@@ -300,11 +320,7 @@ struct ExecPayload {
 }
 
 async fn handle_root(State(state): State<BridgeState>) -> impl IntoResponse {
-    let port = state.inner.lock().await.port;
-    let sessions = state.get_sessions().await;
-    let connected = state.is_plugin_connected(None).await;
-    let queue_len = state.get_queue_length().await;
-    let mcp_clients = state.get_mcp_client_count().await;
+    let (sessions, connected, queue_len, mcp_clients, port) = state.get_status_snapshot().await;
 
     Json(json!({
         "server": "figma-mcp",
@@ -475,12 +491,15 @@ async fn handle_health(State(state): State<BridgeState>) -> impl IntoResponse {
     let mut inner = state.inner.lock().await;
 
     // Cleanup expired sessions
-    inner.sessions.retain(|_, s| {
-        s.is_connected()
-            || !s.queue.is_empty()
-            || !s.pending.is_empty()
-            || (now - s.last_poll_at) < SESSION_EXPIRE_MS
-    });
+    if now.saturating_sub(inner.last_cleanup_at) > 30_000 {
+        inner.last_cleanup_at = now;
+        inner.sessions.retain(|_, s| {
+            s.is_connected()
+                || !s.queue.is_empty()
+                || !s.pending.is_empty()
+                || (now - s.last_poll_at) < SESSION_EXPIRE_MS
+        });
+    }
 
     let last_poll = inner.sessions.values().map(|s| s.last_poll_at).max().unwrap_or(0);
     let queue_len: usize = inner.sessions.values().map(|s| s.queue.len()).sum();
@@ -575,18 +594,19 @@ async fn handle_socket(
         if let Some(fn_name) = query.file_name {
             session.file_name = fn_name;
         }
+        let tx_clone = tx.clone();
         session.ws_tx = Some(tx);
         session.last_poll_at = now_ms();
 
         // Flush any queued ops directly over WebSocket
         let queued = std::mem::take(&mut session.queue);
-        for op in queued {
+        for op in &queued {
             let msg = json!({
                 "id": op.id,
                 "operation": op.operation,
                 "params": op.params,
             });
-            let _ = sender.send(Message::Text(msg.to_string())).await;
+            let _ = tx_clone.send(Message::Text(msg.to_string()));
         }
     }
 

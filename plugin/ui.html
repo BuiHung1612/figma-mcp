@@ -3,372 +3,389 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Figma MCP Console</title>
+  <title>Figma MCP</title>
   <style>
+    /* ── DESIGN TOKENS ── */
     :root {
-      --bg-main: #090d16;
-      --bg-card: #111827;
-      --bg-panel: #0d131f;
-      --bg-active: #1f293d;
-      --border: #1e293b;
-      --border-bright: #334155;
-      --text-white: #f8fafc;
-      --text-dim: #94a3b8;
-      --text-dark: #64748b;
-      --cyan: #38bdf8;
-      --indigo: #818cf8;
-      --emerald: #34d399;
-      --amber: #fbbf24;
-      --rose: #fb7185;
-      --radius: 8px;
+      --bg:          #09090f;
+      --surface-1:   #0f1117;
+      --surface-2:   #141720;
+      --surface-3:   #1a1f2e;
+      --surface-4:   #222844;
+      --border-1:    rgba(255,255,255,0.05);
+      --border-2:    rgba(255,255,255,0.10);
+      --border-3:    rgba(255,255,255,0.16);
+      --text-1:      #f0f2f8;
+      --text-2:      #8b95b0;
+      --text-3:      #4e5873;
+      --accent:      #6366f1;
+      --accent-2:    #06b6d4;
+      --green:       #22d3a0;
+      --amber:       #f59e0b;
+      --rose:        #f43f5e;
+      --violet:      #a78bfa;
+      --radius-sm:   6px;
+      --radius-md:   10px;
+      --radius-lg:   14px;
+      --transition:  0.18s cubic-bezier(.4,0,.2,1);
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    
-    html, body {
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif;
-      background: var(--bg-main);
-      color: var(--text-white);
-      padding: 10px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Text', sans-serif;
+      background: var(--bg);
+      color: var(--text-1);
       font-size: 11px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
+      line-height: 1.5;
       -webkit-font-smoothing: antialiased;
       user-select: none;
+      display: flex;
+      flex-direction: column;
     }
 
-    /* Top Command Header */
-    .hud-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 7px 10px;
-      flex-shrink: 0;
+    body::before {
+      content: '';
+      position: fixed;
+      top: -80px; left: -60px;
+      width: 260px; height: 260px;
+      background: radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      bottom: -60px; right: -40px;
+      width: 200px; height: 200px;
+      background: radial-gradient(circle, rgba(6,182,212,0.06) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
     }
 
-    .brand-group {
+    .app {
+      position: relative;
+      z-index: 1;
       display: flex;
-      align-items: center;
+      flex-direction: column;
+      height: 100%;
+      padding: 10px;
       gap: 7px;
     }
 
-    .brand-icon {
-      width: 22px;
-      height: 22px;
-      border-radius: 5px;
-      background: linear-gradient(135deg, #4f46e5, #06b6d4);
+    /* HEADER */
+    .header {
       display: flex;
       align-items: center;
-      justify-content: center;
-      color: #fff;
-      font-weight: 900;
-      font-size: 11px;
-      box-shadow: 0 0 8px rgba(79, 70, 229, 0.4);
+      justify-content: space-between;
+      background: var(--surface-1);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-md);
+      padding: 8px 10px;
+      flex-shrink: 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .header::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
     }
 
-    .brand-title {
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: -0.2px;
-      color: #fff;
+    .brand { display: flex; align-items: center; gap: 9px; }
+
+    .brand-logo {
+      width: 26px; height: 26px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 1px rgba(99,102,241,0.3), 0 4px 12px rgba(79,70,229,0.35);
+    }
+    .brand-logo svg { display: block; }
+    .brand-info { display: flex; flex-direction: column; gap: 1px; }
+    .brand-name { font-size: 11.5px; font-weight: 700; letter-spacing: 0.3px; color: var(--text-1); line-height: 1; }
+    .brand-file { font-size: 9px; color: var(--text-3); font-weight: 500; letter-spacing: 0.2px; line-height: 1; }
+
+    .status-pill {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-1);
+      border-radius: 100px;
+      padding: 4px 10px 4px 7px;
+      font-size: 10px; font-weight: 600;
+      color: var(--text-2); letter-spacing: 0.1px;
+      transition: border-color var(--transition), background var(--transition);
+    }
+    .status-pill.connected { border-color: rgba(34,211,160,0.25); background: rgba(34,211,160,0.06); }
+    .status-pill.offline   { border-color: rgba(244,63,94,0.2);   background: rgba(244,63,94,0.05);  }
+
+    .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%; flex-shrink: 0;
+      transition: background var(--transition), box-shadow var(--transition);
+    }
+    .dot.green  { background: var(--green);  box-shadow: 0 0 0 2px rgba(34,211,160,0.2),  0 0 8px rgba(34,211,160,0.5);  }
+    .dot.yellow { background: var(--amber);  box-shadow: 0 0 0 2px rgba(245,158,11,0.2),  0 0 8px rgba(245,158,11,0.4);  animation: blink 1.4s ease-in-out infinite; }
+    .dot.red    { background: var(--rose);   box-shadow: 0 0 0 2px rgba(244,63,94,0.2),   0 0 8px rgba(244,63,94,0.4);   }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.2; }
     }
 
-    .brand-sub {
-      font-size: 9px;
-      color: var(--text-dark);
-      margin-left: 2px;
-      font-weight: 500;
-    }
-
-    .status-capsule {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      padding: 3px 8px;
-      border-radius: 20px;
-      font-size: 10px;
-      font-weight: 600;
-      color: var(--text-dim);
-    }
-
-    .radar-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      transition: all 0.3s;
-    }
-    .radar-dot.green  { background: var(--emerald); box-shadow: 0 0 6px var(--emerald); }
-    .radar-dot.yellow { background: var(--amber); box-shadow: 0 0 6px var(--amber); animation: pulse 1s infinite; }
-    .radar-dot.red    { background: var(--rose); box-shadow: 0 0 6px var(--rose); }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.3; transform: scale(0.85); }
-    }
-
-    /* Telemetry & Port Bar */
-    .hud-strip {
-      display: flex;
-      align-items: center;
+    /* STATS ROW */
+    .stats-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr auto;
       gap: 6px;
       flex-shrink: 0;
     }
 
-    .metric-chip {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 5px 8px;
-      font-size: 9.5px;
-      font-weight: 600;
-      color: var(--text-dim);
+    .stat-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-sm);
+      padding: 7px 8px;
+      display: flex; flex-direction: column; gap: 3px;
+      transition: border-color var(--transition);
     }
+    .stat-card:hover { border-color: var(--border-2); }
 
-    .metric-chip .val {
-      font-size: 13px;
-      font-weight: 800;
-      font-family: 'SF Mono', monospace;
+    .stat-label {
+      font-size: 8.5px; font-weight: 700;
+      letter-spacing: 0.8px; text-transform: uppercase;
+      color: var(--text-3);
     }
-
-    .metric-chip.w .val { color: var(--indigo); }
-    .metric-chip.r .val { color: var(--cyan); }
-    .metric-chip.e .val { color: var(--rose); }
-
-    .port-box {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 5px 7px;
-      font-size: 9.5px;
-      color: var(--text-dim);
+    .stat-value {
+      font-size: 17px; font-weight: 800;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      line-height: 1;
     }
+    .stat-card.writes .stat-value { color: var(--violet); }
+    .stat-card.reads  .stat-value { color: var(--accent-2); }
+    .stat-card.errors .stat-value { color: var(--rose); }
 
-    .port-link {
-      font-family: 'SF Mono', monospace;
-      font-weight: 700;
-      color: var(--cyan);
+    .port-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-sm);
+      padding: 7px 10px;
+      display: flex; flex-direction: column; gap: 3px;
       cursor: pointer;
-      text-decoration: underline;
-      text-underline-offset: 2px;
+      transition: border-color var(--transition), background var(--transition);
     }
+    .port-card:hover { border-color: rgba(6,182,212,0.35); background: rgba(6,182,212,0.04); }
+    .port-label { font-size: 8.5px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: var(--text-3); }
+    .port-value { font-size: 12px; font-weight: 700; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--accent-2); line-height: 1; }
 
-    /* Terminal Console */
-    .terminal-deck {
-      flex: 1;
-      min-height: 0;
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      display: flex;
-      flex-direction: column;
+    /* TERMINAL */
+    .terminal-wrap {
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: column;
+      background: var(--surface-1);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-md);
       overflow: hidden;
-      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
     }
 
-    .terminal-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--bg-card);
-      border-bottom: 1px solid var(--border);
-      padding: 5px 8px;
-      font-size: 9px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      color: var(--text-dark);
+    .terminal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 10px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border-1);
       flex-shrink: 0;
+    }
+
+    .terminal-title {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 9px; font-weight: 700;
+      letter-spacing: 0.8px; text-transform: uppercase;
+      color: var(--text-3);
+    }
+    .t-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); opacity: 0.5; }
+
+    .event-badge {
+      font-size: 9px; font-weight: 600;
+      color: var(--text-3);
+      background: var(--surface-3);
+      border: 1px solid var(--border-1);
+      border-radius: 100px;
+      padding: 1px 7px;
     }
 
     .terminal-body {
       flex: 1;
-      padding: 8px;
+      padding: 8px 10px;
       font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
-      font-size: 10px;
-      line-height: 1.5;
+      font-size: 10.5px; line-height: 1.6;
       overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-      color: #94a3b8;
+      color: var(--text-2);
     }
-
     .terminal-body::-webkit-scrollbar { width: 3px; }
-    .terminal-body::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+    .terminal-body::-webkit-scrollbar-track { background: transparent; }
+    .terminal-body::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 2px; }
 
     .log-line {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 2px;
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 1px 3px; border-radius: 3px;
     }
+    .log-line:hover { background: rgba(255,255,255,0.02); }
+    .log-ts { font-size: 9px; color: var(--text-3); flex-shrink: 0; letter-spacing: -0.2px; }
+    .log-msg { flex: 1; word-break: break-all; }
+    .log-line .ok   { color: var(--green); }
+    .log-line .err  { color: var(--rose); }
+    .log-line .info { color: var(--accent-2); }
 
-    .log-time {
-      color: #475569;
-      font-size: 9px;
-      flex-shrink: 0;
+    .terminal-empty {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 100%; gap: 6px; color: var(--text-3);
     }
+    .terminal-empty-icon { font-size: 20px; opacity: 0.4; }
+    .terminal-empty-text { font-size: 10px; opacity: 0.5; }
 
-    .log-line .ok   { color: var(--emerald); font-weight: 600; }
-    .log-line .err  { color: var(--rose); font-weight: 600; }
-    .log-line .info { color: var(--cyan); }
-
-    /* Action Footer Bar */
-    .action-deck {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
+    /* FOOTER */
+    .footer { display: flex; gap: 6px; flex-shrink: 0; }
 
     .btn {
-      padding: 6px 10px;
-      border-radius: 6px;
-      font-size: 10.5px;
-      font-weight: 600;
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 5px; padding: 7px 11px;
+      border-radius: var(--radius-sm);
+      font-size: 10.5px; font-weight: 600;
       cursor: pointer;
-      border: 1px solid var(--border);
-      background: var(--bg-card);
-      color: var(--text-dim);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-      transition: all 0.15s ease;
+      border: 1px solid var(--border-2);
+      background: var(--surface-2);
+      color: var(--text-2);
+      transition: all var(--transition);
+      letter-spacing: 0.1px;
+      white-space: nowrap;
     }
+    .btn:hover { background: var(--surface-3); border-color: var(--border-3); color: var(--text-1); }
+    .btn:active { transform: scale(0.96); }
 
-    .btn:hover {
-      background: var(--bg-active);
-      border-color: var(--border-bright);
-      color: var(--text-white);
-    }
+    .btn-icon { width: 30px; height: 30px; padding: 0; flex-shrink: 0; }
 
-    .btn:active {
-      transform: scale(0.97);
-    }
-
-    .btn.primary {
+    .btn-primary {
       flex: 1;
-      background: linear-gradient(135deg, #4f46e5, #06b6d4);
-      color: #fff;
-      border-color: transparent;
-      box-shadow: 0 0 10px rgba(79, 70, 229, 0.3);
+      background: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
+      border-color: transparent; color: #fff; font-weight: 700;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.1) inset, 0 4px 16px rgba(79,70,229,0.3);
+    }
+    .btn-primary:hover {
+      opacity: 0.9; border-color: transparent; color: #fff;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 6px 20px rgba(79,70,229,0.4);
     }
 
-    .btn.primary:hover {
-      opacity: 0.92;
-      box-shadow: 0 0 14px rgba(79, 70, 229, 0.45);
+    .btn-live {
+      flex: 1;
+      background: rgba(34,211,160,0.08);
+      border-color: rgba(34,211,160,0.25);
+      color: var(--green);
     }
+    .btn-live:hover { background: rgba(34,211,160,0.12); border-color: rgba(34,211,160,0.4); color: var(--green); }
 
-    /* Corner Resize Grip */
+    /* RESIZE GRIP */
     .resize-grip {
-      position: fixed;
-      right: 2px;
-      bottom: 2px;
-      width: 14px;
-      height: 14px;
-      cursor: nwse-resize;
-      display: flex;
-      align-items: flex-end;
-      justify-content: flex-end;
-      padding: 1px;
-      opacity: 0.35;
-      color: var(--text-dim);
-      transition: opacity 0.2s, color 0.2s;
-      user-select: none;
+      position: fixed; right: 3px; bottom: 3px;
+      width: 14px; height: 14px;
+      cursor: nwse-resize; opacity: 0.2;
+      color: var(--text-2);
+      transition: opacity var(--transition), color var(--transition);
       z-index: 1000;
+      display: flex; align-items: flex-end; justify-content: flex-end;
     }
-    .resize-grip:hover {
-      opacity: 0.9;
-      color: var(--cyan);
-    }
+    .resize-grip:hover { opacity: 0.7; color: var(--accent-2); }
   </style>
 </head>
 <body>
 
-  <!-- Top Command Header -->
-  <header class="hud-header">
-    <div class="brand-group">
-      <div class="brand-icon">⚡</div>
-      <div>
-        <span class="brand-title">FIGMA MCP</span>
-        <span class="brand-sub" id="session-display">READY</span>
+  <div class="app">
+
+    <header class="header">
+      <div class="brand">
+        <div class="brand-logo">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+        </div>
+        <div class="brand-info">
+          <span class="brand-name">Figma MCP</span>
+          <span class="brand-file" id="session-display">READY</span>
+        </div>
+      </div>
+
+      <div class="status-pill" id="status-pill">
+        <div class="dot yellow" id="dot"></div>
+        <span id="status-text">Connecting</span>
+        <span id="mode-badge" style="display:none;color:var(--text-3)">—</span>
+      </div>
+    </header>
+
+    <div class="stats-row">
+      <div class="stat-card writes" title="Write Operations">
+        <span class="stat-label">Writes</span>
+        <span class="stat-value" id="write-count">0</span>
+      </div>
+      <div class="stat-card reads" title="Read Operations">
+        <span class="stat-label">Reads</span>
+        <span class="stat-value" id="read-count">0</span>
+      </div>
+      <div class="stat-card errors" title="Errors">
+        <span class="stat-label">Errors</span>
+        <span class="stat-value" id="err-count">0</span>
+      </div>
+      <div class="port-card" onclick="changePort()" title="Click to change port">
+        <span class="port-label">Port</span>
+        <span class="port-value" id="port-display">38451</span>
       </div>
     </div>
-    <div class="status-capsule">
-      <div class="radar-dot yellow" id="dot"></div>
-      <span id="status-text">Connecting...</span>
-      <span id="mode-badge" style="display:none">—</span>
-    </div>
-  </header>
 
-  <!-- Telemetry Strip -->
-  <section class="hud-strip">
-    <div class="metric-chip w" title="Write Operations">
-      <span>WRITES</span>
-      <span class="val" id="write-count">0</span>
-    </div>
-    <div class="metric-chip r" title="Read Operations">
-      <span>READS</span>
-      <span class="val" id="read-count">0</span>
-    </div>
-    <div class="metric-chip e" title="Errors">
-      <span>ERR</span>
-      <span class="val" id="err-count">0</span>
-    </div>
-    <div class="port-box">
-      <span>PORT</span>
-      <span class="port-link" id="port-display" onclick="changePort()" title="Change Port">38451</span>
-    </div>
-  </section>
+    <section class="terminal-wrap">
+      <div class="terminal-header">
+        <div class="terminal-title">
+          <div class="t-dot"></div>
+          Stream Console
+        </div>
+        <span class="event-badge" id="log-count">0 events</span>
+      </div>
+      <div class="terminal-body" id="log">
+        <div class="terminal-empty" id="log-empty">
+          <div class="terminal-empty-icon">◌</div>
+          <div class="terminal-empty-text">Waiting for events…</div>
+        </div>
+      </div>
+    </section>
 
-  <!-- Terminal Console -->
-  <section class="terminal-deck">
-    <div class="terminal-bar">
-      <span>STREAM CONSOLE</span>
-      <span id="log-count">0 events</span>
-    </div>
-    <div class="terminal-body" id="log"></div>
-  </section>
+    <footer class="footer">
+      <button class="btn btn-icon" onclick="clearLog()" title="Clear log">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+        </svg>
+      </button>
 
-  <!-- Action Deck -->
-  <footer class="action-deck">
-    <button class="btn" onclick="clearLog()">Clear</button>
-    <button class="btn primary" id="launch-btn" onclick="launchServer()" title="Auto-launch local Figma MCP server">
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-      </svg>
-      <span id="launch-btn-label">⚡ Launch Server</span>
-    </button>
-    <button class="btn" onclick="reconnect()" title="Reconnect">
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="23 4 23 10 17 10"></polyline>
-        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-      </svg>
-    </button>
-  </footer>
+      <button class="btn btn-primary" id="launch-btn" onclick="launchServer()" title="Start Figma MCP server">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+        <span id="launch-btn-label">Launch Server</span>
+      </button>
 
-  <!-- Corner Resize Grip -->
-  <div class="resize-grip" id="resize-grip" title="Drag to resize window">
-    <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-      <path d="M9 1L1 9M9 5L5 9M9 9L9 9"/>
+      <button class="btn btn-icon" onclick="reconnect()" title="Reconnect">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        </svg>
+      </button>
+    </footer>
+
+  </div>
+
+  <div class="resize-grip" id="resize-grip" title="Drag to resize">
+    <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <path d="M9 1L1 9M9 5L5 9"/>
     </svg>
   </div>
 
@@ -390,6 +407,7 @@
     var polling = true;
 
     var logEl         = document.getElementById("log");
+    var logEmptyEl    = document.getElementById("log-empty");
     var dotEl         = document.getElementById("dot");
     var statusEl      = document.getElementById("status-text");
     var modeEl        = document.getElementById("mode-badge");
@@ -397,6 +415,7 @@
     var sessionDispEl = document.getElementById("session-display");
     var launchBtn     = document.getElementById("launch-btn");
     var launchBtnLabel = document.getElementById("launch-btn-label");
+    var statusPill    = document.getElementById("status-pill");
 
     var READ_OPS = [
       "get_selection","get_design","get_page_nodes","screenshot",
@@ -405,20 +424,22 @@
     ];
 
     function setStatus(state, text, mode) {
-      dotEl.className = "radar-dot " + state;
+      dotEl.className = "dot " + state;
       statusEl.textContent = text;
       if (mode && modeEl) modeEl.textContent = mode;
 
+      statusPill.className = "status-pill";
+      if (state === "green") statusPill.classList.add("connected");
+      if (state === "red")   statusPill.classList.add("offline");
+
       if (launchBtn && launchBtnLabel) {
+        launchBtn.className = "btn";
         if (state === "green") {
-          launchBtnLabel.textContent = "Live";
-          launchBtn.classList.remove("primary");
-        } else if (state === "yellow") {
-          launchBtnLabel.textContent = "Connecting...";
-          launchBtn.classList.add("primary");
+          launchBtn.classList.add("btn-live");
+          launchBtnLabel.textContent = "● Live";
         } else {
-          launchBtnLabel.textContent = "⚡ Launch Server";
-          launchBtn.classList.add("primary");
+          launchBtn.classList.add("btn-primary");
+          launchBtnLabel.textContent = state === "yellow" ? "Connecting…" : "Launch Server";
         }
       }
     }
@@ -428,52 +449,92 @@
         log("Server is already running and connected!", "ok");
         return;
       }
-      log("⚡ Launching Figma MCP via OS protocol (figma-mcp://start)...", "info");
-      setStatus("yellow", "Launching...");
+      showSetupGuide();
+    }
 
-      // Invoke OS protocol scheme figma-mcp://start
-      var a = document.createElement("a");
-      a.href = "figma-mcp://start";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+    function showSetupGuide() {
+      var existing = document.getElementById("setup-overlay");
+      if (existing) { existing.remove(); return; }
 
-      // Fast-poll every 350ms to detect server coming up
+      var overlay = document.createElement("div");
+      overlay.id = "setup-overlay";
+      Object.assign(overlay.style, {
+        position: "fixed", inset: "0",
+        background: "rgba(9,9,15,0.96)",
+        backdropFilter: "blur(4px)",
+        zIndex: "999",
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center",
+        padding: "18px", gap: "10px",
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif"
+      });
+
+      overlay.innerHTML = [
+        '<div style="width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#4f46e5,#06b6d4);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(99,102,241,0.4),0 8px 24px rgba(79,70,229,0.4);margin-bottom:2px">',
+          '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+        '</div>',
+        '<div style="font-size:14px;font-weight:700;color:#f0f2f8;letter-spacing:-0.2px">Start Figma MCP Server</div>',
+        '<div style="font-size:10.5px;color:#8b95b0;text-align:center;max-width:230px;line-height:1.6">Run one of these commands in your terminal:</div>',
+
+        '<div style="width:100%;background:#0f1117;border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px">',
+          '<div style="font-size:8.5px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#4e5873">Option A · Run once</div>',
+          '<div style="font-family:\'SF Mono\',monospace;font-size:12px;font-weight:600;color:#38bdf8;user-select:text">npx figma-mcp</div>',
+        '</div>',
+
+        '<div style="width:100%;background:#0f1117;border:1px solid rgba(34,211,160,0.15);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px">',
+          '<div style="font-size:8.5px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#4e5873">Option B · Auto-start on login ✦ Recommended</div>',
+          '<div style="font-family:\'SF Mono\',monospace;font-size:12px;font-weight:600;color:#22d3a0;user-select:text">npx figma-mcp --install-service</div>',
+          '<div style="font-size:9px;color:#4e5873">Sets up LaunchAgent / systemd / Task Scheduler</div>',
+        '</div>',
+
+        '<div style="display:flex;align-items:center;gap:6px;font-size:9.5px;color:#4e5873">',
+          '<div style="width:5px;height:5px;border-radius:50%;background:#f59e0b;animation:blink 1.4s ease-in-out infinite"></div>',
+          'Plugin auto-connects once server is detected',
+        '</div>',
+
+        '<button onclick="document.getElementById(\'setup-overlay\').remove();reconnect();" style="',
+          'margin-top:4px;padding:7px 20px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);',
+          'background:rgba(255,255,255,0.05);color:#8b95b0;font-size:10.5px;font-weight:600;cursor:pointer;',
+          'font-family:inherit;letter-spacing:0.1px',
+        '">Dismiss & Retry</button>'
+      ].join("");
+
+      document.body.appendChild(overlay);
+
       var checks = 0;
       var checker = setInterval(function() {
         checks++;
-        fetch(BRIDGE + "/", { cache: "no-store" })
+        fetch(BRIDGE + "/health", { cache: "no-store", signal: AbortSignal.timeout(400) })
           .then(function(res) {
             if (res.ok) {
               clearInterval(checker);
-              log("✓ Figma MCP server is online! Connecting...", "ok");
+              var ov = document.getElementById("setup-overlay");
+              if (ov) ov.remove();
+              log("✓ Server detected — connecting…", "ok");
               reconnect();
             }
           })
           .catch(function() {
-            if (checks >= 25) {
-              clearInterval(checker);
-              log("💡 Tip: If server hasn't started, run 'npx figma-mcp' in terminal once to initialize protocol", "err");
-              setStatus("red", "Offline");
-            }
+            if (checks >= 60) clearInterval(checker);
           });
-      }, 350);
+      }, 500);
     }
 
     function log(msg, cls) {
       totalLogEvents++;
       if (logCountEl) logCountEl.textContent = totalLogEvents + " events";
 
+      if (logEmptyEl) logEmptyEl.style.display = "none";
+
       var line = document.createElement("div");
       line.className = "log-line";
 
       var ts = document.createElement("span");
-      ts.className = "log-time";
+      ts.className = "log-ts";
       ts.textContent = new Date().toLocaleTimeString("en", { hour12: false });
 
       var content = document.createElement("span");
-      if (cls) content.className = cls;
+      content.className = "log-msg" + (cls ? " " + cls : "");
       content.textContent = msg;
 
       line.appendChild(ts);
@@ -481,8 +542,11 @@
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
 
-      while (logEl.children.length > 80) {
-        logEl.removeChild(logEl.firstChild);
+      // Trim log buffer: remove oldest entries in one batch DOM op to avoid
+      // triggering O(N) reflows from individual removeChild calls.
+      if (logEl.children.length > 90) {
+        var keep = Array.from(logEl.children).slice(-70);
+        logEl.replaceChildren.apply(logEl, keep);
       }
     }
 
@@ -490,6 +554,12 @@
       logEl.innerHTML = "";
       totalLogEvents = 0;
       if (logCountEl) logCountEl.textContent = "0 events";
+      var empty = document.createElement("div");
+      empty.id = "log-empty";
+      empty.className = "terminal-empty";
+      empty.innerHTML = '<div class="terminal-empty-icon">◌</div><div class="terminal-empty-text">Waiting for events…</div>';
+      logEl.appendChild(empty);
+      logEmptyEl = empty;
     }
 
     function sleep(ms) {
@@ -522,24 +592,24 @@
         }
       } catch(e) {}
 
-      // 2. Quick auto-detect ports 38451-38455 if currentPort is not answering
-      for (var p = 38451; p <= 38455; p++) {
-        if (p === currentPort) continue;
-        try {
-          var resScan = await fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(200) });
-          if (resScan.ok) {
-            currentPort = p;
-            BRIDGE = "http://localhost:" + p;
-            var pDisp = document.getElementById("port-display");
-            if (pDisp) pDisp.textContent = p;
-            everConnected = true;
-            lastSuccessfulPollAt = Date.now();
-            setStatus("green", "Connected", "ready");
-            connectWs();
-            return;
-          }
-        } catch(eScan) {}
-      }
+      // 2. Parallel port scan 38451-38455 — all probes fire simultaneously,
+      //    winner resolves in ~200ms instead of up to 200ms × 4 sequentially.
+      var scanPorts = [38451, 38452, 38453, 38454, 38455].filter(function(p) { return p !== currentPort; });
+      try {
+        var winner = await Promise.any(scanPorts.map(function(p) {
+          return fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(300) })
+            .then(function(r) { if (!r.ok) throw new Error("not ok"); return p; });
+        }));
+        currentPort = winner;
+        BRIDGE = "http://localhost:" + winner;
+        var pDisp = document.getElementById("port-display");
+        if (pDisp) pDisp.textContent = winner;
+        everConnected = true;
+        lastSuccessfulPollAt = Date.now();
+        setStatus("green", "Connected", "ready");
+        connectWs();
+        return;
+      } catch(_) { /* no port found, fall through to WS attempt */ }
 
       // 3. Attempt WebSocket on currentPort
       connectWs();
@@ -573,7 +643,7 @@
         everConnected = true;
         lastSuccessfulPollAt = Date.now();
         setStatus("green", "Connected", "ready");
-        log("⚡ Connected to Figma MCP · " + currentPort, "ok");
+        log("⚡ Connected to Figma MCP · port " + currentPort, "ok");
 
         if (pingTimer) clearInterval(pingTimer);
         pingTimer = setInterval(function() {
@@ -603,7 +673,7 @@
 
       ws.onerror = function() {
         if (!everConnected) {
-          setStatus("yellow", "Connecting...");
+          setStatus("yellow", "Connecting…");
         }
       };
 
@@ -676,7 +746,7 @@
             if (consecutiveErrors <= 5) {
               setStatus("yellow", "Connecting (" + consecutiveErrors + ")");
             } else if (consecutiveErrors <= 10) {
-              setStatus("yellow", "Retrying...");
+              setStatus("yellow", "Retrying…");
             } else {
               setStatus("red", "Offline");
             }
@@ -734,7 +804,7 @@
       polling = false;
       isFirstPoll = true;
       consecutiveErrors = 0;
-      setStatus("yellow", "Reconnecting...");
+      setStatus("yellow", "Reconnecting…");
       if (ws) {
         try { ws.close(); } catch(e) {}
         ws = null;
@@ -786,8 +856,8 @@
     }
 
     async function autoDetectPort() {
-      setStatus("yellow", "Scanning...");
-      log("Scanning 38451-38460...", "info");
+      setStatus("yellow", "Scanning…");
+      log("Scanning 38451-38460…", "info");
       for (var p = 38451; p <= 38460; p++) {
         try {
           var res = await fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(400) });

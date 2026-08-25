@@ -52,6 +52,22 @@ pub struct ExecResult {
     pub logs: Vec<String>,
 }
 
+use std::sync::OnceLock;
+
+// Shared HTTP client — reused across all execute_code calls so connection
+// pooling is preserved and TLS handshakes are not repeated per call.
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(4)
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to build reqwest client")
+    })
+}
+
 pub async fn execute_code(
     code: &str,
     bridge: BridgeHandle,
@@ -66,7 +82,7 @@ pub async fn execute_code(
     // Spawn async handler for host requests
     let bridge_clone = bridge.clone();
     let sid_clone = session_id.clone();
-    let http_client = reqwest::Client::new();
+    let http_client = http_client();
 
     let host_handler = tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
