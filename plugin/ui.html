@@ -590,6 +590,10 @@
           var req = JSON.parse(event.data);
           if (req && req.operation) {
             log("→ " + req.operation, READ_OPS.indexOf(req.operation) >= 0 ? "info" : "ok");
+            // Acknowledge before dispatching: the server re-queues anything it
+            // pushed into a socket that died before an ack, and must not
+            // re-queue an op the plugin is already running.
+            try { ws.send(JSON.stringify({ type: "ack", id: req.id })); } catch(e) {}
             dispatchToMain(req);
           }
         } catch (e) {
@@ -618,6 +622,7 @@
 
       try {
         while (polling && !wsConnected) {
+          var receivedThisRound = 0;
           try {
             var pollUrl = BRIDGE + "/poll";
             var qs = [];
@@ -652,6 +657,7 @@
 
             var body = await res.json();
             var reqs = body.requests || [];
+            receivedThisRound = reqs.length;
             setStatus("green", reqs.length ? reqs.length + " cmd" : "Connected", body.mode || "ready");
 
             consecutiveErrors = 0;
@@ -677,22 +683,33 @@
             await sleep(backoff);
             continue;
           }
-          await sleep(POLL_MS);
+          // Re-poll immediately after a round that carried work: the next op in
+          // a read chain is usually already queued, and sleeping here added
+          // POLL_MS of dead time to every single round-trip.
+          if (!receivedThisRound) await sleep(POLL_MS);
         }
       } finally {
         isLongPolling = false;
       }
     }
 
-    async function sendResponse(id, success, data, error) {
+    // dataJson is already-serialized JSON produced by the main thread, so it is
+    // spliced into the body as-is — a multi-MB design tree is never re-encoded
+    // here. Older builds of code.js send a plain `data` object instead.
+    function buildResponseBody(id, success, dataJson, error) {
+      return '{"id":' + JSON.stringify(id) +
+        ',"success":' + (success ? "true" : "false") +
+        ',"data":' + (dataJson === undefined || dataJson === null ? "null" : dataJson) +
+        ',"error":' + (error === undefined || error === null ? "null" : JSON.stringify(String(error))) +
+        '}';
+    }
+
+    async function sendResponse(id, success, dataJson, error) {
+      var body = buildResponseBody(id, success, dataJson, error);
+
       if (ws && ws.readyState === WebSocket.OPEN) {
         try {
-          ws.send(JSON.stringify({
-            id: id,
-            success: success,
-            data: data !== undefined ? data : null,
-            error: error !== undefined ? error : null
-          }));
+          ws.send(body);
           return;
         } catch(e) {}
       }
@@ -702,12 +719,7 @@
         await fetch(BRIDGE + "/response", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: id,
-            success: success,
-            data: data !== undefined ? data : null,
-            error: error !== undefined ? error : null
-          })
+          body: body
         });
       } catch (e) {
         log("Response failed: " + e.message, "err");
@@ -838,7 +850,10 @@
         document.getElementById("err-count").textContent = errCount;
         log("✗ " + (msg.id ? msg.id.slice(-6) : "err") + ": " + (msg.error || "fail"), "err");
       }
-      await sendResponse(msg.id, msg.success, msg.data, msg.error);
+      var payloadJson = msg.dataJson !== undefined
+        ? msg.dataJson
+        : (msg.data !== undefined ? JSON.stringify(msg.data) : null);
+      await sendResponse(msg.id, msg.success, payloadJson, msg.error);
     };
 
     initConnection();

@@ -45,6 +45,18 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                         "enum": ["minimal", "compact", "full"],
                         "description": "Detail level: 'compact' (recommended default), 'full', 'minimal'."
                     },
+                    "maxNodes": {
+                        "type": "number",
+                        "description": "Node budget (default 3000). Subtrees past it are summarized and meta.nodesTruncated is set."
+                    },
+                    "absolute": {
+                        "type": "boolean",
+                        "description": "Force absoluteBoundingBox on every node (emitted automatically inside groups / under rotation)."
+                    },
+                    "includeHidden": {
+                        "type": "boolean",
+                        "description": "Include invisible nodes (visible:false). Default false."
+                    },
                     "sessionId": {
                         "type": "string",
                         "description": "Target a specific Figma file/tab."
@@ -124,7 +136,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                             "get_node_detail", "get_css", "get_design_context", "get_component_map",
                             "get_unmapped_components", "export_image", "search_nodes", "scan_design"
                         ],
-                        "description": "── Design-to-code (use these for code generation) ──\nget_design_context: AI-optimized payload for a node — flex layout, token-resolved colors, typography with style names, component instances with variant properties. Best single call for design→React/Vue/Swift code.\nget_css: ready-to-use CSS string for a single node — background, flex, border, radius, shadow, typography, opacity, transform.\nget_component_map: list every component instance in a frame with componentSetName, variantLabel, properties, and suggestedImport path. Use to scaffold import statements.\nget_unmapped_components: find component instances that have no description in Figma (likely no code mapping yet). Prompts AI to ask user for correct import paths.\n── Inspect ──\nget_node_detail: structured properties for a single node — fills, bound variables (resolved to name+value), style refs (resolved to name+hex), instance overrides (full field list), componentSetName/variantLabel.\nget_selection: full design tree of selected node(s) + design tokens summary.\nget_design: full node tree for a frame/page (depth param: number or 'full').\nget_page_nodes: top-level frames on the current page.\n── Styles & tokens ──\nget_styles: all local paint, text, effect, grid styles.\nget_variables: all local Design Token variables — collections, modes, resolved values.\nget_local_components: component listing with descriptions + variant property definitions.\n── Export ──\nscreenshot: PNG of a node — displays inline in Claude Code.\nexport_svg: SVG markup string.\nexport_image: base64 PNG/JPG for saving to disk (scale param for resolution).\n── Search ──\nsearch_nodes: filter by type, namePattern (wildcard *), fill color, fontFamily, fontSize, hasImage, hasIcon.\nscan_design: structured summary of large frames — all text, colors, fonts, images, icons, sections.\n── Viewport ──\nget_viewport: current viewport center, zoom, bounds."
+                        "description": "── Design-to-code (use these for code generation) ──\nget_design_context: AI-optimized payload for a node — flex layout, token-resolved colors, typography with style names, component instances with variant properties. Best single call for design→React/Vue/Swift code.\nget_css: ready-to-use CSS string for a single node — background, flex, border, radius, shadow, typography, opacity, transform.\nget_component_map: list every component instance in a frame with componentSetName, variantLabel, properties, and suggestedImport path. Use to scaffold import statements.\nget_unmapped_components: find component instances that have no description in Figma (likely no code mapping yet). Prompts AI to ask user for correct import paths.\n── Inspect ──\nget_node_detail: structured properties for a single node — fills, bound variables (resolved to name+value), style refs (resolved to name+hex), instance overrides (full field list), componentSetName/variantLabel.\nget_selection: full design tree of selected node(s) + design tokens summary.\nget_design: full node tree for a frame/page (depth param: number or 'full'). Multi-style TEXT reports real per-run values plus `segments`; nodes inside groups or under rotation also carry `absoluteBoundingBox`; capped subtrees carry `childrenTruncated` and meta.nodesTruncated.\nget_page_nodes: top-level frames on the current page.\n── Styles & tokens ──\nget_styles: all local paint, text, effect, grid styles.\nget_variables: all local Design Token variables — collections, modes, resolved values.\nget_local_components: component listing with descriptions + variant property definitions.\n── Export ──\nscreenshot: PNG of a node — displays inline in Claude Code.\nexport_svg: SVG markup string.\nexport_image: base64 PNG/JPG for saving to disk (scale param for resolution).\n── Search ──\nsearch_nodes: filter by type, namePattern (wildcard *), fill color, fontFamily, fontSize, hasImage, hasIcon.\nscan_design: structured summary of large frames — all text, colors, fonts, images, icons, sections. Every capped list is paired with real counts in `totals` and flags in `truncated`.\n── Viewport ──\nget_viewport: current viewport center, zoom, bounds."
                     },
                     "nodeId": { "type": "string", "description": "Target node ID (optional — omit to use current selection)." },
                     "nodeName": { "type": "string", "description": "Target node name (alternative to nodeId)." },
@@ -134,6 +146,10 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "detail": { "type": "string", "description": "Detail level for get_design/get_selection: 'minimal' (~5% tokens), 'compact' (~30%), 'full' (default, 100%). Use minimal for large files." },
                     "outputPath": { "type": "string", "description": "Optional file path to save exported SVG/image directly to disk (for export_svg, export_image, or screenshot)." },
                     "includeHidden": { "type": "boolean", "description": "Include invisible nodes (visible:false) in results. Default false — hidden layers are skipped to reduce noise." },
+                    "maxNodes": { "type": "number", "description": "Node budget for get_design/get_selection (default 3000) and scan_design (default 50000). Subtrees past it are summarized and meta.nodesTruncated is set — raise it for one big frame, lower it to keep the payload small." },
+                    "absolute": { "type": "boolean", "description": "Force absoluteBoundingBox on every node in get_design/get_selection. Off by default: it is emitted only where parent-relative x/y is insufficient (inside a GROUP, or under rotation)." },
+                    "inlineIcons": { "type": "boolean", "description": "Inline SVG markup for icon nodes in get_design (detail 'full', first 10 icons). Off by default — exporting SVG for many icons is slow." },
+                    "keepViewport": { "type": "boolean", "description": "For screenshot/export_image: default true restores the user's canvas position after the render nudge. Pass false to leave the canvas on the exported node." },
                     "sessionId": { "type": "string", "description": "Target a specific Figma file/tab when multiple are connected. Omit to auto-select." }
                 },
                 "required": ["operation"]

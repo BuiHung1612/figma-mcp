@@ -1,5 +1,71 @@
 # Changelog
 
+## [2.6.0] — 2026-08-26
+
+### Fixed — read-path accuracy: figma.mixed and mainComponent
+
+**READ-MIXED-01 (CRITICAL): every multi-style TEXT node lost its typography** (`plugin-src/read-helpers.js`, `plugin-src/utils.js`, `plugin-src/handlers-read.js`, `plugin-src/handlers-read-detail.js`)
+- Per-segment properties (`fontSize`, `fontName`, `fills`, `letterSpacing`, `lineHeight`, `textDecoration`) return `figma.mixed` — a Symbol — on text with more than one style, and reading them does **not** throw. So `if (node.fontSize)` passed the Symbol straight through and the payload carried `"fontSize": "mixed"`, while `node.fontName.family` silently resolved to `undefined`.
+- Because nothing threw, the `catch` branch holding `getStyledTextSegments` was dead code: `segments` / `mixedStyles` never appeared in any response. `getFillHex` also returned `null` for mixed fills, dropping the text colour.
+- **Fix:** new `resolveTextStyle()` tests for the Symbol explicitly and reads the real per-run values via `getStyledTextSegments`, exposing `segments` (detail `full`) plus first-segment representative values for the flat fields. `getFillHex` recovers a mixed fill from the first styled segment; `strokeWeight` mixed across sides now expands to `{ top, right, bottom, left }`. Applies to `get_design`, `get_selection`, `scan_design`, `get_node_detail`, `get_css`, `get_design_context`.
+
+**READ-COMP-01 (CRITICAL): component references silently missing under dynamic-page** (`plugin-src/read-helpers.js`, `plugin-src/handlers-read.js`, `plugin-src/handlers-read-detail.js`)
+- With `documentAccess: "dynamic-page"` (set in `plugin/manifest.json`), reading `instance.mainComponent` synchronously throws. Every read path did exactly that inside an empty `catch`, so `componentName`, `componentId`, `componentSetName` and `variantLabel` were dropped from `get_design`, `get_selection`, `scan_design`, `get_node_detail`, `get_design_context` and `get_component_map` — the most useful fields for design→code.
+- **Fix:** `getMainComponentSafe` moved to `utils.js` and shared with the read handlers. The synchronous tree walkers now collect instances and `resolveInstanceComponents()` resolves them in batches of 50 (capped at 400, reported via `meta.instancesTruncated`) after the walk. `get_component_map` computes `suggestedImport` after resolution — it previously always came out `null`. `get_unmapped_components` also matches a variant's description against its component set name (`get_local_components` now returns `setName`), which is the key `get_component_map` reports.
+
+### Fixed — read-path accuracy: geometry, counts, truncation
+
+**READ-GEOM-01: parent-relative x/y can't place a node inside a group or under rotation** (`plugin-src/read-helpers.js`)
+- `x`/`y` are relative to the parent and `width`/`height` ignore rotation, so any node under a GROUP (which has no coordinate system of its own) or under a rotated ancestor could not be positioned from the payload.
+- **Fix:** `absoluteBoundingBox` is emitted exactly where the relative box is insufficient — node or parent rotated, or parent is a GROUP / BOOLEAN_OPERATION — so the common case pays no extra tokens. `absolute: true` forces it everywhere.
+
+**READ-SCAN-01: `scan_design` section `iconCount` / `imageCount` were always 0** (`plugin-src/handlers-read.js`)
+- The counts compared `summary.icons[i].id` against the section id and against a `parentId` field the collected objects never had, so nothing ever matched. `sectionIconIds` / `sectionImageIds` were built and then unused.
+- **Fix:** sections are created before the walk and the walk attributes each icon / image / text to the top-level child it lives under, at any depth. Section text previews come from the same pass instead of a second `collectTextContent` walk over every subtree.
+
+**READ-TRUNC-01: capped lists were indistinguishable from complete ones** (`plugin-src/handlers-read.js`, `plugin-src/read-helpers.js`)
+- `scan_design` capped `allText` at 500, images/icons/components at 50 and colors/fonts at 30; `get_design` inlined at most 10 icons; depth-limited subtrees previewed 15 texts / 10 icon names. None of it was flagged, so a caller could not tell "that is all of it" from "that is the first N".
+- **Fix:** `scan_design` returns `totals` (real counts) plus a `truncated` map; `get_design` reports `inlineIconsTruncated` / `iconsFound`; summarized subtrees carry `childrenTruncated` (`"maxDepth"` or `"nodeBudget"`) and `textContentTruncated` / `iconNamesTruncated`.
+
+**READ-PARAM-01: handler options never reached the plugin** (`src/mcp/server.rs`, `src/mcp/tools.rs`)
+- `figma_read` copied a hand-maintained whitelist of arguments into the op params, so anything outside it was silently dropped — including the existing `inlineIcons` option, which meant inline SVG extraction could not be switched on through MCP at all.
+- **Fix:** all arguments are forwarded (`nodeId`/`nodeName` renamed to `id`/`name`, protocol keys excluded); handlers ignore what they don't use. `maxNodes`, `absolute`, `inlineIcons` and `keepViewport` are documented in the tool schema.
+
+### Performance
+
+**READ-PERF-04: no node budget — one wide frame could produce tens of MB** (`plugin-src/read-helpers.js`, `plugin-src/handlers-read.js`)
+- `maxDepth` bounded depth but not breadth, so a large frame could serialize tens of thousands of nodes, hit the 60s bridge op timeout and swamp the model's context. `scan_design` walked the whole tree unbounded.
+- **Fix:** a node budget (default 3000 for the tree walkers, 50000 for `scan_design`, override with `maxNodes`) summarizes subtrees past it exactly like the depth limit and reports `meta.nodeCount` / `meta.nodesTruncated`.
+
+**READ-PERF-05: base64 and UTF-8 built one character at a time** (`plugin-src/handlers-read.js`)
+- `uint8ArrayToBase64` and `uint8ArrayToString` appended to a single string per byte, so a @2x PNG or a large SVG export froze the plugin for seconds.
+- **Fix:** use `figma.base64Encode` when the runtime has it; otherwise encode into 12 KB chunks and join. UTF-8 decoding batches 8192 code units per `String.fromCharCode` call. Verified byte-identical to `Buffer.from(...).toString("base64")` across chunk boundaries.
+
+**READ-PERF-06: screenshot/export moved the user's canvas** (`plugin-src/handlers-read.js`)
+- The `scrollAndZoomIntoView` render nudge left the viewport parked on the exported node — a visible side effect of a read operation.
+- **Fix:** the previous center/zoom is restored after the export (including on failure). `keepViewport: false` opts out.
+
+**READ-PERF-07: ops pushed into a dead WebSocket waited for the timeout** (`src/bridge/server.rs`, `src/bridge/session.rs`, `plugin/ui.html`)
+- `ws_tx.send()` only proves the channel is alive, not the socket, so an op dispatched into a half-open WebSocket was never queued and the caller blocked for the full 60–90s op timeout.
+- **Fix:** the plugin acks each op it receives over the WebSocket; on socket teardown the server re-queues every unacknowledged op (falling back to a fast error when the queue is full) and leaves acknowledged ones alone, since those are already running in the plugin and still answer over the HTTP fallback.
+
+**READ-PERF-08: `get_variables` awaited one round-trip per token** (`plugin-src/handlers-read-detail.js`)
+- Each variable was fetched with its own `getVariableByIdAsync`, so a design system with several hundred tokens paid that many sequential calls.
+- **Fix:** one `getLocalVariablesAsync()` bulk fetch indexed by id, with the per-id path kept as a fallback. Dead `extractTokens()` in `read-helpers.js` removed — `tokenCollector` replaced it.
+
+
+**READ-PERF-01: design payload was serialized four times** (`plugin-src/main.js`, `plugin/ui.html`)
+- `sanitizeForPostMessage` did `JSON.parse(JSON.stringify(tree))`, then `postMessage` structured-cloned the result, then the UI stringified it again for the HTTP/WS body — three encodes and a parse of the same multi-MB tree, at roughly 3× peak memory.
+- **Fix:** the main thread serializes once (`stringifyForBridge`, Symbols → `"mixed"`) and ships the JSON string as `dataJson`; the UI splices that string straight into the response body via `buildResponseBody`. Falls back to `msg.data` for older bundles.
+
+**READ-PERF-02: MCP responses were pretty-printed** (`src/mcp/server.rs`)
+- Every read result went out through `serde_json::to_string_pretty`, so indentation grew with tree depth — ~68% more characters on a 5-level tree, all of it tokens the model pays for.
+- **Fix:** compact `serde_json::to_string`.
+
+**READ-PERF-03: long-poll slept after productive rounds** (`plugin/ui.html`)
+- `await sleep(POLL_MS)` ran at the end of every loop iteration, including one that just delivered work, adding 300 ms to each round-trip of a read chain when the WebSocket is unavailable.
+- **Fix:** only idle-sleep when the round returned no requests.
+
 ## [2.5.26] — 2026-05-25
 
 ### Fixed — 10 bugs from field report (Clean Master Plus project)

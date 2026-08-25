@@ -126,22 +126,27 @@ handlers.get_node_detail = async function(params) {
     }
   } catch(e) {}
 
-  // Text properties
+  // Text properties — resolveTextStyle unwraps figma.mixed on multi-style text
   if (node.type === "TEXT") {
-    try {
-      detail.content = node.characters;
-      detail.color = getFillHex(node);
-      detail.fontSize = node.fontSize + "px";
-      detail.fontFamily = node.fontName ? node.fontName.family : null;
-      detail.fontWeight = node.fontName ? node.fontName.style : null;
-      if (node.lineHeight) {
-        if (node.lineHeight.unit === "AUTO") detail.lineHeight = "normal";
-        else if (node.lineHeight.unit === "PERCENT") detail.lineHeight = Math.round(node.lineHeight.value) + "%";
-        else detail.lineHeight = node.lineHeight.value + "px";
+    var textStyle = resolveTextStyle(node);
+    if (textStyle) {
+      detail.content = textStyle.content;
+      detail.color = textStyle.fill || null;
+      detail.fontSize = textStyle.fontSize !== undefined ? textStyle.fontSize + "px" : null;
+      detail.fontFamily = textStyle.fontFamily || null;
+      detail.fontWeight = textStyle.fontWeight || null;
+      if (textStyle.lineHeight !== undefined) {
+        detail.lineHeight = typeof textStyle.lineHeight === "number" ? textStyle.lineHeight + "px" : textStyle.lineHeight;
+      } else if (!isMixed(node.lineHeight) && node.lineHeight && node.lineHeight.unit === "AUTO") {
+        detail.lineHeight = "normal";
       }
-      if (node.letterSpacing && node.letterSpacing.value !== 0) detail.letterSpacing = node.letterSpacing.value + "px";
-      detail.textAlign = node.textAlignHorizontal ? node.textAlignHorizontal.toLowerCase() : null;
-    } catch(e) { try { detail.content = node.characters; } catch(e2) {} }
+      if (textStyle.letterSpacing !== undefined) detail.letterSpacing = textStyle.letterSpacing + "px";
+      if (textStyle.mixed) {
+        detail.mixedStyles = true;
+        if (textStyle.segments) detail.segments = textStyle.segments;
+      }
+    }
+    try { detail.textAlign = node.textAlignHorizontal ? node.textAlignHorizontal.toLowerCase() : null; } catch(e) {}
   }
 
   // P1: Resolve bound variables → name + resolvedType + value (not just IDs)
@@ -209,21 +214,10 @@ handlers.get_node_detail = async function(params) {
 
   // Instance: source component reference + property values + overrides + P5 variantLabel
   if (node.type === "INSTANCE") {
-    try {
-      var instComp = node.mainComponent;
-      if (instComp) {
-        detail.componentId = instComp.id;
-        detail.componentName = instComp.name;
-        // P5: componentSetName + variantLabel — split "Button/State=Primary, Size=Large"
-        if (instComp.parent && instComp.parent.type === "COMPONENT_SET") {
-          detail.componentSetName = instComp.parent.name;
-          // variantLabel = part of component name after the set name
-          var setName = instComp.parent.name;
-          var compName = instComp.name;
-          detail.variantLabel = compName.indexOf(setName) === 0 ? compName.slice(setName.length).replace(/^[,\s/]+/, "") : compName;
-        }
-      }
-    } catch(e) {}
+    // mainComponent is async-only under documentAccess: dynamic-page.
+    // describeMainComponent yields componentId/componentName/componentSetName/variantLabel.
+    var instComp = await getMainComponentSafe(node);
+    if (instComp) Object.assign(detail, describeMainComponent(instComp));
     // P3: Full override list instead of just count
     try {
       if (node.overrides && node.overrides.length) {
@@ -401,6 +395,8 @@ handlers.get_design_context = async function(params) {
     } catch(e) { return null; }
   }
 
+  var ctxInstances = [];
+
   // Resolve a single node to its code-ready context shape
   function nodeContext(nd, depth) {
     if (!nd || nd.visible === false) return null;
@@ -455,38 +451,38 @@ handlers.get_design_context = async function(params) {
       }
     } catch(e) {}
 
-    // Text
+    // Text — resolveTextStyle unwraps figma.mixed on multi-style text
     if (nd.type === "TEXT") {
-      try {
-        ctx.text = { content: nd.characters };
+      var ndText = resolveTextStyle(nd);
+      if (ndText) {
+        ctx.text = { content: ndText.content };
         if (nd.textStyleId && styleNameMap[nd.textStyleId]) ctx.text.style = styleNameMap[nd.textStyleId];
-        ctx.text.fontSize = nd.fontSize;
-        ctx.text.fontFamily = nd.fontName ? nd.fontName.family : null;
-        ctx.text.fontWeight = nd.fontName ? nd.fontName.style : null;
-        if (nd.lineHeight && nd.lineHeight.unit !== "AUTO") ctx.text.lineHeight = nd.lineHeight.value + (nd.lineHeight.unit === "PERCENT" ? "%" : "px");
-        ctx.text.color = resolveFill(nd);
-        ctx.text.align = nd.textAlignHorizontal ? nd.textAlignHorizontal.toLowerCase() : null;
-      } catch(e) {}
+        if (ndText.fontSize !== undefined) ctx.text.fontSize = ndText.fontSize;
+        ctx.text.fontFamily = ndText.fontFamily || null;
+        ctx.text.fontWeight = ndText.fontWeight || null;
+        if (ndText.lineHeight !== undefined) {
+          ctx.text.lineHeight = typeof ndText.lineHeight === "number" ? ndText.lineHeight + "px" : ndText.lineHeight;
+        }
+        // Token-resolved colour wins over the raw hex from the segments.
+        ctx.text.color = resolveFill(nd) || ndText.fill || null;
+        if (ndText.mixed) {
+          ctx.text.mixedStyles = true;
+          if (ndText.segments) ctx.text.segments = ndText.segments;
+        }
+        try { ctx.text.align = nd.textAlignHorizontal ? nd.textAlignHorizontal.toLowerCase() : null; } catch(e) {}
+      }
     }
 
-    // Component instance
+    // Component instance — mainComponent is async-only under
+    // documentAccess: dynamic-page, so collect now and resolve after the walk.
     if (nd.type === "INSTANCE") {
+      ctxInstances.push({ info: ctx, node: nd });
       try {
-        var mc = nd.mainComponent;
-        if (mc) {
-          ctx.component = { name: mc.name };
-          if (mc.parent && mc.parent.type === "COMPONENT_SET") {
-            ctx.component.set = mc.parent.name;
-            ctx.component.variant = mc.name.indexOf(mc.parent.name) === 0
-              ? mc.name.slice(mc.parent.name.length).replace(/^[,\s/]+/, "")
-              : mc.name;
-          }
-          if (nd.componentProperties) {
-            var props = {};
-            var pks = Object.keys(nd.componentProperties);
-            for (var pi = 0; pi < pks.length; pi++) props[pks[pi]] = nd.componentProperties[pks[pi]].value;
-            ctx.component.properties = props;
-          }
+        if (nd.componentProperties) {
+          var props = {};
+          var pks = Object.keys(nd.componentProperties);
+          for (var pi = 0; pi < pks.length; pi++) props[pks[pi]] = nd.componentProperties[pks[pi]].value;
+          if (pks.length) ctx.component = { properties: props };
         }
       } catch(e) {}
     }
@@ -506,6 +502,14 @@ handlers.get_design_context = async function(params) {
   }
 
   var context = nodeContext(node, 0);
+  // { name, set, variant } shape — kept distinct from the tree walkers' fields.
+  await resolveInstanceComponents(ctxInstances, function(target, desc) {
+    var comp = target.component || {};
+    comp.name = desc.componentName;
+    if (desc.componentSetName) comp.set = desc.componentSetName;
+    if (desc.variantLabel) comp.variant = desc.variantLabel;
+    target.component = comp;
+  });
 
   // Summary tokens used in this subtree (for code scaffolding)
   // Use plain objects instead of Set — Figma sandbox ES5 compatibility
@@ -514,7 +518,9 @@ handlers.get_design_context = async function(params) {
     if (!nd) return;
     if (nd.fill && nd.fill.indexOf("var(--") === 0) usedColors[nd.fill] = 1;
     if (nd.text && nd.text.style) usedTextStyles[nd.text.style] = 1;
-    if (nd.component) usedComponents[nd.component.set || nd.component.name] = 1;
+    if (nd.component && (nd.component.set || nd.component.name)) {
+      usedComponents[nd.component.set || nd.component.name] = 1;
+    }
     if (nd.children) {
       for (var cui = 0; cui < nd.children.length; cui++) collectUsed(nd.children[cui]);
     }
@@ -550,23 +556,12 @@ handlers.get_component_map = async function(params) {
 
   // Find all INSTANCE nodes in subtree
   var instances = [];
+  var mapInstances = [];
   function walkInstances(nd) {
     if (!nd) return;
     if (nd.type === "INSTANCE") {
       var entry = { id: nd.id, name: nd.name, x: Math.round(nd.x), y: Math.round(nd.y), width: Math.round(nd.width), height: Math.round(nd.height) };
-      try {
-        var mc = nd.mainComponent;
-        if (mc) {
-          entry.componentName = mc.name;
-          entry.componentKey = mc.key || null;
-          if (mc.parent && mc.parent.type === "COMPONENT_SET") {
-            entry.componentSetName = mc.parent.name;
-            entry.variantLabel = mc.name.indexOf(mc.parent.name) === 0
-              ? mc.name.slice(mc.parent.name.length).replace(/^[,\s/]+/, "")
-              : mc.name;
-          }
-        }
-      } catch(e) {}
+      mapInstances.push({ info: entry, node: nd });
       try {
         if (nd.componentProperties) {
           var props = {};
@@ -575,15 +570,20 @@ handlers.get_component_map = async function(params) {
           if (Object.keys(props).length > 0) entry.properties = props;
         }
       } catch(e) {}
-      // Suggested import path based on component name convention
-      var cname = entry.componentSetName || entry.componentName || "";
-      var cnameLast = cname ? cname.split("/").slice(-1)[0].replace(/[^a-zA-Z0-9]/g, "") : "";
-      entry.suggestedImport = cname ? "import { " + cnameLast + " } from '@/components/" + cnameLast + "'" : null;
       instances.push(entry);
     }
     if (nd.children) nd.children.forEach(walkInstances);
   }
   walkInstances(node);
+  var mapInfo = await resolveInstanceComponents(mapInstances);
+
+  // Suggested import path based on component name convention — computed after
+  // the async component resolution, otherwise there is no name to derive from.
+  instances.forEach(function(entry) {
+    var cname = entry.componentSetName || entry.componentName || "";
+    var cnameLast = cname ? cname.split("/").slice(-1)[0].replace(/[^a-zA-Z0-9]/g, "") : "";
+    entry.suggestedImport = cname ? "import { " + cnameLast + " } from '@/components/" + cnameLast + "'" : null;
+  });
 
   // Deduplicate by componentName for summary
   var uniqueComponents = {};
@@ -597,6 +597,8 @@ handlers.get_component_map = async function(params) {
     frameId: node.id,
     frameName: node.name,
     totalInstances: instances.length,
+    resolvedInstances: mapInfo.resolved,
+    instancesTruncated: mapInfo.truncated || undefined,
     instances: instances,
     uniqueComponents: Object.values(uniqueComponents),
     hint: "suggestedImport is a best-guess based on component name. Adjust the import path to match your actual codebase structure.",
@@ -611,7 +613,12 @@ handlers.get_unmapped_components = async function(params) {
 
   // Build set of components that have descriptions (likely mapped)
   var described = new Set();
-  allLocalComps.components.forEach(function(c) { if (c.description && c.description.trim()) described.add(c.name); });
+  allLocalComps.components.forEach(function(c) {
+    if (!c.description || !c.description.trim()) return;
+    described.add(c.name);
+    // get_component_map keys variants by their set name — map that too.
+    if (c.setName) described.add(c.setName);
+  });
   allLocalComps.componentSets.forEach(function(s) { if (s.description && s.description.trim()) described.add(s.name); });
 
   // Filter to only unique components that are used in frame but have no description
@@ -676,6 +683,7 @@ handlers.get_local_components = async function() {
       var info = {
         id: c.id, name: c.name, key: c.key || null,
         description: c.description || "",
+        setName: (c.parent && c.parent.type === "COMPONENT_SET") ? c.parent.name : null,
         width: Math.round(c.width), height: Math.round(c.height),
         page: c.parent ? (function findPage(n) {
           while (n && n.type !== "PAGE") n = n.parent;
@@ -748,11 +756,27 @@ handlers.get_variables = async function() {
   var collections = [];
   try {
     var localCollections = await figma.variables.getLocalVariableCollectionsAsync();
+
+    // One bulk fetch instead of an await per variable id — a design system with
+    // a few hundred tokens otherwise pays that many sequential round-trips.
+    var varsById = {};
+    var bulkLoaded = false;
+    try {
+      if (typeof figma.variables.getLocalVariablesAsync === "function") {
+        var allVars = await figma.variables.getLocalVariablesAsync();
+        for (var avi = 0; avi < allVars.length; avi++) {
+          if (allVars[avi]) varsById[allVars[avi].id] = allVars[avi];
+        }
+        bulkLoaded = true;
+      }
+    } catch(e) { /* fall back to per-id lookups */ }
+
     for (var ci = 0; ci < localCollections.length; ci++) {
       var col = localCollections[ci];
       var variables = [];
       for (var vi = 0; vi < col.variableIds.length; vi++) {
-        var v = await figma.variables.getVariableByIdAsync(col.variableIds[vi]);
+        var vid = col.variableIds[vi];
+        var v = bulkLoaded ? varsById[vid] : await figma.variables.getVariableByIdAsync(vid);
         if (!v) continue;
         var values = {};
         for (var modeId in v.valuesByMode) {

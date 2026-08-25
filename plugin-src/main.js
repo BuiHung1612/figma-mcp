@@ -41,21 +41,24 @@ figma.on("selectionchange", function() {
 
 // ─── DISPATCHER ───────────────────────────────────────────────────────────────
 
-// Sanitize data before postMessage — remove Symbol values (e.g. figma.mixed)
-// that cannot be serialized via structured clone / JSON.
-// Uses fast native JSON serialization with replacer instead of slow recursive JS allocations.
-function sanitizeForPostMessage(obj) {
-  if (obj === null || obj === undefined) return obj;
-  var t = typeof obj;
-  if (t === "string" || t === "number" || t === "boolean") return obj;
-  if (t === "symbol") return "mixed";
+// Serialize the handler result ONCE, here in the main thread, and ship the
+// JSON string to the UI. The UI forwards that string straight into the HTTP /
+// WebSocket body, so a big design tree is stringified a single time instead of
+// stringify → parse (sanitize) → structured clone → stringify (transport).
+// Symbol values (figma.mixed) can't be cloned or serialized — replace them.
+function bridgeReplacer(_key, value) {
+  return typeof value === "symbol" ? "mixed" : value;
+}
+
+function stringifyForBridge(data) {
+  if (data === undefined) return "null";
   try {
-    return JSON.parse(JSON.stringify(obj, function(_k, v) {
-      if (typeof v === "symbol") return "mixed";
-      return v;
-    }));
-  } catch(e) {
-    return obj;
+    var json = JSON.stringify(data, bridgeReplacer);
+    return json === undefined ? "null" : json;
+  } catch (e) {
+    return JSON.stringify({
+      error: "Result could not be serialized: " + (e && e.message ? e.message : String(e)),
+    });
   }
 }
 
@@ -86,7 +89,7 @@ figma.ui.onmessage = async (request) => {
 
   try {
     var data = await handler(params || {});
-    figma.ui.postMessage({ id: id, operation: operation, success: true, data: sanitizeForPostMessage(data) });
+    figma.ui.postMessage({ id: id, operation: operation, success: true, dataJson: stringifyForBridge(data) });
   } catch (err) {
     var errMsg = "[dispatch:" + operation + "] " + (err && err.message ? err.message : String(err));
     figma.ui.postMessage({ id: id, operation: operation, success: false, error: errMsg });

@@ -37,6 +37,13 @@ pub struct SessionStats {
 pub struct PendingOp {
     pub sender: oneshot::Sender<Result<Value, String>>,
     pub start_ms: u64,
+    /// The dispatched op, kept so it can be re-queued if the transport dies
+    /// before the plugin ever acknowledged it.
+    pub op: QueuedOp,
+    /// Set once the plugin confirms it received the op over the WebSocket. An
+    /// acknowledged op is already running in the plugin, so it must never be
+    /// re-queued — that would run a write twice.
+    pub acked: bool,
 }
 
 pub struct Session {

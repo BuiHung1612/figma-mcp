@@ -175,21 +175,31 @@ impl BridgeState {
             let timeout_ms = get_op_timeout(operation);
             let op_id = format!("{}-{}", now_ms(), &Uuid::new_v4().to_string()[..5]);
 
+            let queued_op = QueuedOp {
+                id: op_id.clone(),
+                operation: operation.to_string(),
+                params,
+            };
+
             let (tx, rx) = oneshot::channel();
             session.pending.insert(
                 op_id.clone(),
                 PendingOp {
                     sender: tx,
                     start_ms: now_ms(),
+                    op: queued_op.clone(),
+                    acked: false,
                 },
             );
 
             // Fast-path: If WebSocket is connected, dispatch instantly (< 0.1ms)!
+            // send() only proves the channel is alive, not that the socket is —
+            // a half-open socket is recovered by the re-queue in handle_socket.
             let dispatched_via_ws = if let Some(ref ws_tx) = session.ws_tx {
                 let payload = json!({
-                    "id": op_id,
-                    "operation": operation,
-                    "params": params,
+                    "id": queued_op.id,
+                    "operation": queued_op.operation,
+                    "params": queued_op.params,
                 });
                 ws_tx.send(Message::Text(payload.to_string())).is_ok()
             } else {
@@ -197,11 +207,7 @@ impl BridgeState {
             };
 
             if !dispatched_via_ws {
-                session.queue.push(QueuedOp {
-                    id: op_id.clone(),
-                    operation: operation.to_string(),
-                    params,
-                });
+                session.queue.push(queued_op);
 
                 let responder_opt = session.long_poll.take();
                 let mut flushed_ops = Vec::new();
@@ -302,7 +308,7 @@ async fn handle_root(State(state): State<BridgeState>) -> impl IntoResponse {
 
     Json(json!({
         "server": "figma-mcp",
-        "version": "2.5.26",
+        "version": "2.6.0",
         "port": port,
         "pluginConnected": connected,
         "mcpClientsConnected": mcp_clients,
@@ -609,6 +615,21 @@ async fn handle_socket(
                             continue;
                         }
 
+                        // "ack" = the plugin has the op and is running it, so it
+                        // must not be re-queued if this socket dies.
+                        if val.get("type").and_then(|v| v.as_str()) == Some("ack") {
+                            if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                                let mut inner = state_clone.inner.lock().await;
+                                if let Some(s) = inner.sessions.get_mut(&sid_clone) {
+                                    s.last_poll_at = now_ms();
+                                    if let Some(pending) = s.pending.get_mut(id) {
+                                        pending.acked = true;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
                             let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
                             let data = val.get("data").cloned();
@@ -651,10 +672,57 @@ async fn handle_socket(
         _ = (&mut recv_task) => send_task.abort(),
     };
 
-    // Clean up session ws_tx when socket disconnects
+    // Clean up session ws_tx when socket disconnects. Ops that were pushed into
+    // the WebSocket but never acknowledged are lost with the socket — without
+    // this they would sit until the op timeout (60–90s). Re-queue them so the
+    // reconnected plugin (WebSocket or long poll) picks them up. Acknowledged
+    // ops are already executing in the plugin, which still answers over the
+    // HTTP fallback, so those are left alone.
     let mut inner = state.inner.lock().await;
+    let mut requeued: Vec<QueuedOp> = Vec::new();
     if let Some(s) = inner.sessions.get_mut(&sid) {
         s.ws_tx = None;
+
+        let unacked_ids: Vec<String> = s
+            .pending
+            .iter()
+            .filter(|(id, p)| !p.acked && !s.queue.iter().any(|q| &q.id == *id))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in unacked_ids {
+            if let Some(pending) = s.pending.get(&id) {
+                if s.queue.len() >= MAX_QUEUE {
+                    // Queue is full — fail fast instead of dropping silently.
+                    if let Some(pending) = s.pending.remove(&id) {
+                        let _ = pending
+                            .sender
+                            .send(Err("Plugin disconnected and the queue is full — retry".to_string()));
+                    }
+                    continue;
+                }
+                requeued.push(pending.op.clone());
+            }
+        }
+
+        if !requeued.is_empty() {
+            eprintln!(
+                "[figma-mcp] ↻ WebSocket closed with {} unacknowledged op(s) — re-queued",
+                requeued.len()
+            );
+            s.queue.extend(requeued.clone());
+
+            // Hand them straight to a waiting long poll, if there is one.
+            if let Some(responder) = s.long_poll.take() {
+                s.last_poll_at = now_ms();
+                let flushed = std::mem::take(&mut s.queue);
+                let _ = responder.send(PollResponse {
+                    requests: flushed,
+                    mode: "ready".to_string(),
+                    session_id: sid.clone(),
+                });
+            }
+        }
     }
 }
 

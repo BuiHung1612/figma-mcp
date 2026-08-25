@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 
 // Read package.json version
 const pkgPath = path.resolve(__dirname, '../package.json');
-let pkgVersion = '2.5.26';
+let pkgVersion = '2.6.0';
 let repoOwner = 'BuiHung1612';
 let repoName = 'figma-mcp';
 

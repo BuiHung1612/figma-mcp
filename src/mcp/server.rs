@@ -100,7 +100,7 @@ pub async fn handle_jsonrpc_request(
                 },
                 "serverInfo": {
                     "name": "figma-mcp",
-                    "version": "2.5.26"
+                    "version": "2.6.0"
                 }
             }),
         )),
@@ -222,7 +222,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 "hint": hint,
             });
 
-            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+            ToolResult::text(serde_json::to_string(&out).unwrap_or_default())
         }
 
         "figma_docs" => {
@@ -237,11 +237,14 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             }
             let mut op_params = json!({});
             if let Some(depth) = args.get("depth") { op_params["depth"] = depth.clone(); }
+            if let Some(mn) = args.get("maxNodes") { op_params["maxNodes"] = mn.clone(); }
+            if let Some(abs) = args.get("absolute") { op_params["absolute"] = abs.clone(); }
+            if let Some(ih) = args.get("includeHidden") { op_params["includeHidden"] = ih.clone(); }
             let detail = args.get("detail").and_then(|v| v.as_str()).unwrap_or("compact");
             op_params["detail"] = json!(detail);
 
             match bridge.send_operation("get_selection", op_params, session_id).await {
-                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                Ok(data) => ToolResult::text(serde_json::to_string(&data).unwrap_or_default()),
                 Err(e) => ToolResult::error(e),
             }
         }
@@ -256,7 +259,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
 
             match bridge.send_operation("get_design_context", op_params, session_id).await {
-                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                Ok(data) => ToolResult::text(serde_json::to_string(&data).unwrap_or_default()),
                 Err(e) => ToolResult::error(e),
             }
         }
@@ -278,11 +281,11 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 Ok(data) => {
                     if let Some(output_path) = args.get("outputPath").and_then(|v| v.as_str()) {
                         match save_export_to_disk(output_path, &data, &format).await {
-                            Ok(disk_res) => ToolResult::text(serde_json::to_string_pretty(&disk_res).unwrap_or_default()),
+                            Ok(disk_res) => ToolResult::text(serde_json::to_string(&disk_res).unwrap_or_default()),
                             Err(e) => ToolResult::error(e),
                         }
                     } else {
-                        ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default())
+                        ToolResult::text(serde_json::to_string(&data).unwrap_or_default())
                     }
                 }
                 Err(e) => ToolResult::error(e),
@@ -300,21 +303,18 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
             }
 
+            // Forward every argument through to the handler (nodeId/nodeName are
+            // renamed to the plugin's id/name). A whitelist here silently
+            // swallowed handler options such as maxNodes / absolute /
+            // keepViewport / inlineIcons; handlers ignore what they don't use.
             let mut op_params = json!({});
-            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
-            if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
-            if let Some(scale) = args.get("scale") { op_params["scale"] = scale.clone(); }
-            if let Some(depth) = args.get("depth") { op_params["depth"] = depth.clone(); }
-            if let Some(format) = args.get("format") { op_params["format"] = format.clone(); }
-            if let Some(detail) = args.get("detail") { op_params["detail"] = detail.clone(); }
-            if let Some(ih) = args.get("includeHidden") { op_params["includeHidden"] = ih.clone(); }
-
-            if operation == "search_nodes" {
-                if let Some(obj) = args.as_object() {
-                    for (k, v) in obj {
-                        if !["operation", "nodeId", "nodeName", "scale", "depth", "format", "detail", "includeHidden", "outputPath", "sessionId"].contains(&k.as_str()) {
-                            op_params[k] = v.clone();
-                        }
+            if let Some(obj) = args.as_object() {
+                for (k, v) in obj {
+                    match k.as_str() {
+                        "operation" | "outputPath" | "sessionId" => {}
+                        "nodeId" => { op_params["id"] = v.clone(); }
+                        "nodeName" => { op_params["name"] = v.clone(); }
+                        _ => { op_params[k] = v.clone(); }
                     }
                 }
             }
@@ -325,7 +325,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                     if let Some(out_path) = output_path {
                         if ["export_image", "export_svg", "screenshot"].contains(&operation) {
                             match save_export_to_disk(out_path, &data, "png").await {
-                                Ok(disk_res) => return ToolResult::text(serde_json::to_string_pretty(&disk_res).unwrap_or_default()),
+                                Ok(disk_res) => return ToolResult::text(serde_json::to_string(&disk_res).unwrap_or_default()),
                                 Err(e) => return ToolResult::error(e),
                             }
                         }
@@ -343,7 +343,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                                 obj.remove("dataUrl");
                             }
                             let meta_str = if meta.as_object().is_some_and(|o| !o.is_empty()) {
-                                Some(serde_json::to_string_pretty(&meta).unwrap_or_default())
+                                Some(serde_json::to_string(&meta).unwrap_or_default())
                             } else {
                                 None
                             };
@@ -351,7 +351,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                         }
                     }
 
-                    ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default())
+                    ToolResult::text(serde_json::to_string(&data).unwrap_or_default())
                 }
                 Err(e) => ToolResult::error(e),
             }
@@ -376,7 +376,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             if exec_res.success {
                 let res_str = match exec_res.result {
-                    Some(v) => serde_json::to_string_pretty(&v).unwrap_or_default(),
+                    Some(v) => serde_json::to_string(&v).unwrap_or_default(),
                     None => "null".to_string(),
                 };
                 parts.push(format!("Result: {}", res_str));

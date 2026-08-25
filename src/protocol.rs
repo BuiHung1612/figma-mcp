@@ -53,7 +53,7 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.5.26</string>
+    <string>2.6.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>CFBundleURLTypes</key>
@@ -83,7 +83,7 @@ fi
 
 BIN="{}"
 if [ ! -f "$BIN" ]; then
-    BIN="$HOME/Library/Caches/figma-mcp/v2.5.26/figma-mcp"
+    BIN="$HOME/Library/Caches/figma-mcp/v2.6.0/figma-mcp"
 fi
 if [ ! -f "$BIN" ]; then
     BIN="$HOME/.cargo/bin/figma-mcp"

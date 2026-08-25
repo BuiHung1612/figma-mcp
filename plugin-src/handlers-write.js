@@ -788,16 +788,7 @@ handlers.instantiate = async function(params) {
 // exercised end-to-end: instance text overrides had no way to flow through
 // the bound property, so auto-layout never recalculated.
 
-// Under documentAccess: dynamic-page (set in plugin/manifest.json), reading
-// `instance.mainComponent` synchronously THROWS — it doesn't return null.
-// Always go through getMainComponentAsync when available; fall back to the
-// sync getter only for older plugin runtimes that don't have the async API.
-async function getMainComponentSafe(instance) {
-  if (typeof instance.getMainComponentAsync === "function") {
-    return await instance.getMainComponentAsync();
-  }
-  return instance.mainComponent;
-}
+// getMainComponentSafe lives in utils.js — shared with the read handlers.
 
 // Resolve "label" → "label#5:0" using the already-fetched main component's
 // componentPropertyDefinitions. Caller passes `main` so we don't re-fetch it

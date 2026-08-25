@@ -110,16 +110,57 @@ function solidStroke(hex, strokeOpacity) {
 // Paint/effect helpers (buildFillArray, buildGradientPaint, buildEffect,
 // applyEffects, applyCornerRadii) live in paint-and-effects.js.
 
+// figma.mixed is a Symbol. Reading a per-segment property (fontSize, fontName,
+// fills, letterSpacing, …) on a TEXT node with more than one style returns it
+// WITHOUT throwing, so every read path must test for it explicitly — a plain
+// truthiness check happily passes the Symbol straight into the payload.
+function isMixed(value) {
+  return typeof value === "symbol";
+}
+
+function firstSolidHex(paints) {
+  if (!paints || isMixed(paints) || !paints.length) return null;
+  for (var i = 0; i < paints.length; i++) {
+    if (paints[i].type === "SOLID" && paints[i].visible !== false) return rgbToHex(paints[i].color);
+  }
+  return null;
+}
+
 function getFillHex(node) {
-  if (!node.fills || !node.fills.length) return null;
-  const f = node.fills.find(f => f.type === "SOLID");
-  return f ? rgbToHex(f.color) : null;
+  if (!node) return null;
+  // Mixed fills (multi-style text): recover the colour of the first styled segment.
+  if (isMixed(node.fills)) {
+    try {
+      if (typeof node.getStyledTextSegments === "function") {
+        var segs = node.getStyledTextSegments(["fills"]);
+        for (var i = 0; i < segs.length; i++) {
+          var hex = firstSolidHex(segs[i].fills);
+          if (hex) return hex;
+        }
+      }
+    } catch(e) {}
+    return null;
+  }
+  return firstSolidHex(node.fills);
 }
 
 function getStrokeHex(node) {
-  if (!node.strokes || !node.strokes.length) return null;
-  const s = node.strokes.find(s => s.type === "SOLID");
-  return s ? rgbToHex(s.color) : null;
+  if (!node || isMixed(node.strokes)) return null;
+  return firstSolidHex(node.strokes);
+}
+
+// Under documentAccess: dynamic-page (set in plugin/manifest.json), reading
+// `instance.mainComponent` synchronously THROWS — it doesn't return null.
+// Always go through getMainComponentAsync when available; fall back to the
+// sync getter only for older plugin runtimes that don't have the async API.
+async function getMainComponentSafe(instance) {
+  if (!instance || instance.type !== "INSTANCE") return null;
+  try {
+    if (typeof instance.getMainComponentAsync === "function") {
+      return await instance.getMainComponentAsync();
+    }
+  } catch(e) { return null; }
+  try { return instance.mainComponent; } catch(e) { return null; }
 }
 
 // SVG path helpers (normalizeSvgPath, arcToCubicSegments) live in svg-path-helpers.js.

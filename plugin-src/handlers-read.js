@@ -1,5 +1,27 @@
 // ─── READ HANDLERS ────────────────────────────────────────────────────────────
 
+// Node budget for the tree walkers: maxDepth alone doesn't stop a wide frame
+// from producing tens of MB, which then hits the bridge op timeout and floods
+// the model's context. Callers can raise/lower it with `maxNodes`, and
+// `absolute: true` forces absoluteBoundingBox on every node.
+var DEFAULT_NODE_BUDGET = 3000;
+
+function makeWalkState(params) {
+  var p = params || {};
+  var budget = (p.maxNodes !== undefined && Number(p.maxNodes) > 0) ? Number(p.maxNodes) : DEFAULT_NODE_BUDGET;
+  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true };
+}
+
+function walkStateMeta(walkState) {
+  if (!walkState) return {};
+  var meta = { nodeCount: walkState.budget - walkState.remaining, nodeBudget: walkState.budget };
+  if (walkState.truncated) {
+    meta.nodesTruncated = true;
+    meta.truncatedHint = "Node budget reached — subtrees past it are summarized. Re-read a specific child id, or raise maxNodes.";
+  }
+  return meta;
+}
+
 // get_selection — returns full design data for current selection (or specified node)
 handlers.get_selection = async function(params) {
   var id = params ? params.id : null;
@@ -19,9 +41,18 @@ handlers.get_selection = async function(params) {
   var detailLevel = (params && params.detail) || "full";
   var filterInvisible = !(params && params.includeHidden === true);
   var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
-  var trees = nodes.map(function(n) { return extractDesignTree(n, 0, maxDepth, detailLevel, filterInvisible, tokenCollector); });
+  var instanceCollector = (detailLevel !== "minimal") ? [] : null;
+  var walkState = makeWalkState(params);
+  var trees = nodes.map(function(n) { return extractDesignTree(n, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); });
+  // mainComponent is async-only under documentAccess: dynamic-page — resolve
+  // every collected INSTANCE after the (synchronous) tree walk.
+  var instanceInfo = await resolveInstanceComponents(instanceCollector);
   return {
     nodes: trees,
+    meta: walkStateMeta(walkState),
+    instances: instanceInfo.truncated
+      ? { resolved: instanceInfo.resolved, truncated: true, hint: "Too many instances to resolve — narrow the node or lower depth for full component references." }
+      : undefined,
     tokens: tokenCollector ? {
       colors: Array.from(tokenCollector.colors),
       fonts: Array.from(tokenCollector.fonts),
@@ -51,16 +82,24 @@ handlers.get_design = async function(params) {
 
   try {
     var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
-    var tree = extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible, tokenCollector);
+    var instanceCollector = (detailLevel !== "minimal") ? [] : null;
+    var walkState = makeWalkState(p);
+    var tree = extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState);
+    var instanceInfo = await resolveInstanceComponents(instanceCollector);
 
     // SVG inlining: opt-in via inlineIcons/inlineSvg to avoid multi-second freezes on large designs
     var inlineIcons = (p.inlineIcons === true || p.inlineSvg === true);
     var iconCount = 0;
+    var iconNodesFound = 0;
     if (inlineIcons && detailLevel === "full" && tree) {
       var iconNodes = [];
+      var INLINE_ICON_CAP = 10;
       function collectIcons(node) {
-        if (!node || iconNodes.length >= 10) return;
-        if (node.isIcon && node.id) iconNodes.push(node);
+        if (!node) return;
+        if (node.isIcon && node.id) {
+          iconNodesFound++;
+          if (iconNodes.length < INLINE_ICON_CAP) iconNodes.push(node);
+        }
         if (node.children) {
           for (var i = 0; i < node.children.length; i++) collectIcons(node.children[i]);
         }
@@ -92,7 +131,16 @@ handlers.get_design = async function(params) {
     } : undefined;
 
     var meta = { maxDepth: maxDepth, detail: detailLevel, nodeType: root.type };
-    if (inlineIcons && detailLevel === "full") meta.inlinedIcons = iconCount;
+    Object.assign(meta, walkStateMeta(walkState));
+    if (inlineIcons && detailLevel === "full") {
+      meta.inlinedIcons = iconCount;
+      if (iconNodesFound > iconCount) {
+        meta.inlineIconsTruncated = true;
+        meta.iconsFound = iconNodesFound;
+      }
+    }
+    if (instanceInfo.resolved) meta.resolvedInstances = instanceInfo.resolved;
+    if (instanceInfo.truncated) meta.instancesTruncated = true;
     return { tree: tree, tokens: tokens, meta: meta };
   } catch(e) {
     throw new Error("[get_design] " + e.message + " nodeType=" + root.type + " id=" + root.id);
@@ -111,6 +159,11 @@ handlers.scan_design = async function(params) {
   else root = figma.currentPage;
   if (!root) throw new Error("Node not found");
 
+  // Output caps — every capped list reports its real total plus a truncated
+  // flag, so a caller can tell "that's all of it" from "that's the first N".
+  var SCAN_LIMITS = { text: 500, images: 50, icons: 50, components: 50, colors: 30, fonts: 30 };
+  var maxNodes = (p.maxNodes !== undefined && Number(p.maxNodes) > 0) ? Number(p.maxNodes) : 50000;
+
   var summary = {
     rootId: root.id,
     rootName: root.name,
@@ -127,29 +180,44 @@ handlers.scan_design = async function(params) {
     components: [],    // component instances with names
   };
 
+  // Real counts across the whole subtree, independent of the output caps above.
+  var totals = { textNodes: 0, imageNodes: 0, iconNodes: 0, instances: 0 };
   var scanIncludeHidden = !!(p.includeHidden);
-  function walkCount(node) {
+  var instanceEntries = [];
+  var nodeBudgetHit = false;
+
+  // section = the top-level child whose subtree we are inside (null at the root)
+  function walkCount(node, section) {
     if (!node || typeof node !== "object") return;
     if (!scanIncludeHidden && node.visible === false) return;
+    if (summary.totalNodes >= maxNodes) { nodeBudgetHit = true; return; }
     summary.totalNodes++;
 
     // Collect text
     if (node.type === "TEXT") {
+      totals.textNodes++;
       var textInfo = {
         id: node.id, name: node.name,
         x: Math.round(node.x), y: Math.round(node.y),
         width: Math.round(node.width), height: Math.round(node.height),
       };
-      try {
-        textInfo.content = node.characters;
-        textInfo.fill = getFillHex(node);
-        textInfo.fontSize = node.fontSize;
-        textInfo.fontFamily = node.fontName ? node.fontName.family : null;
-        textInfo.fontWeight = node.fontName ? node.fontName.style : null;
-      } catch(e) {
-        try { textInfo.content = node.characters; } catch(e2) {}
+      var textStyle = resolveTextStyle(node, { segments: false });
+      if (textStyle) {
+        textInfo.content = textStyle.content;
+        textInfo.fill = textStyle.fill || null;
+        textInfo.fontSize = textStyle.fontSize !== undefined ? textStyle.fontSize : null;
+        textInfo.fontFamily = textStyle.fontFamily || null;
+        textInfo.fontWeight = textStyle.fontWeight || null;
+        if (textStyle.mixed) textInfo.mixedStyles = true;
       }
-      if (summary.allText.length < 500) summary.allText.push(textInfo);
+      if (summary.allText.length < SCAN_LIMITS.text) summary.allText.push(textInfo);
+
+      // Section text preview — collected here instead of re-walking the subtree
+      if (section && textInfo.content && textInfo.content.trim()) {
+        if (!section.textContent) section.textContent = [];
+        if (section.textContent.length < 20) section.textContent.push(textInfo.content.trim().substring(0, 60));
+        else section.textContentTruncated = true;
+      }
 
       // Count font usage
       if (textInfo.fontFamily) {
@@ -169,81 +237,103 @@ handlers.scan_design = async function(params) {
     } catch(e) {}
 
     // Collect images
-    if (hasImageFill(node) && summary.images.length < 50) {
-      summary.images.push({
-        id: node.id, name: node.name,
-        x: Math.round(node.x), y: Math.round(node.y),
-        width: Math.round(node.width), height: Math.round(node.height),
-      });
+    if (hasImageFill(node)) {
+      totals.imageNodes++;
+      if (section) section.imageCount++;
+      if (summary.images.length < SCAN_LIMITS.images) {
+        summary.images.push({
+          id: node.id, name: node.name,
+          x: Math.round(node.x), y: Math.round(node.y),
+          width: Math.round(node.width), height: Math.round(node.height),
+        });
+      }
     }
 
     // Collect icons
-    if (isLikelyIcon(node) && summary.icons.length < 50) {
-      summary.icons.push({ id: node.id, name: node.name, width: Math.round(node.width), height: Math.round(node.height) });
+    if (isLikelyIcon(node)) {
+      totals.iconNodes++;
+      if (section) section.iconCount++;
+      if (summary.icons.length < SCAN_LIMITS.icons) {
+        summary.icons.push({ id: node.id, name: node.name, width: Math.round(node.width), height: Math.round(node.height) });
+      }
     }
 
-    // Collect component instances
-    if (node.type === "INSTANCE" && summary.components.length < 50) {
-      try {
-        var mc = node.mainComponent;
-        summary.components.push({
+    // Collect component instances — mainComponent resolved after the walk
+    // (async-only under documentAccess: dynamic-page).
+    if (node.type === "INSTANCE") {
+      totals.instances++;
+      if (summary.components.length < SCAN_LIMITS.components) {
+        var compEntry = {
           id: node.id, name: node.name,
-          componentName: mc ? mc.name : null,
-          componentId: mc ? mc.id : null,
+          componentName: null, componentId: null,
           width: Math.round(node.width), height: Math.round(node.height),
-        });
-      } catch(e) {}
+        };
+        summary.components.push(compEntry);
+        instanceEntries.push({ info: compEntry, node: node });
+      }
     }
 
     // Recurse
     if ("children" in node && Array.isArray(node.children)) {
-      for (var i = 0; i < node.children.length; i++) walkCount(node.children[i]);
+      for (var i = 0; i < node.children.length; i++) walkCount(node.children[i], section);
     }
   }
 
-  // Walk entire tree first — collects all nodes, colors, fonts, images, icons, components
-  walkCount(root);
-
-  // Build sections from top-level children — reuse data already collected by walkCount
-  if ("children" in root) {
-    var sectionIconIds = {};
-    var sectionImageIds = {};
-    // Index icons/images by id for O(1) lookup
-    for (var ii = 0; ii < summary.icons.length; ii++) sectionIconIds[summary.icons[ii].id] = true;
-    for (var im = 0; im < summary.images.length; im++) sectionImageIds[summary.images[im].id] = true;
-
+  // Build the sections up front so the walk can attribute icons/images/text to
+  // the top-level child they actually live under.
+  if ("children" in root && Array.isArray(root.children)) {
+    summary.totalNodes++;  // the root itself
     for (var ci = 0; ci < root.children.length; ci++) {
       var child = root.children[ci];
+      if (!scanIncludeHidden && child.visible === false) continue;
       var section = {
         id: child.id, name: child.name, type: child.type,
         x: Math.round(child.x), y: Math.round(child.y),
         width: Math.round(child.width), height: Math.round(child.height),
-        childCount: "children" in child ? child.children.length : 0,
+        childCount: ("children" in child && Array.isArray(child.children)) ? child.children.length : 0,
         iconCount: 0,
         imageCount: 0,
       };
-      var sectionTexts = collectTextContent(child, 20);
-      if (sectionTexts.length) section.textContent = sectionTexts;
-      // Count icons/images that belong to this section's subtree (by checking collected lists)
-      for (var si = 0; si < summary.icons.length; si++) {
-        if (summary.icons[si].id === child.id || (summary.icons[si].parentId && summary.icons[si].parentId === child.id)) section.iconCount++;
-      }
-      for (var sj = 0; sj < summary.images.length; sj++) {
-        if (summary.images[sj].id === child.id || (summary.images[sj].parentId && summary.images[sj].parentId === child.id)) section.imageCount++;
-      }
       summary.sections.push(section);
+      walkCount(child, section);
     }
+  } else {
+    walkCount(root, null);
   }
+
+  await resolveInstanceComponents(instanceEntries);
 
   // Sort colors by usage
   var colorEntries = Object.keys(summary.allColors).map(function(k) { return { color: k, count: summary.allColors[k] }; });
   colorEntries.sort(function(a, b) { return b.count - a.count; });
-  summary.allColors = colorEntries.slice(0, 30); // top 30 colors
+  summary.allColors = colorEntries.slice(0, SCAN_LIMITS.colors);
 
   // Sort fonts by usage, cap at 30 (same as allColors)
   var fontEntries = Object.keys(summary.allFonts).map(function(k) { return { font: k, count: summary.allFonts[k] }; });
   fontEntries.sort(function(a, b) { return b.count - a.count; });
-  summary.allFonts = fontEntries.slice(0, 30);
+  summary.allFonts = fontEntries.slice(0, SCAN_LIMITS.fonts);
+
+  summary.totals = {
+    textNodes: totals.textNodes,
+    imageNodes: totals.imageNodes,
+    iconNodes: totals.iconNodes,
+    instances: totals.instances,
+    uniqueColors: colorEntries.length,
+    uniqueFonts: fontEntries.length,
+  };
+
+  var truncated = {};
+  if (totals.textNodes > summary.allText.length)    truncated.allText = true;
+  if (totals.imageNodes > summary.images.length)    truncated.images = true;
+  if (totals.iconNodes > summary.icons.length)      truncated.icons = true;
+  if (totals.instances > summary.components.length) truncated.components = true;
+  if (colorEntries.length > summary.allColors.length) truncated.allColors = true;
+  if (fontEntries.length > summary.allFonts.length)  truncated.allFonts = true;
+  if (nodeBudgetHit) truncated.nodes = true;
+  if (Object.keys(truncated).length) {
+    summary.truncated = truncated;
+    summary.truncatedHint = "Lists above are capped — compare with `totals` and re-scan a specific section id for the rest.";
+  }
 
   return summary;
 };
@@ -383,22 +473,62 @@ handlers.get_page_nodes = async () => {
   };
 };
 
-// Shared base64 encoder — Figma sandbox has no btoa/TextEncoder
+// Exporting an unrendered node returns a blank image, so the renderer is
+// nudged with scrollAndZoomIntoView — an unwanted canvas jump for what is a
+// read operation, hence the save/restore pair around it.
+function forceRenderNode(node, params) {
+  var keep = !(params && params.keepViewport === false);
+  var saved = null;
+  try {
+    if (keep) {
+      saved = { center: { x: figma.viewport.center.x, y: figma.viewport.center.y }, zoom: figma.viewport.zoom };
+    }
+    figma.viewport.scrollAndZoomIntoView([node]);
+  } catch(e) { /* non-fatal */ }
+  return saved;
+}
+
+function restoreViewport(saved) {
+  if (!saved) return;
+  try {
+    figma.viewport.center = saved.center;
+    figma.viewport.zoom = saved.zoom;
+  } catch(e) { /* non-fatal */ }
+}
+
+// Shared base64 encoder — Figma sandbox has no btoa/TextEncoder.
+// A @2x PNG of a large frame runs to tens of MB, and appending one character at
+// a time to a single string froze the plugin for seconds; encode into fixed
+// chunks and join instead. figma.base64Encode (native) wins when present.
 var _B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+var _B64_CHUNK_BYTES = 12288; // multiple of 3 — keeps chunks padding-free
 function uint8ArrayToBase64(bytes) {
   var arr = (typeof Uint8Array !== "undefined" && !(bytes instanceof Uint8Array)) ? new Uint8Array(bytes) : bytes;
-  var b64 = "";
+  try {
+    if (typeof figma !== "undefined" && typeof figma.base64Encode === "function") {
+      return figma.base64Encode(arr);
+    }
+  } catch(e) { /* fall through to the manual encoder */ }
+
   var len = arr.length;
-  for (var j = 0; j < len; j += 3) {
-    var b0 = arr[j];
-    var b1 = j + 1 < len ? arr[j + 1] : 0;
-    var b2 = j + 2 < len ? arr[j + 2] : 0;
-    b64 += _B64_CHARS[b0 >> 2];
-    b64 += _B64_CHARS[((b0 & 3) << 4) | (b1 >> 4)];
-    b64 += j + 1 < len ? _B64_CHARS[((b1 & 15) << 2) | (b2 >> 6)] : "=";
-    b64 += j + 2 < len ? _B64_CHARS[b2 & 63] : "=";
+  var parts = [];
+  for (var start = 0; start < len; start += _B64_CHUNK_BYTES) {
+    var stop = Math.min(start + _B64_CHUNK_BYTES, len);
+    var chunk = [];
+    for (var j = start; j < stop; j += 3) {
+      var b0 = arr[j];
+      var b1 = j + 1 < len ? arr[j + 1] : 0;
+      var b2 = j + 2 < len ? arr[j + 2] : 0;
+      chunk.push(
+        _B64_CHARS[b0 >> 2],
+        _B64_CHARS[((b0 & 3) << 4) | (b1 >> 4)],
+        j + 1 < len ? _B64_CHARS[((b1 & 15) << 2) | (b2 >> 6)] : "=",
+        j + 2 < len ? _B64_CHARS[b2 & 63] : "="
+      );
+    }
+    parts.push(chunk.join(""));
   }
-  return b64;
+  return parts.join("");
 }
 
 // screenshot — export node as PNG base64 (v1.2.5)
@@ -434,12 +564,16 @@ handlers.screenshot = async function(params) {
 
   // BUG-05 fix: nodes created in the current session may not have been rendered yet.
   // scrollAndZoomIntoView forces the Figma renderer to paint the node before exportAsync,
-  // preventing blank/white PNG output on freshly-created nodes.
-  try { figma.viewport.scrollAndZoomIntoView([node]); } catch(e) { /* non-fatal */ }
+  // preventing blank/white PNG output on freshly-created nodes. It moves the
+  // user's canvas though, so the previous viewport is restored afterwards
+  // (pass keepViewport: false to leave the canvas on the exported node).
+  var savedViewport = forceRenderNode(node, params);
 
   try {
     var bytes = await node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: s } });
+    restoreViewport(savedViewport);
   } catch(exportErr) {
+    restoreViewport(savedViewport);
     return Promise.reject(new Error("[v1.9.1-export] " + exportErr.message + " type=" + node.type + " id=" + node.id));
   }
 
@@ -450,31 +584,41 @@ handlers.screenshot = async function(params) {
   }
 };
 
-// Manual UTF-8 decode for Figma sandbox (no TextDecoder available)
+// Manual UTF-8 decode for Figma sandbox (no TextDecoder available).
+// Decodes into batches of code units and flushes them through one
+// String.fromCharCode call — per-character string concatenation made large SVG
+// exports quadratic in practice.
+var _UTF8_FLUSH_UNITS = 8192;
 function uint8ArrayToString(arr) {
-  var result = "";
+  var parts = [];
+  var units = [];
   var i = 0;
   while (i < arr.length) {
     var byte1 = arr[i++];
     if (byte1 < 0x80) {
-      result += String.fromCharCode(byte1);
+      units.push(byte1);
     } else if (byte1 < 0xE0) {
       var byte2 = arr[i++] & 0x3F;
-      result += String.fromCharCode(((byte1 & 0x1F) << 6) | byte2);
+      units.push(((byte1 & 0x1F) << 6) | byte2);
     } else if (byte1 < 0xF0) {
-      var byte2 = arr[i++] & 0x3F;
+      var byte2b = arr[i++] & 0x3F;
       var byte3 = arr[i++] & 0x3F;
-      result += String.fromCharCode(((byte1 & 0x0F) << 12) | (byte2 << 6) | byte3);
+      units.push(((byte1 & 0x0F) << 12) | (byte2b << 6) | byte3);
     } else {
-      var byte2 = arr[i++] & 0x3F;
-      var byte3 = arr[i++] & 0x3F;
+      var byte2c = arr[i++] & 0x3F;
+      var byte3c = arr[i++] & 0x3F;
       var byte4 = arr[i++] & 0x3F;
-      var codePoint = ((byte1 & 0x07) << 18) | (byte2 << 12) | (byte3 << 6) | byte4;
+      var codePoint = ((byte1 & 0x07) << 18) | (byte2c << 12) | (byte3c << 6) | byte4;
       codePoint -= 0x10000;
-      result += String.fromCharCode(0xD800 + (codePoint >> 10), 0xDC00 + (codePoint & 0x3FF));
+      units.push(0xD800 + (codePoint >> 10), 0xDC00 + (codePoint & 0x3FF));
+    }
+    if (units.length >= _UTF8_FLUSH_UNITS) {
+      parts.push(String.fromCharCode.apply(String, units));
+      units = [];
     }
   }
-  return result;
+  if (units.length) parts.push(String.fromCharCode.apply(String, units));
+  return parts.join("");
 }
 
 // Export node SVG — helper used by export_svg and inline icon extraction
@@ -515,10 +659,15 @@ handlers.export_image = async function(params) {
   }
   if (!node) throw new Error("Node not found for export");
 
-  // BUG-05 fix: same as screenshot — force render before export
-  try { figma.viewport.scrollAndZoomIntoView([node]); } catch(e) { /* non-fatal */ }
-
-  var bytes = await node.exportAsync({ format: format, constraint: { type: "SCALE", value: scale } });
+  // BUG-05 fix: same as screenshot — force render before export, then put the
+  // user's viewport back where it was.
+  var savedViewport = forceRenderNode(node, params);
+  var bytes;
+  try {
+    bytes = await node.exportAsync({ format: format, constraint: { type: "SCALE", value: scale } });
+  } finally {
+    restoreViewport(savedViewport);
+  }
   var b64 = uint8ArrayToBase64(bytes);
 
   return {
