@@ -1,0 +1,13 @@
+{
+  "name": "Figma MCP Bridge",
+  "id": "1614927480683426278",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "documentAccess": "dynamic-page",
+  "editorType": ["figma", "dev"],
+  "networkAccess": {
+    "allowedDomains": ["http://localhost:38451"],
+    "reasoning": "This plugin bridges Figma to a local MCP server running on port 38451. All communication stays on localhost — no external network access is made."
+  }
+}

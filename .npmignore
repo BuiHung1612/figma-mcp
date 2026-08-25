@@ -1,0 +1,9 @@
+# Exclude nested node_modules from npm package
+**/node_modules/
+
+# Dev/repo files not needed by consumers
+assets/
+.github/
+CHANGELOG.md
+CLAUDE.md
+*.log

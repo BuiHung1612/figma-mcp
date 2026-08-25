@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Figma MCP Bridge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+      background: #1a1b2e; color: #e2e4f0;
+      padding: 14px; width: 320px; height: 420px;
+      font-size: 12px; overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+
+    /* Header */
+    header {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 12px; flex-shrink: 0;
+    }
+    .logo {
+      width: 36px; height: 36px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; overflow: hidden;
+    }
+    .logo svg { width: 36px; height: 36px; }
+    header h1 { font-size: 13px; font-weight: 700; color: #f0f0ff; letter-spacing: -0.2px; }
+    header p  { font-size: 10px; color: #6b70a0; margin-top: 1px; }
+
+    /* Status bar */
+    .status-bar {
+      display: flex; align-items: center; gap: 8px;
+      background: #141525; border: 1px solid #2a2b45;
+      border-radius: 10px; padding: 8px 12px; margin-bottom: 10px;
+      flex-shrink: 0;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; transition: all .3s; }
+    .dot.green  { background: #4ade80; box-shadow: 0 0 8px #4ade8044; }
+    .dot.red    { background: #f87171; box-shadow: 0 0 6px #f8717133; }
+    .dot.yellow { background: #fbbf24; animation: pulse 1.2s ease infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)} }
+    .status-label { font-size: 11px; flex: 1; color: #c0c4e0; }
+    .badge {
+      font-size: 9px; padding: 2px 7px; border-radius: 5px;
+      background: #2a2b45; color: #8b8fc0; font-weight: 500;
+    }
+
+    /* Stats */
+    .stats { display: flex; gap: 6px; margin-bottom: 10px; flex-shrink: 0; }
+    .stat {
+      flex: 1; background: #141525; border: 1px solid #2a2b45;
+      border-radius: 10px; padding: 8px 6px; text-align: center;
+    }
+    .stat .n { font-size: 20px; font-weight: 700; color: #f0f0ff; line-height: 1.1; }
+    .stat .l { font-size: 9px; color: #6b70a0; margin-top: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat:nth-child(1) .n { color: #7c5bf5; }
+    .stat:nth-child(2) .n { color: #5b8af5; }
+    .stat:nth-child(3) .n { color: #f87171; }
+
+    /* Log */
+    .log-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-bottom: 10px; }
+    .log-label { font-size: 10px; color: #6b70a0; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .log {
+      flex: 1; background: #0f1020; border: 1px solid #2a2b45; border-radius: 10px;
+      font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 10px; padding: 8px; line-height: 1.5;
+      overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: #505380;
+    }
+    .log::-webkit-scrollbar { width: 4px; }
+    .log::-webkit-scrollbar-track { background: transparent; }
+    .log::-webkit-scrollbar-thumb { background: #2a2b45; border-radius: 2px; }
+    .log .ok   { color: #4ade80; }
+    .log .err  { color: #f87171; }
+    .log .info { color: #60a5fa; }
+
+    /* Buttons */
+    .btn-row { display: flex; gap: 6px; flex-shrink: 0; }
+    button {
+      flex: 1; padding: 8px; border-radius: 8px; font-size: 11px; font-weight: 600;
+      cursor: pointer; border: 1px solid #2a2b45; background: #141525; color: #c0c4e0;
+      transition: all .15s; letter-spacing: -0.1px;
+    }
+    button:hover { background: #2a2b45; border-color: #3a3b55; }
+    button:active { transform: scale(0.97); }
+    button.primary {
+      background: linear-gradient(135deg, #7c5bf5, #5b8af5);
+      color: #fff; border-color: transparent;
+    }
+    button.primary:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#4A90E2"/><stop offset="0.5" stop-color="#8B5CF6"/><stop offset="1" stop-color="#22C55E"/>
+          </linearGradient>
+          <linearGradient id="g2" x1="100" y1="0" x2="0" y2="100" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#F97316"/><stop offset="0.5" stop-color="#22C55E"/><stop offset="1" stop-color="#4A90E2"/>
+          </linearGradient>
+        </defs>
+        <!-- Background rounded square -->
+        <rect width="100" height="100" rx="20" fill="#1a1b2e"/>
+        <!-- Top bar: blue → purple → green/orange -->
+        <rect x="12" y="14" width="76" height="8" rx="4" fill="url(#g2)" opacity="0.6"/>
+        <!-- Bottom bar -->
+        <rect x="12" y="78" width="76" height="8" rx="4" fill="url(#g1)" opacity="0.6"/>
+        <!-- Left nodes (AI/code) -->
+        <circle cx="18" cy="36" r="7" fill="#4A90E2"/>
+        <circle cx="18" cy="36" r="3.5" fill="#1a1b2e"/>
+        <circle cx="18" cy="64" r="7" fill="#8B5CF6"/>
+        <circle cx="18" cy="64" r="3.5" fill="#1a1b2e"/>
+        <!-- Right nodes (Figma) -->
+        <circle cx="82" cy="36" r="7" fill="#F97316"/>
+        <circle cx="82" cy="36" r="3.5" fill="#1a1b2e"/>
+        <circle cx="82" cy="64" r="7" fill="#F97316"/>
+        <circle cx="82" cy="64" r="3.5" fill="#1a1b2e"/>
+        <!-- S-curve flow: left→right (top) -->
+        <path d="M25 36 C42 36, 38 64, 55 64" stroke="url(#g1)" stroke-width="5" stroke-linecap="round"/>
+        <!-- S-curve flow: right→left (bottom) -->
+        <path d="M75 64 C58 64, 62 36, 45 36" stroke="url(#g2)" stroke-width="5" stroke-linecap="round"/>
+        <!-- Arrow head right -->
+        <polygon points="72,58 80,64 72,70" fill="#22C55E"/>
+        <!-- Arrow head left -->
+        <polygon points="28,30 20,36 28,42" fill="#4A90E2"/>
+        <!-- Code symbol <:> -->
+        <text x="30" y="69" font-family="monospace" font-size="10" font-weight="bold" fill="#fff" opacity="0.8">&lt;:&gt;</text>
+        <!-- Brackets [...] -->
+        <text x="56" y="42" font-family="monospace" font-size="10" font-weight="bold" fill="#fff" opacity="0.8">[..]</text>
+      </svg>
+    </div>
+    <div>
+      <h1>Figma MCP Bridge</h1>
+      <p>AI-powered design bridge · port <span id="port-display" onclick="changePort()" style="cursor:pointer;text-decoration:underline dotted;color:#7c5bf5" title="Click to change port">38451</span></p>
+    </div>
+  </header>
+
+  <div class="status-bar">
+    <div class="dot yellow" id="dot"></div>
+    <span class="status-label" id="status-text">Connecting...</span>
+    <span class="badge" id="mode-badge">—</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="n" id="write-count">0</div><div class="l">Writes</div></div>
+    <div class="stat"><div class="n" id="read-count">0</div><div class="l">Reads</div></div>
+    <div class="stat"><div class="n" id="err-count">0</div><div class="l">Errors</div></div>
+  </div>
+
+  <div class="log-wrap">
+    <div class="log-label">Activity</div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="btn-row">
+    <button onclick="clearLog()">Clear</button>
+    <button onclick="autoDetectPort()">Auto-detect</button>
+    <button class="primary" onclick="reconnect()">Reconnect</button>
+  </div>
+
+  <script>
+    var currentPort = 38451;
+    var BRIDGE  = "http://localhost:" + currentPort;
+    var POLL_MS = 300;
+    var POLL_MAX_MS = 3000;         // lower cap — recover faster
+    var LONG_POLL_TIMEOUT = 12000;  // server holds 8s + network buffer
+    var SHORT_POLL_TIMEOUT = 3000;  // used when reconnecting (no long poll)
+    var consecutiveErrors = 0;
+    var everConnected = false;      // track if we ever had a successful connection
+    var lastSuccessfulPollAt = Date.now();  // for visibility-driven reconnect heuristic
+    var sessionId = null;        // assigned from plugin main thread (fileName-based)
+    var fileName = null;
+
+    var writeCount = 0, readCount = 0, errCount = 0;
+    var polling = true;
+
+    var logEl    = document.getElementById("log");
+    var dotEl    = document.getElementById("dot");
+    var statusEl = document.getElementById("status-text");
+    var modeEl   = document.getElementById("mode-badge");
+
+    var READ_OPS = ["get_selection","get_design","get_page_nodes","screenshot","get_styles","get_local_components","get_viewport","get_variables","export_svg","get_node_detail","export_image","search_nodes","scan_design"];
+
+    function setStatus(state, text, mode) {
+      dotEl.className = "dot " + state;
+      statusEl.textContent = text;
+      if (mode) modeEl.textContent = mode;
+    }
+
+    function log(msg, cls) {
+      var line = document.createElement("div");
+      if (cls) line.className = cls;
+      var ts = new Date().toLocaleTimeString("en", { hour12: false });
+      line.textContent = ts + "  " + msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+      while (logEl.children.length > 50) logEl.removeChild(logEl.firstChild);
+    }
+
+    function clearLog() { logEl.innerHTML = ""; }
+    function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+
+    function getBackoff() {
+      // Fast retry first 3 attempts (300, 600, 1200ms), then cap at 3s
+      return Math.min(POLL_MS * Math.pow(2, Math.min(consecutiveErrors - 1, 3)), POLL_MAX_MS);
+    }
+
+    async function sendResponse(id, success, data, error) {
+      try {
+        await fetch(BRIDGE + "/response", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: id, success: success, data: data !== undefined ? data : null, error: error !== undefined ? error : null })
+        });
+      } catch (e) {
+        log("Response failed: " + e.message, "err");
+      }
+    }
+
+    function dispatchToMain(req) {
+      parent.postMessage({ pluginMessage: req }, "*");
+    }
+
+    var activeAbortController = null;   // exposed so reconnect() can cancel an in-flight long poll
+
+    async function poll() {
+      while (polling) {
+        try {
+          var pollUrl = BRIDGE + "/poll";
+          var qs = [];
+          if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
+          if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
+          if (qs.length) pollUrl += "?" + qs.join("&");
+          // Use short timeout when reconnecting, long poll when stable
+          var fetchTimeout = consecutiveErrors > 0 ? SHORT_POLL_TIMEOUT : LONG_POLL_TIMEOUT;
+          activeAbortController = new AbortController();
+          var timeoutId = setTimeout(function() { activeAbortController.abort(); }, fetchTimeout);
+          var res;
+          try { res = await fetch(pollUrl, { signal: activeAbortController.signal }); }
+          finally { clearTimeout(timeoutId); activeAbortController = null; }
+          if (!res.ok) { setStatus("yellow", "Bridge not responding"); consecutiveErrors++; await sleep(getBackoff()); continue; }
+
+          var body = await res.json();
+          var reqs = body.requests;
+          setStatus("green", reqs.length ? reqs.length + " cmd(s)" : "Connected", body.mode || "ready");
+
+          consecutiveErrors = 0;
+          everConnected = true;
+          lastSuccessfulPollAt = Date.now();
+
+          for (var i = 0; i < reqs.length; i++) {
+            var req = reqs[i];
+            log("→ " + req.operation, READ_OPS.indexOf(req.operation) >= 0 ? "info" : "ok");
+            dispatchToMain(req);
+          }
+        } catch (e) {
+          consecutiveErrors++;
+          var backoff = getBackoff();
+          if (consecutiveErrors <= 5) {
+            setStatus("yellow", "Waiting for MCP server... (" + consecutiveErrors + ")");
+          } else if (consecutiveErrors <= 10) {
+            setStatus("yellow", "Still waiting for figma-mcp to start...");
+          } else {
+            setStatus("red", "Cannot connect — run: figma-mcp");
+          }
+          if (consecutiveErrors === 1) log("Connecting to bridge...", "info");
+          await sleep(backoff);
+          continue;
+        }
+        await sleep(POLL_MS);
+      }
+    }
+
+    function reconnect() {
+      polling = false;
+      // Abort the in-flight long poll so the loop exits immediately,
+      // otherwise it sits inside `await fetch(...)` for up to 12s.
+      if (activeAbortController) {
+        try { activeAbortController.abort(); } catch (e) {}
+      }
+      consecutiveErrors = 0;
+      setStatus("yellow", "Reconnecting...");
+      setTimeout(function() { polling = true; poll(); }, 300);
+    }
+
+    // Tab visibility — when user returns to Figma after a long pause,
+    // immediately force-reconnect so they don't wait for the next poll cycle
+    // (browsers throttle background fetch to ~1Hz; HEALTH_TTL may have expired).
+    document.addEventListener("visibilitychange", function() {
+      if (document.visibilityState !== "visible" || !everConnected) return;
+      var idleMs = Date.now() - lastSuccessfulPollAt;
+      // Force reconnect if any of:
+      //  - in-flight poll (might be stuck on a backgrounded socket)
+      //  - last successful poll was > 20s ago (server may have expired session)
+      //  - consecutive errors
+      if (consecutiveErrors > 0 || activeAbortController || idleMs > 20000) {
+        log("Tab visible after " + Math.round(idleMs / 1000) + "s — forcing reconnect", "info");
+        reconnect();
+      }
+    });
+
+    function changePort() {
+      var input = prompt("Enter bridge port (default 38451):", currentPort);
+      if (!input) return;
+      var newPort = parseInt(input, 10);
+      if (isNaN(newPort) || newPort < 1024 || newPort > 65535) { alert("Invalid port"); return; }
+      setPort(newPort);
+    }
+
+    function setPort(port) {
+      currentPort = port;
+      BRIDGE = "http://localhost:" + currentPort;
+      document.getElementById("port-display").textContent = currentPort;
+      log("Port set to " + currentPort, "info");
+      reconnect();
+    }
+
+    async function autoDetectPort() {
+      setStatus("yellow", "Scanning ports...");
+      log("Scanning 38451-38460...", "info");
+      for (var p = 38451; p <= 38460; p++) {
+        try {
+          var res = await fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(500) });
+          if (res.ok) {
+            var data = await res.json();
+            if (data.pluginConnected !== undefined) {
+              log("Found bridge on port " + p + (data.pluginConnected ? " (plugin connected)" : " (no plugin)"), "ok");
+              setPort(p);
+              return;
+            }
+          }
+        } catch(e) { /* port not responding */ }
+      }
+      log("No bridge found on 38451-38460. Reset to 38451.", "err");
+      setPort(38451);
+    }
+
+    window.onmessage = async function(event) {
+      var msg = event.data.pluginMessage;
+      if (!msg) return;
+      // Session info from plugin main thread
+      if (msg.type === "session-info") {
+        sessionId = msg.sessionId || null;
+        fileName = msg.fileName || null;
+        if (sessionId) log("Session: " + sessionId + " (" + fileName + ")", "info");
+        return;
+      }
+      var isRead = READ_OPS.indexOf(msg.operation) >= 0;
+      if (msg.success) {
+        if (isRead) { readCount++; document.getElementById("read-count").textContent = readCount; }
+        else        { writeCount++; document.getElementById("write-count").textContent = writeCount; }
+        log("✓ " + (msg.id ? msg.id.slice(-6) : "?"), "ok");
+      } else {
+        errCount++;
+        document.getElementById("err-count").textContent = errCount;
+        log("✗ " + (msg.id ? msg.id.slice(-6) : "?") + " " + msg.error, "err");
+      }
+      await sendResponse(msg.id, msg.success, msg.data, msg.error);
+    };
+
+    poll();
+  </script>
+</body>
+</html>

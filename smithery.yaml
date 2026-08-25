@@ -1,0 +1,40 @@
+name: figma-mcp
+display_name: Figma MCP
+description: >
+  Bidirectional Figma MCP bridge — AI draws UI on Figma canvas and reads
+  designs back as structured data. Works with Claude, Cursor, VS Code,
+  Windsurf, Antigravity. No API key needed.
+version: 2.5.26
+author: BuiHung1612
+license: MIT
+repository: https://github.com/BuiHung1612/figma-mcp
+homepage: https://github.com/BuiHung1612/figma-mcp#readme
+categories:
+  - design
+  - figma
+  - ui-generation
+  - code-to-design
+tags:
+  - figma
+  - mcp
+  - design
+  - ui
+  - claude
+  - cursor
+  - windsurf
+  - plugin
+runtime: node
+startCommand:
+  command: npx
+  args:
+    - "-y"
+    - "figma-ui-mcp@latest"
+tools:
+  - name: figma_status
+    description: Check Figma plugin bridge connection status.
+  - name: figma_write
+    description: Execute JS code to create/modify Figma designs (sandboxed VM).
+  - name: figma_read
+    description: Read design data, screenshots, SVG, variables from Figma.
+  - name: figma_docs
+    description: Get full API reference for figma_write operations.

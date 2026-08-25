@@ -1,0 +1,1445 @@
+# Changelog
+
+## [2.5.26] — 2026-05-25
+
+### Fixed — 10 bugs from field report (Clean Master Plus project)
+
+**BUG-NUM-01 (HIGH): FLOAT scalar variables only applied to default mode** (`src/plugin/handlers-tokens.js`)
+- `numbers: { "radius-md": 12 }` on a multi-mode collection (`["light", "dark"]`) set 12 only in light; dark mode kept its initial value (0).
+- Same root cause affected `fontSizes`. Result: dark-mode UI had zero corner radius, zero spacing.
+- **Fix:** scalar values in `applyVariableValue` now write to every mode in the collection, not just the default. Per-mode object syntax (`{ light: 4, dark: 8 }`) still routes per-mode unchanged.
+
+**BUG-FONT-02 (CRITICAL): STRING font variables resolved as "String value" placeholder** (`src/plugin/handlers-tokens.js`)
+- Same root cause as BUG-NUM-01 but with disastrous consequences: text styles bound to a STRING font variable rendered as font literally named `"String value"` → invisible text + broken layout.
+- **Fix:** same `applyVariableValue` change — scalar STRING values propagate to all modes.
+
+**BUG-MODE-01 (HIGH): `setFrameVariableMode` crashed with `unloaded font "String value Medium"`**
+- Direct consequence of BUG-FONT-02 — auto-resolved by the fix.
+
+**BUG-TS-01 (HIGH): re-running `setupDesignTokens` didn't clear stale STRING font bindings** (`src/plugin/handlers-tokens.js`)
+- Calling `setupDesignTokens` a second time with literal `fontFamily: "Inter"` (no `fonts:` key) left the existing text style still bound to the previous STRING variable.
+- **Fix:** when caller passes a literal font name, plugin now explicitly unbinds `fontFamily`/`fontStyle` before assigning the new literal.
+
+**BUG-FONT-01 (HIGH): system fonts produced cryptic error** (`src/plugin/handlers-tokens.js`)
+- `setupDesignTokens` with `fontFamily: "SF Mono"` (or `SF Pro`, `system-ui`) failed with generic `font could not be loaded` — Figma cloud doesn't carry macOS system fonts.
+- **Fix:** error now suggests the correct cloud-available replacement:
+  - `SF Mono` → JetBrains Mono, Roboto Mono, Fira Code
+  - `SF Pro` → Inter, Manrope, DM Sans
+  - `system-ui` / `-apple-system` → Inter
+
+**BUG-TEXT-01 (HIGH): TEXT nodes stuck at 100×100 when only `width` or no dimensions passed** (`src/plugin/handlers-write.js`)
+- Default values `width: 100, height: 100` in `handlers.create` destructuring made every TEXT node default to a 100×100 fixed box. Vertical overflow + parent frame bloat.
+- **Fix:** distinguish missing vs. zero. When neither width/height passed → `textAutoResize: "WIDTH_AND_HEIGHT"` (natural shrink-wrap). When only width → `"HEIGHT"` + resize to actual node height. Post-`appendChild` re-apply uses `hasExplicitWidth/hasExplicitHeight` instead of falsy check on default 100.
+
+**BUG-DEL-01 (CRITICAL): deleting frames containing components silently lost variables** (`src/plugin/handlers-write.js`)
+- `figma.delete({ id: <frame containing COMPONENT masters> })` ran without warning; user reports variable collections + text styles also vanished afterwards (Figma edge case under dynamic-page document access).
+- **Fix:** `delete` now blocks frames containing `COMPONENT` / `COMPONENT_SET` descendants by default. Response includes `blocked: "contains-components"`, `componentCount`, `componentNames`. Caller passes `force: true` to override after confirming.
+
+**BUG-CONN-01 (MEDIUM): plugin disconnect after idle, no auto-reconnect** (`plugin/ui.html`)
+- v2.5.25 added visibility listener but only force-reconnected when `consecutiveErrors > 0` or poll in-flight. Idle case (poll succeeded recently but server expired session before user returned) slipped through.
+- **Fix:** track `lastSuccessfulPollAt`; if user returns to tab > 20s after last successful poll, force-reconnect regardless of error state.
+
+**Documentation-only:**
+- BUG-TS-02 (MEDIUM): `fontWeight: "Medium"` on `text/label` falling back to `"Regular"` — this was already handled by the legacy fallback loop on line 691-695. The actual root cause was font load failure mid-chain; with BUG-FONT-01 improvements the error is now explicit instead of silent fallback.
+- BUG-TIMEOUT-01 (MEDIUM): retrying `setupDesignTokens` on an existing collection with full payload (15 colors × 2 modes + 16 numbers + 7 textStyles) takes ~60s. Not a bug — Figma's variable + style API doesn't batch. Recommendation: only call `setupDesignTokens` once per session; use `modifyVariable` for individual updates.
+
+### Tests
+- `scripts/test-v2526-feedback.mjs` — 23 tests covering every fixable bug above:
+  - BUG-NUM-01 scalar all-modes + per-mode object preserved (×5)
+  - BUG-FONT-02 STRING var all-modes (×3)
+  - BUG-TS-01 unbind on literal (×1)
+  - BUG-FONT-01 SF Mono / SF Pro hints (×4)
+  - BUG-TEXT-01 hug / width-only / both (×7)
+  - BUG-DEL-01 component-block + force override (×3)
+- Full suite: **398 tests, 0 failures**
+
+---
+
+## [2.5.25] — 2026-05-19
+
+### Fixed — Connection stability + INSTANCE_SWAP defaultValue
+
+**Connection stability (bridge-server.js + plugin/ui.html)**
+
+Field report: *"Cứ lâu lâu nó bị disconnect xong phải đợi connect lại, có khi không connect, chạy npx lại cũng không connect được luôn."* Four root causes fixed:
+
+- `HEALTH_TTL_MS` raised 60s → **120s**: previously sessions were marked disconnected when browsers throttled background tabs to ~1Hz polling. The plugin's long-poll cycle (8–12s) plus throttling could push the gap past 60s when the tab wasn't focused. 120s covers all reasonable throttle modes.
+- `SESSION_EXPIRE_MS` raised 5min → **30min**: ops queued while user stepped away (lunch, meeting) no longer vanish when they return. Sessions still expire eventually so memory doesn't grow unbounded.
+- `reconnect()` now **aborts the in-flight long poll** via `AbortController` instead of just flipping a flag and waiting up to 12s for the existing `await fetch()` to settle. Previously could create overlapping poll loops.
+- `#killStaleBridges()` now **kills ALL PIDs holding the port**, not just the first one returned by `lsof`. Multiple zombie processes (from repeated `npx figma-ui-mcp` runs) are reclaimed together. Excludes our own PID.
+- Plugin now listens for `visibilitychange` — when the Figma tab becomes visible after a long pause and a poll is in flight or recently errored, it force-reconnects immediately instead of waiting for the next throttled poll cycle.
+
+**INSTANCE_SWAP defaultValue clarification (handlers-tokens.js)**
+
+Field report: *"Plugin wants the nodeId (not the published key) as INSTANCE_SWAP default. Docs are misleading."* Confirmed — the Figma plugin API expects a local node ID (e.g. `"123:456"`), not a published component key. Previous code accepted either as a string and silently broke instance swap when a key was passed.
+
+- Comments + error messages now clearly say "node ID, not published key"
+- When a key-like string (no `":"`) is passed, the plugin now auto-resolves via `figma.importComponentByKeyAsync()` before falling back to a clear error message pointing at `createComponent(...).id` / `listComponents()`
+- `api-docs.js` example updated — uses `iconMaster.id` from `createComponent()` instead of a fake published key string
+
+### Tests
+- `test-component-properties.mjs` — 7 new tests covering node ID accepted-as-is, published key auto-resolution, unknown key error path
+- Full suite: **375 tests, 0 failures**
+
+---
+
+## [2.5.24] — 2026-05-19
+
+### Added — Complete component property workflow (merged PRs #8, #9, #10, #11 by @muhammadmahad-debug)
+
+This release closes a major gap: **instance text overrides now actually re-measure auto-layout**. Buttons grow to fit longer labels, cards reflow when content changes — exactly the workflow needed for proper component libraries.
+
+**The chain that makes it work:**
+
+1. **Master-side property definitions** (PR #8 — `addComponentProperty`, `bindComponentPropertyToText`, `removeComponentProperty`) — create TEXT / BOOLEAN / INSTANCE_SWAP properties on a `COMPONENT` or `COMPONENT_SET`, bind a child TEXT's `.characters` so override values flow through the property pipeline.
+2. **Generic property binding** (v2.5.22 follow-up — `bindComponentProperty`, `unbindComponentProperty`) — single API covering all three reference fields (`.characters`, `.visible`, `.mainComponent`) with type validation and preservation of co-existing refs.
+3. **Cross-page component lookup under dynamic-page access** (PR #9 — `loadAllPagesAsync`) — `instantiate` now calls `await figma.loadAllPagesAsync()` before `findOne`, mirroring what `listComponents` already did. Also exposes `figma.loadAllPagesAsync()` to user code so arbitrary cross-page queries work.
+4. **Missing variant/property handlers shipped** (PR #10 — `setComponentProperties`, `getComponentProperties`, `swapComponent`) — these had been on the executor allowlist since v2.4.0 but no plugin-side handler ever existed (silently failed for 2 years). Now driving instance property overrides actually works end-to-end.
+5. **Modern per-child layout sizing + auto-promote** (PR #11 — `layoutSizingHorizontal`/`layoutSizingVertical` params on create/modify, auto-promote TEXT to HUG on content change) — Figma's modern `layoutSizingHorizontal: "FIXED" | "HUG" | "FILL"` beats legacy `textAutoResize` for children of auto-layout. When `modify({content: "..."})` targets a TEXT inside a hug-axis parent, the text axis is auto-promoted to HUG so the parent reflows. Explicit user params override the magic.
+
+**Fix in this release:** `unbindComponentProperty` setting `componentPropertyReferences = null` was rejected by Figma's validator (`Expected object, received null`) — caught during live smoke test of v2.5.22. Now assigns empty object `{}` which Figma accepts.
+
+### Live smoke test verified
+
+End-to-end on a real Figma multi-page file:
+- Button master → addComponentProperty TEXT → bindComponentPropertyToText → instantiate → setComponentProperties with longer label → **button width grew 140px → 244px** (+104px reflow).
+- Card master with BOOLEAN `showIcon` → bindComponentProperty `.visible` → unbind + rebind → setComponentProperties `false` → icon hidden in instance.
+
+### Tests
+- `test-component-properties.mjs` — 47 tests (PR #8)
+- `test-bind-component-property.mjs` — 22 tests (v2.5.22 follow-up + v2.5.23 empty-object fix)
+- `test-dynamic-page.mjs` — 15 tests (PR #9)
+- `test-variant-handlers.mjs` — 46 tests (PR #10)
+- `test-layout-sizing-axes.mjs` — 15 tests (PR #11)
+- **Full suite: 368 tests, 0 failures**
+
+### Credits
+Massive thanks to **@muhammadmahad-debug** — 4 high-quality PRs, all backed by mock tests + plugin-side vm tests + rebuild + docs updates.
+
+---
+
+## [2.5.23] — 2026-05-19
+
+### Fixed — `unbindComponentProperty` rejected by Figma when clearing last field
+
+Setting `node.componentPropertyReferences = null` threw at runtime:
+`Property "node.componentPropertyReferences.value" failed validation: Expected object, received null`
+
+Caught during live Figma smoke test of v2.5.22 — mock tests didn't exercise the Figma validator.
+
+**Fix:** assign empty object `{}` instead of `null` when unbinding the last field.
+
+---
+
+## [2.5.22] — 2026-05-18
+
+### Added — Component property definitions on master components (merged from PR #8 by muhammadmahad-debug)
+
+**New handlers — master-side property API:**
+- `addComponentProperty` — create TEXT / BOOLEAN / INSTANCE_SWAP property on a `COMPONENT` or `COMPONENT_SET`. Validates `defaultValue` per type, rejects `VARIANT` with a clear message (variants live on component sets via `combineAsVariants()`).
+- `bindComponentPropertyToText` — bind a child TEXT node's `.characters` to a TEXT property. **This is the step that makes auto-layout actually re-measure on instance override** — Figma only reflows when text arrives via a bound property, not from a raw `characters` write.
+- `removeComponentProperty` — delete a property definition. Bare-name → `name#id` resolution works here too.
+
+**New handlers — generic binding (this release):**
+- `bindComponentProperty` — generic version supporting all three reference fields: `.characters` (TEXT property, TEXT node), `.visible` (BOOLEAN property, any node), `.mainComponent` (INSTANCE_SWAP property, INSTANCE node). Preserves existing references on the same node, validates field/type match, walks up to find owning component automatically.
+- `unbindComponentProperty` — remove a single field binding; other refs on the node preserved. Sets refs to `null` when last field cleared (Figma quirk: empty object doesn't clear).
+
+Resolves the long-standing limitation where instance text overrides changed content but never reflowed auto-layout. Now buttons grow to fit longer labels when `setComponentProperties` is used on the instance — exactly the workflow needed for proper component libraries.
+
+### Tests
+- `scripts/test-component-properties.mjs` — 47 tests (TEXT/BOOLEAN/INSTANCE_SWAP creation, bare-name resolution, binding edge cases, validation)
+- `scripts/test-bind-component-property.mjs` — 22 tests (proxy forwarding ×4, BOOLEAN binding ×3, INSTANCE_SWAP binding ×2, TEXT binding ×2, preservation ×2, validation ×4, unbind ×3, no-op ×1, last-field-clear ×1)
+- Full suite: **292 tests, 0 failures** (39+13+29+27+23+11+41+24+16+47+22)
+
+---
+
+## [2.5.21] — 2026-05-05
+
+### Fixed — BUG-01/02/03/04 from field reports
+
+**BUG-01: `setupDesignTokens` with `textStyles` throws under documentAccess: dynamic-page** (`src/plugin/handlers-tokens.js`)
+- Removed sync `figma.getLocalTextStyles()` fallback — Figma rejects sync call under `documentAccess: dynamic-page`
+- Both `setupDesignTokens` and `applyTextStyle` now use `getLocalTextStylesAsync` exclusively
+- Fixes: `Cannot call with documentAccess: dynamic-page. Use figma.getLocalTextStylesAsync instead.`
+
+**BUG-02: VECTOR `fill` rejects gradient objects** (`src/plugin/handlers-write.js`)
+- `buildVector` now uses `buildFillArray` (same as FRAME/RECTANGLE) instead of `solidFill`
+- Gradient fills (`{ type: "LINEAR_GRADIENT", stops: [...] }`) now work on VECTOR nodes
+- Hex fills, alpha hex (`#RRGGBBAA`), and CSS color strings still work — no regression
+
+**BUG-03: `query()` 100-node hard cap + no `parentId` filter** (`src/plugin/handlers-write.js`)
+- Default cap raised 100 → 500 (configurable via `limit` param)
+- New `parentId` param scopes search to a subtree — `findAll` runs on the parent instead of the whole page
+- Throws clear error if `parentId` is invalid; gracefully returns `[]` if parent has no `findAll` method
+
+**BUG-04: Material Icons names produce no helpful error** (`server/code-executor.js`)
+- Added `MATERIAL_TO_IONICONS` mapping table (60+ common icons: `local_cafe`→`cafe`, `notifications`→`notifications`, etc.)
+- When user passes a Material name, error now suggests the Ionicons equivalent
+- For unknown `snake_case` names, error suggests kebab-case alternative
+- Full library scan still runs first — only the error message is improved
+
+### Tests
+- `scripts/test-v2521.mjs` — 16 new tests (BUG-02 ×5, BUG-03 ×4, BUG-04 ×4, regression ×3)
+- Full suite: **223 tests, 0 failures** (39+13+29+27+23+11+41+24+16)
+
+---
+
+## [2.5.19] — 2026-04-19
+
+### Fixed — BUG-13/16/17/18/19 from field reports
+
+**BUG-18/19: `strokeColor` param silently ignored on FRAME/ELLIPSE** (`src/plugin/handlers-write.js`)
+- `strokeColor` is now accepted as alias for `stroke` in both `create` and `modify`
+- Fixes invisible borders on checkbox FRAMEs and ring ELLIPSEs with `fillOpacity:0`
+- `strokeAlign` also forwarded correctly in both paths
+
+**BUG-17: `strokeDashPattern` not forwarded** (`src/plugin/handlers-write.js`)
+- `strokeDashPattern: [6, 4]` now forwarded to Figma's `dashPattern` field via `applyCommonProps`
+- Works on FRAME, RECTANGLE, ELLIPSE — any node using `applyCommonProps`
+
+**BUG-13: FRAME with `layoutMode` + no explicit size defaults to 100×100** (`src/plugin/handlers-write.js`)
+- When `width`/`height` are omitted on a FRAME that has `layoutMode`, plugin now sets
+  `primaryAxisSizingMode: "AUTO"` / `counterAxisSizingMode: "AUTO"` — Figma hug-sizes to children
+- Explicit `width`/`height` still work exactly as before (no regression)
+- Fixes nested body columns rendering at `100×100` with wrong `y` offsets inside card auto-layout
+
+**BUG-16: `search_nodes` `text:` param not supported** (`src/plugin/handlers-read.js`)
+- Added `text` to search criteria — matches TEXT nodes whose `characters` contains the given string
+- Non-TEXT nodes are excluded when `text` filter is active
+- Works in both `figma_read` tool and `figma.search_nodes()` inside `figma_write` sandbox
+
+### Tests
+- `scripts/test-v2519.mjs` — 24 new tests (BUG-18/19 ×7, BUG-17 ×2, BUG-13 ×5, BUG-16 ×3, regressions ×7)
+- Full suite: **207 tests, 0 failures** (39+13+29+27+23+11+41+24)
+
+---
+
+## [2.5.18] — 2026-04-19
+
+### Tests — Multi-session / multi-tab verification (`scripts/test-multi-session.mjs`)
+
+Added comprehensive test suite proving multi-tab isolation works correctly with no regressions.
+
+**Scenarios covered (41 tests):**
+- Session created on first poll; metadata (fileName, connected, lastPollAgoMs) correct
+- Two tabs → two independent session objects, no shared state
+- Explicit `sessionId` routes op to correct tab even when both tabs are polling simultaneously
+- Cross-contamination: op addressed to tab-A never lands in tab-B regardless of poll timing
+- `isPluginConnected(sessionId)` returns true/false per individual session
+- `clearQueue(sessionId)` clears only the target session; sibling session queue untouched
+- `/sessions` and `/health` HTTP endpoints return correct per-session metadata
+- 3 tabs simultaneous: each op resolves to the correct tab with distinct node IDs
+- Response settle in reverse order: opA and opB resolve to correct caller regardless of which response arrives first
+
+### Tests
+- `scripts/test-multi-session.mjs` — 41 new tests
+- Full suite: **183 tests, 0 failures** (39 + 13 + 29 + 27 + 23 + 11 + 41)
+
+---
+
+## [2.5.17] — 2026-04-19
+
+### Fixed — BUG-04 (VECTOR dimensions) + BUG-11 (H/V SVG path commands)
+
+**BUG-11: H/V uppercase SVG path commands not normalized** (`src/plugin/svg-path-helpers.js`)
+- Root cause: early-return guard `!/[Aamlhvcsqt]/` was true for paths with only uppercase H/V — function returned the raw path unchanged, causing Figma to throw `Invalid command at H`
+- Fix: replaced faulty condition with `!/[HhVvAa]/.test() && !/[mlcsqt]/.test()` — now correctly identifies all paths needing conversion
+- Uppercase `H x` → `L x currentY`, `V y` → `L currentX y` now work correctly
+- Lowercase `h`/`v` (relative) already worked — confirmed no regression
+
+**BUG-04: VECTOR node dimensions reset by Figma after setVectorPaths** (`src/plugin/handlers-write.js`)
+- Figma recalculates the node bounding box from path geometry after `vectorPaths` is assigned, overwriting any prior `resize()` call
+- Fix: added `node.resize(width, height)` immediately after setting `vectorPaths` — Figma then scales the path geometry to fit the requested dimensions
+- Applies to both `paths` array and single `d` string inputs
+
+**BUG-09: `figma.getChildren(nodeId)` exposed in write sandbox** (`server/code-executor.js`)
+- Previously threw `figma.getChildren is not a function`
+- Now proxies to `get_node_detail` and returns the `children` array — or `[]` if node has no children
+- Enables `for` loops over children within a single `figma_write` call without needing a separate `figma_read`
+
+**BUG-10: `figma.getNode(id)` exposed in write sandbox** (`server/code-executor.js`)
+- Previously no way to read a node's properties inside `figma_write`
+- `figma.getNode(id)` proxies to `get_node_detail` — returns full node detail (same as `figma.getNodeById`)
+- `figma.getNodeById(id)` still works (unchanged)
+
+### Tests
+- `scripts/test-v2517.mjs` — 23 tests (BUG-11 ×13, BUG-04 ×7, BUG-05/15 regression ×3)
+- `scripts/test-bug0910.mjs` — 11 tests (BUG-09 ×8, BUG-10 ×2, regression ×1)
+- Full suite: **142 tests, 0 failures** (39 + 13 + 29 + 27 + 23 + 11)
+
+---
+
+## [2.5.16] — 2026-04-18
+
+### Docs — Known Figma Limitations + Non-negotiable rules update (`server/api-docs.js`)
+
+Added inline guidance for 8 platform-level behaviors that cannot be fixed at plugin level.
+AI users reading `figma_docs { section: "icons" }` now see the full limitations reference.
+
+**New rules in quick-start checklist (Critical Rules):**
+- ❌ `counterAxisAlignItems: "STRETCH"` is invalid — use `"MIN"` + `layoutAlign: "STRETCH"` on children (BUG-07)
+- ❌ `figma.getChildren()` / `figma.read()` not available in `figma_write` sandbox — use `figma_read` tool (BUG-09/10)
+- ❌ H/V commands in SVG `d` string not supported by Figma parser — replace with `L` + explicit coords (BUG-11)
+- ❌ `layoutGrow: 1` conflicts with `primaryAxisAlignItems: "CENTER"` — use `"SPACE_BETWEEN"` or manual padding (BUG-14)
+- ❌ Variables from previous `figma_write` call not available — sandbox isolated per call, redeclare all constants (BUG-08)
+
+**New "Known Figma Limitations" section (in `SECTION_ICONS`):**
+
+| Bug | Title | Workaround |
+|-----|-------|-----------|
+| BUG-03 | Inter baseline offset (~3–4px shift) | Add `paddingBottom: 3` to wrapper |
+| BUG-04 | VECTOR ignores width/height | Use ELLIPSE + arcData instead |
+| BUG-07 | `counterAxisAlignItems: "STRETCH"` throws | Use `"MIN"` + child `layoutAlign` |
+| BUG-08 | Sandbox isolated per `figma_write` | Redeclare all constants in each call |
+| BUG-09/10 | `figma.getChildren` not in sandbox | Use `figma_read` tool separately |
+| BUG-11 | H/V SVG path commands rejected | Replace with `L x y` |
+| BUG-12 | Emoji misaligns in auto-layout | Use `figma.loadIcon()` SVG instead |
+| BUG-14 | `layoutGrow` + `"CENTER"` conflict | Use `"SPACE_BETWEEN"` |
+
+**Fixed `api-docs.js` syntax error** — unescaped backticks in prose lines of the new section caused `SyntaxError: Unexpected identifier` at runtime. All inline code spans now correctly escaped as `\`...\``.
+
+---
+
+## [2.5.15] — 2026-04-18
+
+### Fixed — BUG-06, BUG-13/15/16/17/19 from field reports
+
+**BUG-06: `arcData` key normalization** (`server/code-executor.js`, `src/plugin/handlers-write.js`)
+- Both `startAngle`/`endAngle` (common SVG naming) and `startingAngle`/`endingAngle` (Figma API naming) are now accepted — auto-normalized server-side before forwarding to plugin
+- Missing keys default: `startingAngle=0`, `endingAngle=2π`, `innerRadius=0`
+- Eliminated the confusing `Required value missing at .startingAngle` error when using SVG-style key names
+
+**BUG-13/16/17/19: TEXT node 100×100 default destroys auto-layout** (`src/plugin/handlers-write.js`)
+- After `parent.appendChild(node)`, TEXT nodes now re-apply `textAutoResize` + `resize()` immediately
+- Prevents Figma auto-layout engine from locking child positions based on the 100×100 default size
+- Fixes: badge numbers at x/y=-42 (BUG-19), invisible text in small frames (BUG-17), sibling overflow after modify (BUG-16), auto-layout container wrong size (BUG-13)
+
+**BUG-15: `loadIconIn` double-nested wrapper** (`server/code-executor.js`)
+- New `noContainer: true` option — places icon directly into `parentId` without creating an extra wrapper frame
+- Use when the caller already created the intended container frame; prevents the outer→inner wrap shrink chain (28px → 14px → 7px icon)
+- Fixed `x=0`/`y=0` falsy trap (`|| 0` → `!== undefined`) so icons placed at origin are correctly positioned
+
+### Tests
+- `scripts/test-v2515.mjs` — 27 new tests (BUG-06 normalization ×8, BUG-13/16/17/19 ×4, BUG-15 ×9, regressions ×6)
+- Full suite: **142 tests, 0 failures** (34 + 39 + 13 + 29 + 27)
+
+---
+
+## [2.5.14] — 2026-04-18
+
+### Fixed — Bug fixes (BUG-01..05) + Code quality pass
+
+**Bug fixes (plugin sandbox)**
+
+- **BUG-01**: TEXT nodes with both `width` and `height` specified now correctly set `textAutoResize = "NONE"` before `resize()` — previously Figma shrunk the box to content
+- **BUG-02**: `fontWeight` values `"Black"`, `"ExtraBold"`, `"UltraBold"` now map correctly to Figma font styles (`Bold`, `Extra Bold`) — previously fell back to `Regular`
+- **BUG-04**: `arcData` on ELLIPSE nodes now forwarded to Figma correctly for circular ring/arc shapes
+- **BUG-05**: `loadIconIn` — `bgOpacity: 0` now respected (was silently defaulted to `0.1` due to `||` falsy trap); `iconSize` param exposed (default `floor(containerSize/2)`); `layoutAlign`/`layoutGrow` pass-through added
+
+**handlers-write.js refactor**
+
+- `handlers.create` refactored from chained `if-else` to `switch(type)` dispatch
+- Extracted shared helpers: `applyCommonProps()`, `applyAutoLayout()`, `applyChildLayout()`
+- Module-level `_B64_LOOKUP` IIFE (not rebuilt per `buildImage` call)
+- Base64 decode: `|| 0` falsy trap fixed → `!== undefined` check (was silently corrupting `'A'` = index 0)
+- `handlers.query`: throws descriptive error when called with no criteria
+- `handlers.instantiate`: `x=0`/`y=0` falsy trap fixed (`!== undefined` guard)
+- `handlers.modify`: auto-layout guard now checks actual `node.layoutMode !== "NONE"` state
+
+**handlers-read-detail.js fixes**
+
+- `get_css`: no longer makes a second `findNodeByIdAsync` call — reuses `detail.clipsContent` already loaded
+- Variable name resolution: replaced O(n²) nested `getVariableByIdAsync` loop with single `getLocalVariablesAsync()` call
+- `Set`/`Array.from`/`forEach` replaced with plain objects + for-loops (ES5 sandbox compatibility)
+- `suggestedImport`: single `split("/").slice(-1)` instead of double split
+- `position: absolute` now only emitted for non-flex nodes (was always emitted)
+
+**handlers-read.js fixes**
+
+- Shared `uint8ArrayToBase64()` helper extracted — replaces two inline duplicate base64 loops in `screenshot` and `export_image`
+- `screenshot`: redundant top-level loop before `findOne` removed — deep-search only
+- `get_design`: magic `999` sentinel replaced with `skipInlineSvg` boolean flag
+- `scan_design`: removed `countAssets()` double-traversal — `walkCount` now runs first, sections derive counts from already-collected data; `allFonts` capped at 30 (same as `allColors`)
+
+**handlers-tokens.js fixes**
+
+- `findCollectionAsync()` helper extracted — replaces 6 duplicated "load all → loop → match" blocks
+- `findVariableAsync()` helper extracted — uses `getLocalVariablesAsync()` (1 call) instead of per-variable `getVariableByIdAsync()` calls in inner loops (O(n) → O(1))
+- `setFrameVariableMode`: `Array.find` replaced with for-loop (ES5 sandbox compatibility)
+- `modifyVariable`: now accepts `modeId`/`modeName` params — was always writing to `mode[0]`
+- `hexToRgbA()` helper: preserves alpha channel from 8-char hex (`#RRGGBBAA`); used in `createVariable`, `setVariableValue`, `modifyVariable`, `setupDesignTokens`
+
+### Tests
+
+- `scripts/test-v2514.mjs` — 39 tests (BUG-01..05, write refactor)
+- `scripts/test-v2514-read.mjs` — 13 tests (read handler fixes)
+- `scripts/test-tokens.mjs` — 29 tests (token handler fixes)
+- **115 new tests, 0 failures; full regression (34 + 39 + 13 + 29 = 115) passes**
+
+---
+
+## [2.5.11] — 2026-04-17
+
+### Changed — Sectioned `figma_docs` (fixes MCP token-limit error)
+
+- **`figma_docs` now accepts a `section` param** — instead of returning 102KB at once (which exceeded Claude Code's tool result limit), it returns a focused slice:
+  - No section → index + quick-start + critical rules (~15KB)
+  - `section="rules"` → design principles, token rules, layer order, component-first rule
+  - `section="layout"` → auto-layout, button/card/badge/progress/mobile/header rules
+  - `section="api"` → create/modify/delete/clone/batch/read operations + workflow
+  - `section="tokens"` → variables, multi-mode, paint styles, text styles
+  - `section="icons"` → loadImage, loadIcon, loadIconIn, icon libraries, coloring, sizing
+- Each section is ≤25KB — safely within Claude Code's tool result token limit
+- `DOCS` export kept for backwards compatibility
+
+---
+
+## [2.5.10] — 2026-04-17
+
+### Fixed — Bug fixes from v2.5.x field reports
+
+- **BUG-03**: `characters` param now accepted as alias for `content` when creating TEXT nodes — previously silently discarded, text was invisible
+- **BUG-04**: `fills` array and `fontColor` shorthand now accepted on TEXT create — previously only `fill` (hex string) worked
+- **BUG-05**: `fontColor` in `modify()` now correctly updates fill color — previously a no-op
+- **BUG-08**: `set_selection` now auto-switches to the node's page before selecting — fixes "selection can only include nodes in that page" error when called after `setPage`
+- **BUG-12**: `figma.getNodeById(id)` added to write sandbox — calls `get_node_detail` under the hood
+- **BUG-13**: `figma.zoom_to_fit({ nodeIds })` added to write sandbox — alias for `set_viewport`
+- **BUG-14**: `figma.getCurrentPage()` added to write sandbox — returns current page info via `status`
+
+---
+
+## [2.5.9] — 2026-04-17
+
+### Added — Design-to-code gap closure (parity with official Figma MCP)
+
+**`get_design_context`** (new `figma_read` operation):
+AI-optimized payload for a node/selection — one call returns everything needed to scaffold code:
+- Flex layout semantics (`display`, `flexDirection`, `gap`, `alignItems`, `justifyContent`, `padding`)
+- Token-resolved fill colors as `var(--token-name)` CSS custom properties
+- Typography with applied style name (`text.style: "heading-xl"`)
+- Component instances with `component.set`, `component.variant`, `component.properties`
+- Summary: `tokensUsed[]`, `textStylesUsed[]`, `componentsUsed[]`
+- Children up to depth 4 (prevents token overflow on large frames)
+
+**`get_component_map`** (new `figma_read` operation):
+Lists every component instance in a frame with:
+- `componentSetName`, `variantLabel` ("State=Primary, Size=Large")
+- `properties` object (all variant/boolean/text property values)
+- `suggestedImport` — best-guess import path from component name convention
+- `uniqueComponents` — deduplicated summary with usage count
+
+**`get_unmapped_components`** (new `figma_read` operation):
+Finds component instances with no Figma description (likely no code mapping). Returns `unmapped[]` + `mapped[]` + hint telling AI to ask user for correct import paths.
+
+**`figma_rules`** (new top-level MCP tool):
+Aggregates the entire design system into a prompt-injectable markdown rule sheet:
+- `## Color Tokens` — CSS custom property format (`--color-accent: #6366F1`)
+- `## Variables` — per collection, per mode, with resolved values
+- `## Typography Styles` — font family + weight + size + line height
+- `## Component Sets` — all components with descriptions
+Equivalent to official Figma MCP's `create_design_system_rules`. Call once at session start.
+
+### Updated
+- `figma_read` operation enum now has 17 operations (added 3 new + reorganized descriptions by category)
+- `figma_rules` added as 5th top-level MCP tool alongside `figma_status/write/read/docs`
+
+### Tests
+- `scripts/test-v259.mjs` — 59 tests covering all 4 new features + 17-op enum + variantLabel logic
+- **316/316 total tests pass**
+
+## [2.5.8] — 2026-04-17
+
+### Added — Read design-to-code improvements (competitive with official Figma MCP)
+
+**P1 — `boundVariables` now resolved** (not just IDs):
+`get_node_detail` calls `getVariableByIdAsync()` for each binding and returns `{ id, name, resolvedType, value }` — value is hex string for COLOR, number for FLOAT, string for STRING. No more secondary `get_variables` + manual ID join.
+
+**P2 — New `get_css` operation**:
+`figma_read get_css { nodeId }` returns a ready-to-use CSS string covering: `position`, `width/height`, `display/flex`, `gap`, `align-items`, `justify-content`, `padding`, `background-color` / `linear-gradient`, `border`, `border-radius`, `box-shadow`, `filter`, `backdrop-filter`, `opacity`, `mix-blend-mode`, `color`, `font-size`, `font-family`, `font-weight`, `line-height`, `letter-spacing`, `text-align`, `text-decoration`, `transform: rotate`, `overflow: hidden`.
+Also returns `detail` (structured) alongside `css` (string).
+
+**P3 — Instance overrides: full list instead of count**:
+`overrides: [{ id, overriddenFields: ["fills", "characters", ...] }]` — shows exactly what changed on each overridden child vs. the main component.
+
+**P4 — `fillStyleId` / `textStyleId` resolved to name+value**:
+Alongside the raw IDs, `get_node_detail` now returns:
+- `textStyle: { name, fontSize, fontFamily, fontWeight }`
+- `fillStyle: { name, hex }`
+
+**P5 — `componentSetName` + `variantLabel` on INSTANCE nodes**:
+When an instance's main component belongs to a COMPONENT_SET, exposes:
+- `componentSetName: "Button"`
+- `variantLabel: "State=Primary, Size=Large"` (the variant portion after stripping the set name)
+
+### Tests
+- `scripts/test-v258.mjs` — 36 tests, all 5 improvements + regression (14 ops in enum)
+- **257/257 total tests pass**
+
+## [2.5.7] — 2026-04-17
+
+### Fixed
+
+**BUG-07** — `modify({ content })` doesn't reflow TEXT node width:
+- When `content` changes on a TEXT node that has `textAutoResize: "HEIGHT"` or `"WIDTH_AND_HEIGHT"`, Figma kept the old fixed width causing the longer text to wrap.
+- Fix: plugin now sets `textAutoResize = "WIDTH_AND_HEIGHT"` automatically after changing `characters`, unless caller explicitly passes `width` or `textAutoResize`.
+
+**BUG-08** — `create()` always appends to end, no way to insert at position:
+- Added `insertIndex` param to `create`. Uses Figma's `parent.insertChild(index, node)` to place the new node at the given index in `parent.children`. Clamps to valid range; falls back to `appendChild` when `insertIndex` is omitted.
+- Example: `figma.create({ type: "FRAME", parentId: sidebarId, insertIndex: 1, ... })` inserts after the first child.
+
+**BUG-10** — `loadIcon()` stroke-width raw SVG value makes outline icons invisible at small sizes:
+- Ionicons outline SVGs use `stroke-width="48"` in a 512×512 viewBox. After `createNodeFromSvg` the vector's `strokeWeight` is 48, overflowing a 14–24px icon frame.
+- Fix: `loadIcon` now reads the SVG `viewBox` width, computes `scale = requestedSize / viewBoxW`, and rewrites all `stroke-width` attributes to `max(0.5, originalStroke × scale)`.
+
+### Tests
+- `scripts/test-v257.mjs` — 16 tests covering all three fixes
+- **221/221 total tests pass**
+
+## [2.5.6] — 2026-04-17
+
+### Fixed — BUG-16: `loadIcon` x/y ignored, BUG-17: `layoutMode: "NONE"` silently ignored
+
+**BUG-16** (`loadIcon` always places icon at 0,0):
+- Root cause: `node.x = x` / `node.y = y` was set BEFORE `parent.appendChild(node)`. Figma resets a node's position when it is appended to a parent, discarding any coordinates set beforehand.
+- Fix: moved `node.x = x; node.y = y` to after `appendChild` in `handlers-write.js`. Applies to all node types (FRAME, RECTANGLE, SVG, TEXT, IMAGE, VECTOR, ELLIPSE, LINE).
+
+**BUG-17** (`modify({ layoutMode: "NONE" })` silently ignored):
+- Root cause: `primaryAxisAlignItems` / `counterAxisAlignItems` were still being applied after setting `layoutMode = "NONE"`, causing Figma to throw internally and roll back the change.
+- Fix: skip align/spacing props when `layoutMode` is being set to `"NONE"`. Also accept `null` and `""` as aliases for `"NONE"`.
+
+### Tests
+- Added `scripts/test-v256.mjs` — 8 tests covering BUG-16 (x/y after append) and BUG-17 (layout removal)
+
+## [2.5.5] — 2026-04-17
+
+### Added — Ionicons + Tabler icon libraries (free replacement for paid Icons8 ios-filled)
+
+Icons8 requires a paid plan for SVG format. Added 3 free open-source libraries with filled-first priority so `figma.loadIcon()` now resolves the iOS/filled styles Icons8 users were asking for.
+
+**New ICON_LIBRARIES priority order** (filled-first):
+
+1. **Ionicons v7.4.0** — iOS-native filled (default), 1,300+ icons (replaces Icons8 ios-filled style)
+2. Fluent UI — Win11 Filled
+3. Bootstrap — Filled
+4. Phosphor — Filled
+5. **Tabler Filled v3.24.0** — 4,500+ filled icons (broadest coverage)
+6. **Tabler Outline v3.24.0** — matching outline set
+7. Lucide — outline fallback
+
+**Ionicons SVG handling**: `<path>` tags have no `fill` attribute by default. Plugin now injects `fill="${requested}"` at the `<svg>` root so Figma imports with the requested color.
+
+**Ionicons naming quirks documented**:
+- Bell → `notifications`, Back arrow → `chevron-back`, Clock → `time`
+- Fire → `flame`, Lightning → `flash`, Lock → `lock-closed`
+- Outline/Sharp variants via suffix: `home-outline`, `home-sharp`
+
+### Why not Icons8 directly
+- SVG format requires paid plan (`{"error":"paid format requested"}` for free users)
+- Free PNG has attribution watermark + fixed resolution, unusable for Figma
+- API access needs paid key → violates zero-config philosophy
+
+### Tests
+- 11 new icon library tests (real unpkg.com fetches, verifies priority + fill injection)
+- **205/205 total tests pass** (84 full + 34 fix + 49 v2.5.2 + 27 v2.5.4 + 11 v2.5.5)
+- MCP stdio handshake verified clean
+
+### Docs
+- Naming table extended to 6 columns (Ionicons + Fluent + Bootstrap + Phosphor + Tabler Filled + Lucide)
+- ICON COLORING RULE updated with `fill="none"` handling for Ionicons
+- Both `server/api-docs.js` and `CLAUDE.md` in sync
+
+---
+
+## [2.5.4] — 2026-04-17
+
+### Added — Typography Tokens pipeline (merge of planned v2.6.0 + v2.7.0)
+
+Full first-class support for typography as Design Tokens. Previously text styles had to be created one-by-one and hardcoded fontSize/family. Now they are variable-bound and updatable globally.
+
+**`applyVariable` new fields (STRING variables):**
+- `fontFamily` / `fontName` — bind `TextNode.fontName.family`
+- `fontStyle` / `fontWeight` — bind `TextNode.fontName.style` ("Regular", "Bold", etc.)
+- `characters` / `text` — bind text content for localization
+
+**`setupDesignTokens` new params:**
+- `fontSizes: { "text-body": 14 }` → FLOAT variables
+- `fonts: { "font-primary": "Inter" }` → STRING variables
+- `textStyles: { "text/heading-xl": { fontFamily: "{font-primary}", fontSize: "{text-heading-xl}", lineHeight: 32 } }` — text styles with variable references (`{var-name}` syntax)
+- `modes: ["light", "dark"]` — multi-mode support; any token value can be `{ mode1: v, mode2: v }`
+
+**New handler: `applyTextStyle`**
+- `figma.applyTextStyle({ nodeId, styleName: "text/heading-xl" })` — apply a local text style by name in 1 call; auto-loads font before applying
+- Accepts `styleId` for faster lookup
+
+**Multi-mode typography example:**
+```js
+await figma.setupDesignTokens({
+  collectionName: "Typography",
+  modes: ["compact", "comfortable", "large"],
+  fontSizes: {
+    "text-body":       { compact: 12, comfortable: 14, large: 16 },
+    "text-heading-xl": { compact: 22, comfortable: 24, large: 28 }
+  }
+});
+```
+Then pin a frame to a mode: `figma.setFrameVariableMode({ nodeId, collectionId, modeName: "large" })` — every bound text resizes automatically.
+
+### Documentation
+
+- New non-negotiable rule: never hardcode `fontSize`/`fontFamily`/`fontWeight` inline on TEXT nodes.
+- `applyVariable` field table extended with fontFamily/fontStyle/characters.
+- New `applyTextStyle` section with examples.
+- `setupDesignTokens` example expanded to show fontSizes + fonts + textStyles + multi-mode.
+
+### Tests
+
+- 27 new typography tests (total 194/194 passing: 84 full + 34 fix + 49 v2.5.2 + 27 v2.5.4).
+- MCP stdio handshake verified clean (initialize + tools/list round-trip).
+
+---
+
+## [2.5.3] — 2026-04-17
+
+### Fixed — CRITICAL: MCP server crash on startup (v2.5.2 regression)
+
+- Raw backticks inside the markdown table in `server/api-docs.js` (applyVariable fields) were interpreted as template-literal expressions, causing `SyntaxError: Unexpected identifier 'fill'` the moment Node imported the module.
+- Every MCP client loading v2.5.2 saw `MCP error -32000: Connection closed` because the server died before the stdio handshake completed.
+- Backticks now properly escaped. Server start verified clean.
+
+**Action for users on v2.5.2:** upgrade to 2.5.3 (`npx figma-ui-mcp@latest`) and restart your IDE.
+
+---
+
+## [2.5.2] — 2026-04-16
+
+### Fixed — feedback.md BUG-02/03/04/05/08/10/11/13/15
+
+- **BUG-02**: `fill`/`stroke` now accept 8-digit hex `#RRGGBBAA`, `rgba(r,g,b,a)`, and 4-digit `#RGBA` — alpha is auto-extracted and applied as paint opacity. Explicit `fillOpacity`/`strokeOpacity` still wins.
+- **BUG-03**: VECTOR `d` paths now support SVG arc commands (`A`/`a`). Arcs are converted to cubic Bézier segments before Figma ingests them (Foley/van Dam algorithm, ≤90° chunks).
+- **BUG-04**: VECTOR `d` paths accept commas as delimiters — `"M 0 0, L 100 100"` works (spec-compliant).
+- **BUG-05**: `counterAxisAlignItems: "STRETCH"` now throws a descriptive error pointing to the correct fix: `counterAxisAlignItems: "MIN"` on parent + `layoutAlign: "STRETCH"` on each child.
+- **BUG-08**: Failed VECTOR path parsing now rolls back the orphan node — no more garbage vectors at page root after errors.
+- **BUG-10**: `effects: [...]` array supported on `create` and `modify` for any node type. Effect types: `DROP_SHADOW`, `INNER_SHADOW`, `LAYER_BLUR`, `BACKGROUND_BLUR` with `color`, `offset`, `radius`, `spread`, `visible`, `blendMode`. Hex alpha in shadow color auto-extracted.
+- **BUG-11**: Gradient fills via `fill: { type: "LINEAR_GRADIENT" | "RADIAL_GRADIENT", angle, stops: [{pos, color}] }`. Works in both `create` and `modify`.
+- **BUG-13**: Individual corner radii (`topLeftRadius`, `topRightRadius`, `bottomLeftRadius`, `bottomRightRadius`) now accepted in `create` and `modify`. Uniform `cornerRadius` still works as alias for all 4.
+- **BUG-15**: When both `width` and `textAlign: "CENTER"` (or RIGHT/JUSTIFIED) are passed to TEXT, plugin auto-infers `textAutoResize: "NONE"` so the text box keeps its full width — fixes silent label-alignment bugs where the box shrunk to content and collapsed centering.
+
+### Documentation
+
+- Added non-negotiable rules for `opacity: 0` wrapper trap, `counterAxisAlignItems: "STRETCH"` invalid value, centered TEXT width requirement, display numeric lineHeight.
+- New sections: Effects, Gradient Fills, Individual Corner Radii, Hex Alpha Shorthand, SVG Path Commands with examples.
+
+### Internal
+
+- New source files: `src/plugin/svg-path-helpers.js`, `src/plugin/paint-and-effects.js`.
+- 167 automated tests (84 full + 34 fix + 49 v2.5.2) passing.
+
+---
+
+## [2.5.1] — 2026-04-16
+
+### Fixed — feedback.md BUG-01, BUG-03, BUG-05 + SUGGEST-01, SUGGEST-04 + applyVariable extended fields
+
+- **BUG-01/BUG-03**: `create()` now throws a descriptive error when `parentId` is given but not found in the scene — no more silent orphan frames at page root. Error message includes a hint to re-query via `get_page_nodes()`.
+- **BUG-05**: `screenshot` and `export_image` called `exportAsync()` on freshly-created nodes before Figma's renderer had painted them, producing blank/white PNG. Fix: `figma.viewport.scrollAndZoomIntoView([node])` is now called before every export to force the renderer to paint the node first.
+- **SUGGEST-01**: `figma.batch()` already routed to `handlers["delete"]` — confirmed working; added explicit comment in source.
+- **SUGGEST-04**: `figma.instantiate()` now accepts an `overrides` map `{ "Layer Name": { text, fill, stroke, opacity, visible, fontSize, cornerRadius } }` — applies property overrides to named child layers after instantiation.
+- **applyVariable extended fields**: `applyVariable` now supports binding FLOAT/BOOLEAN variables to: `paddingTop/Bottom/Left/Right`, `itemSpacing`, `counterAxisSpacing`, `fontSize`, `letterSpacing`, `lineHeight`, `paragraphSpacing`, `paragraphIndent`, `strokeWeight`, `visible`, all four corner radius fields. Adds descriptive error when field is not valid for the node type.
+
+---
+
+## [2.5.0] — 2026-04-15
+
+### Fixed — feedback.md bugs: get_page_nodes array, batch delete, auto-layout warning, sandbox error hint
+
+- **Bug 1**: `figma.get_page_nodes()` now returns a plain Array instead of `{ page, nodes: [] }` — `nodes.length`, `for` loops, and array methods all work directly. `.page` is still accessible as a non-enumerable property.
+- **Bug 2**: `figma.delete({ ids: ["1:1", "1:2", ...] })` batch delete added — deletes multiple nodes in one round-trip. Returns `{ deleted, count, results[] }`.
+- **Bug 3**: Creating a node with explicit `x`/`y` inside an auto-layout parent now emits a warning to the plugin UI log explaining that Figma ignores absolute position inside auto-layout, and what to use instead (`layoutAlign`, `layoutGrow`).
+- **Bug 5**: `ReferenceError` inside a `figma_write` sandbox now appends: *"Each figma_write call runs in an isolated sandbox — variables from previous calls are not available. Re-query node IDs with figma.get_page_nodes() or figma.query() at the start of each call."*
+
+---
+
+## [2.4.5] — 2026-04-15
+
+### Fixed — Issue #7: Multiple artboards stacking on top of each other
+
+- Top-level FRAME/GROUP creation now auto-offsets when user doesn't specify x/y
+- Scans existing page children, places new frame 50px right of the rightmost element
+- Only triggers when parentId is absent and x/y are both unset (explicit x:0 y:0 still works)
+- Regression test: 55/55 operations pass
+
+---
+
+## [2.4.4] — 2026-04-14
+
+### Fixed — normalizeHex now accepts rgba(), rgb(), 8-char hex
+
+- `rgba(255,255,255,0.3)` → `#ffffff` (alpha discarded, use `fillOpacity` separately)
+- `rgb(100,200,50)` → `#64c832`
+- `#ff000080` (8-char hex with alpha) → `#ff0000`
+- `#f008` (4-char shorthand with alpha) → `#ff0000`
+- Prevents "Invalid color value" errors from AI-generated CSS colors
+
+---
+
+## [2.4.3] — 2026-04-14
+
+### Fixed — CRITICAL: operations never delivered to plugin (long poll race condition)
+
+**Root cause:** `sendOperation` pushed work to queue and flushed long-poll BEFORE setting the pending map entry. `#respondPoll` filters queue by `session.pending.has(r.id)` — since pending wasn't set yet, filter returned empty array → 0 ops delivered → every operation timed out after 60s.
+
+**Fix:** Set `session.pending` BEFORE pushing to queue and flushing long-poll. This ensures `#respondPoll` filter always finds the matching pending entry.
+
+**Verified:** Integration test covers create, get_page_nodes, screenshot, error handling — all 4 pass.
+
+---
+
+## [2.4.2] — 2026-04-14
+
+### Fixed — Plugin reconnection too slow after server late start
+
+- Poll uses short timeout (3s) when reconnecting, long poll (12s) only when stable
+- Backoff capped at 3s (was 5s), exponential stops growing after 3 errors
+- Recovery cycle: ~6s per attempt (was ~17s) — plugin reconnects 3x faster
+- `everConnected` flag tracks if connection was established before
+
+---
+
+## [2.4.1] — 2026-04-14
+
+### Fixed — Long poll timeout causing plugin disconnects
+
+- `LONG_POLL_MS` reduced 25s → 8s — Figma plugin iframe may kill fetch requests >10s
+- Plugin `LONG_POLL_TIMEOUT` reduced 30s → 12s (8s server + buffer)
+- Replaced `AbortSignal.timeout()` with `AbortController` + `setTimeout` fallback (not all Figma iframe envs support `AbortSignal.timeout`)
+- `#resolveSession` now prefers session with active long-poll waiter (ready to receive work immediately), then most recently polled session
+- Fixes "Operation timed out after 60000ms" when plugin was connected but work routed to wrong/empty session
+
+---
+
+## [2.4.0] — 2026-04-14
+
+### Added — Prototyping, Scroll Behavior & Variant Swapping
+
+**Prototyping / Reactions:**
+- `setReactions` — add prototype interactions (ON_CLICK, ON_HOVER, ON_PRESS, AFTER_TIMEOUT triggers)
+- Supported actions: NAVIGATE, SWAP, OVERLAY, SCROLL_TO, BACK, CLOSE, URL
+- Transition types: DISSOLVE, SMART_ANIMATE, MOVE_IN, MOVE_OUT, PUSH, SLIDE_IN, SLIDE_OUT, INSTANT
+- Easing: LINEAR, EASE_IN, EASE_OUT, EASE_IN_AND_OUT, EASE_IN_BACK, EASE_OUT_BACK, CUSTOM_BEZIER
+- `getReactions` — read all prototype interactions from a node
+- `removeReactions` — clear all interactions from a node
+
+**Scroll Behavior:**
+- `setScrollBehavior` — configure overflow scrolling on frames
+- `overflowDirection`: NONE, HORIZONTAL, VERTICAL, BOTH
+- Auto-pairs with `clipsContent` for proper scroll containers
+
+**Variant / Component Property Swapping:**
+- `setComponentProperties` — set instance properties (variant, boolean, text, instance swap)
+- `swapComponent` — swap the main component of an instance
+- `getComponentProperties` — read all properties + definitions from components/instances
+
+**Misc:**
+- All new ops registered in code-executor.js (WRITE_OPS + READ_OPS)
+- figma_write tool description updated with new operations
+
+---
+
+## [2.3.0] — 2026-04-14
+
+### Added — Multi-Instance Support (P4)
+
+**Multiple Figma tabs/files can now connect simultaneously to one bridge server.**
+
+- `Session` class tracks per-file state (queue, pending ops, long-poll waiter, stats)
+- Plugin sends `sessionId` (root node ID) + `fileName` via `session-info` postMessage
+- `/poll?sessionId=X&fileName=Y` routes work to correct session
+- `/response` auto-routes result back to originating session via `#opToSession` map
+- `/sessions` endpoint lists all connected sessions with status
+- `/health` includes session list
+- `figma_status` returns `sessions` array
+- `figma_write` and `figma_read` accept optional `sessionId` param to target specific file
+- `executeCode` wraps bridge with pinned sessionId for all ops in that execution
+- Idle sessions auto-expire after 5 min (`SESSION_EXPIRE_MS`)
+- Fully backward compatible: omit sessionId = auto-select any connected session
+
+---
+
+## [2.2.0] — 2026-04-14
+
+### Added — Long Polling, Connection Resilience & MCP Registry
+
+**Long Polling (P3):**
+- Bridge `/poll` endpoint now holds request up to 25s until work arrives — near-realtime latency vs old 900ms short polling
+- `#flushLongPoll()` wakes held request immediately when `sendOperation()` is called
+- Plugin UI poll timeout raised to 30s to match; inter-cycle delay reduced 900ms → 300ms
+- Fully backward compatible: old plugins fall back to short polling automatically
+
+**Connection Resilience (P2):**
+- Operation-specific timeouts: screenshot/scan_design/batch get 90s, others keep 60s default
+- Latency tracking via exponential moving average in `#stats`
+- `/health` endpoint now returns `longPollHeld`, `stats` (ops count, avg latency, offline queue length)
+- `figma_status` MCP tool exposes `stats` for AI observability
+- Long-poll waiter auto-cleanup on client disconnect
+
+**MCP Registry (P1):**
+- `glama.json` — full tool schemas for glama.ai registry
+- `smithery.yaml` — smithery.ai registry definition
+
+**Misc:**
+- Version bump to 2.2.0 across package.json, index.js, bridge-server.js
+
+---
+
+## [2.1.1] — 2026-04-08
+
+### Fixed — GitHub Issue #5: Filter invisible elements from read operations
+
+- `get_design`, `get_selection`, `search_nodes`, `scan_design` — now skip nodes with `visible: false` by default
+- New `includeHidden` param (boolean, default `false`) on all four operations — set `true` to include hidden layers
+- `extractDesignTree` updated with `filterInvisible` flag, propagated through full recursion
+- `search_nodes` criteria object now includes `includeHidden` for consistent behavior
+- `figma_read` MCP tool schema updated with `includeHidden` property documentation
+
+---
+
+## [2.1.0] — 2026-04-08
+
+### Fixed — Comprehensive code review (2 critical, 5 high, 4 medium)
+
+**Critical:**
+- `setFrameVariableMode` — null dereference when modeId doesn't match collection modes
+- `httpFetch` — unbounded redirect loop → now limited to 3 redirects
+
+**High:**
+- Base64 image decode — padding check on raw data instead of cleaned data → corrupt images
+- `modifyVariable` / `setupDesignTokens` — inline hex parse bypassed `normalizeHex()` → NaN on CSS color names. Now uses `hexToRgb()`
+- `httpProxy` missing `.port` property → fragile fallback
+- `search_nodes` — removed unnecessary `loadAllPagesAsync()` that blocked UI on large files
+- `countAssets` function declared inside loop → hoisted outside with section parameter
+
+**Medium:**
+- Version strings unified to 2.1.0 across `package.json`, `server/index.js`, `bridge-server.js`, plugin status handler
+- `modify` handler now supports `paddingHorizontal` / `paddingVertical` shorthand (matches `create`)
+- `ui.html` READ_OPS updated — added `get_node_detail`, `export_image`, `search_nodes`, `scan_design`; removed stale `to_code`
+- `ungroup` — added `parent.removed` guard, falls back to currentPage
+
+**Performance:**
+- `get_selection` — eliminated double `extractDesignTree` call (reuses computed tree for tokens)
+- `get_design` — SVG inline time budget 5s + max 10 icons (prevents timeout on heavy files)
+- Bridge `OP_TIMEOUT_MS` raised 30s → 60s for heavy files
+
+---
+
+## [2.0.3] — 2026-04-08
+
+### Fixed — `fills: NaN color` error (`src/plugin/utils.js`)
+
+- **`hexToRgb`** — `parseInt` was returning `NaN` when AI passed invalid color values (CSS names, `"transparent"`, `"var(--color)"`, short hex without expansion)
+- Added `normalizeHex()`: validates hex, expands 3-char shorthand, maps common CSS color names (`white`, `black`, `teal`, `red`, etc.) to hex, treats `transparent`/`none` as no-fill
+- **`solidFill` / `solidStroke`** — both now return `[]` for transparent/none instead of crashing
+- Throws clear error for truly invalid values: `Invalid color value: "var(--x)". Use 6-digit hex like #FF0000`
+
+---
+
+## [2.0.2] — 2026-04-07
+
+### Fixed
+- `handlers.create`: guard missing `type` early — dumps received param keys in error message so AI can self-diagnose instead of guessing API changed
+
+---
+
+## [2.0.1] — 2026-04-07
+
+### Fixed / Docs
+- `counterAxisAlignItems: "STRETCH"` is invalid — corrected to `"MIN"` in all docs + examples
+- Added **BUTTON/INPUT CONSTRUCTION RULE**: never use RECTANGLE+TEXT siblings — always use FRAME with auto-layout
+- Added **CARD/SCREEN LAYOUT RULE**: card container must use VERTICAL auto-layout, full-width children use `layoutAlign: "STRETCH"`
+- `setPage` now accepts `pageName`, `page`, `pageId` params (not just `name`)
+- `resolveNode` accepts `nodeId`, `targetId`, `nodeName` in addition to `id`/`name`
+- `delete` is now idempotent — returns success if node already gone
+- `modify` dumps received param keys in error to help diagnose AI param mismatches
+- `lineHeight` accepts both number and pre-formed `{ value, unit }` object
+- Split `plugin/code.js` → `src/plugin/` modules with concat build pipeline
+
+---
+
+## [2.0.0] — 2026-04-07
+
+### Fixed — Stale node IDs and parameter naming inconsistencies (`src/plugin/`)
+
+- **`resolveNode`** — now falls back to name lookup when ID not found (handles stale IDs after delete+recreate in same session)
+- **`modify`** — clearer error message: tells AI the node was deleted and to use current IDs
+- **`get_node_detail`** — now accepts `nodeId` and `nodeName` in addition to `id`/`name`; error message now instructs AI to call `get_page_nodes` to refresh IDs
+- **`applyVariable`** — now accepts `nodeId`, `id`, `targetId`, or `node` object (any of the 4 common param names AI uses)
+- **`ungroup`** — null guard for empty/missing `children`; handles already-deleted nodes
+- **`create`** — guard for deleted parent node in batch operations (stale `parentId`)
+- **`lineHeight`** — accepts both number (pixels) and pre-formed `{ value, unit }` object in both `create` and `modify`
+
+### Other
+- Split `plugin/code.js` → `src/plugin/` modules with concat build pipeline (`npm run build:plugin`)
+
+---
+
+## [1.9.9] — 2026-04-07
+
+### Fixed — Read operations miss gradient angles, blur effects, multiple strokes, rotation (`plugin/code.js`)
+
+Improvements to `extractDesignTree` (used by `get_design`, `get_selection`) and `get_node_detail`:
+
+- **Gradient angle** — `gradientAngle` (degrees) now extracted from `gradientTransform` matrix for `GRADIENT_LINEAR` fills; available in both `extractDesignTree` and `get_node_detail`
+- **Multiple strokes** — when a node has >1 stroke or non-SOLID strokes, all are returned as `strokes[]` array instead of only the first solid; applies to both read paths
+- **Blur effects** — `get_node_detail` now outputs `filter: "blur(Xpx)"` for `LAYER_BLUR` and `backdropFilter: "blur(Xpx)"` for `BACKGROUND_BLUR` (previously silently dropped)
+- **Rotation** — `rotation` (degrees) now included in both `extractDesignTree` and `get_node_detail` when non-zero
+
+---
+
+## [1.9.8] — 2026-04-07
+
+### Fixed — UI quality degrades when installed via npm in a new project
+
+Root cause: AI skips `figma_docs` when there is no local `CLAUDE.md`, resulting in hardcoded colors, wrong icon sizes, broken layer order, and missing Design Library setup.
+
+Three-point enforcement fix:
+
+- **`figma_write` description** (`server/tool-definitions.js`): added `⚠️ MANDATORY: Call figma_docs BEFORE writing any design code` with explicit consequence warning — AI reads tool descriptions before every call
+- **`figma_status` hint** (`server/index.js`): changed from generic "Ready" to `CONNECTED. BEFORE drawing anything: call figma_docs` — AI reads the status response before proceeding
+- **`figma_docs` quick-start checklist** (`server/api-docs.js`): added `🚨 CRITICAL QUICK-START CHECKLIST` at the very top (before all other rules) with the exact 3-step bootstrap sequence + 7 non-negotiable rules in compact bullet form — ensures critical rules are seen immediately, not buried in 1700 lines
+
+---
+
+## [1.9.7] — 2026-04-07
+
+### Added — Frame variable mode override (`plugin/code.js`, `server/code-executor.js`)
+
+2 new handlers replacing the need for Figma REST API `PATCH /v1/files/:key/nodes` `explicitVariableModes`:
+
+- **`setFrameVariableMode`** — pin a frame/group/section to a specific variable mode via `node.setExplicitVariableModeForCollection(collection, modeId)`. Accepts `collectionId` (or name) + `modeId` or `modeName`. Returns `explicitVariableModes` map.
+- **`clearFrameVariableMode`** — remove the explicit mode override from a frame via `node.clearExplicitVariableModeForCollection(collection)`, reverting to parent/document default.
+
+Typical use case: set Light mode on one frame, Dark on another, then export both — all in one script without any REST calls.
+
+---
+
+## [1.9.6] — 2026-04-07
+
+### Added — Figma Variables multi-mode support (`plugin/code.js`, `server/api-docs.js`)
+
+4 new handlers for full Light/Dark/Brand mode workflows:
+
+- **`addVariableMode`** — add a new mode to a collection (`collection.addMode(name)`) → returns `{ modeId, modeName, modes }`
+- **`renameVariableMode`** — rename an existing mode (`collection.renameMode(modeId, newName)`) → returns updated modes list
+- **`removeVariableMode`** — delete a mode (`collection.removeMode(modeId)`) → returns remaining modes
+- **`setVariableValue`** — set a variable's value for any specific mode; accepts `modeId` or `modeName`, auto-converts hex for COLOR variables
+
+`tool-definitions.js` description updated to list all new operations.
+`api-docs.js` updated with individual examples + complete Light/Dark multi-mode workflow.
+
+---
+
+## [1.9.5] — 2026-04-05
+
+### Fixed — `figma.getNodeById` removed from Figma Plugin API (`plugin/code.js`)
+- Replaced deprecated sync `figma.getNodeById()` (removed by Figma) with `findNodeByIdAsync()` using `figma.getNodeByIdAsync()` as cross-page fallback
+- Added `findNodeByIdAsync` as a new async helper alongside the existing sync `findNodeById` (current-page only)
+- Updated all 21+ call sites across every handler: `modify`, `delete`, `create`, `clone`, `group`, `set_selection`, `get_selection`, `get_design`, `scan_design`, `search_nodes`, `export_svg`, `export_image`, `get_node_detail`, `set_viewport`, `apply_variable`, `createComponent`, `append`, `instantiate`, `query`, `flatten`, `resize`, `ungroup`
+- `resolveNode` is now `async` and uses `findNodeByIdAsync` internally
+
+### Fixed — `[dispatch:delete] not a function` (`plugin/code.js`)
+- `handlers.delete` used dot notation on a JS reserved keyword — reassigned via `handlers["delete"]` (bracket notation) to prevent engine parse ambiguity in Figma plugin sandbox
+
+### Fixed — `[dispatch:search_nodes] invalid 'in' operand` (`plugin/code.js`)
+- Figma API can return `null`/`undefined` slots in `node.children` arrays — all tree-walking functions now guard with `!node || typeof node !== "object"` before any `in` operator usage
+- Added `Array.isArray(node.children)` checks alongside all `"children" in node` expressions
+- Functions fixed: `walkAndMatch`, `walkCount`, `countAssets`, `collectTextContent` (inner walk), `collectIconNames` (inner walk), `extractDesignTree`
+
+---
+
+## [1.9.4] — 2026-04-04
+
+### Fixed — Multi-session stability (`server/index.js`, `server/bridge-server.js`)
+- **Proxy-first startup**: sessions now check for an existing healthy bridge on port 38451 *before* starting `BridgeServer` — if one is found, the session attaches as HTTP proxy immediately and never creates a redundant local bridge
+- **Redundant bridge cleanup**: if `BridgeServer.start()` falls back to a non-primary port, it is stopped and the session switches to HTTP proxy — prevents sibling sessions from accumulating bridges on 38452+
+- **Safe stale-bridge detection**: `killStaleBridges` now only targets the primary port, and only kills processes that return invalid JSON (zombie/foreign). Bridges that return a valid health payload — even with `pluginConnected: false` — are live sibling sessions and are never killed. Fixes `Transport closed` errors in multi-session environments (Codex App, etc.)
+
+### Fixed — Instance node missing source component reference (`plugin/code.js`)
+- `get_selection`, `get_design`, and `get_node_detail` now all expose `componentId` and `componentName` for `INSTANCE` nodes — previously `get_node_detail` was missing these fields
+
+### Fixed — Node data missing applied style references (`plugin/code.js`)
+- All read operations now expose style IDs when a node has applied local styles: `textStyleId`, `fillStyleId`, `strokeStyleId`, `effectStyleId`, `gridStyleId`
+- Cross-reference these with `get_styles()` results to map nodes to design system styles
+
+### Fixed — Component instance missing property values (`plugin/code.js`)
+- `INSTANCE` nodes now expose `componentPropertyValues`: a map of property key → `{type, value}` for the explicit property assignments on that instance
+- `COMPONENT` and `COMPONENT_SET` nodes now expose `componentPropertyDefinitions`: a map of property key → `{type, defaultValue}`
+
+---
+
+## [1.9.3] — 2026-03-28
+
+### Fixed — Plugin bugs
+- **`fill: "NONE"` crash**: `solidFill()` now returns `[]` when hex is `"NONE"` or invalid — no more NaN color validation errors
+- **`search_nodes` crash**: added `figma.loadAllPagesAsync()` before `findOne()` calls — fixes `documentAccess: dynamic-page` error
+- **`batch` empty operations**: handler now accepts both `figma.batch([...])` array and `{ operations: [...] }` format
+- **`modify` missing text properties**: added `textAlign`, `textAlignVertical`, `lineHeight` support with auto font loading
+
+### Added — Design rules in API docs (`figma_docs`)
+9 new mandatory rules for consistent, bug-free designs:
+- **Mobile Bottom Anchoring** — calculate y from frameHeight, not hardcode
+- **HUG vs STRETCH Conflict** — HORIZONTAL frames needing stretch must keep `primaryAxisSizingMode: "FIXED"`
+- **Centered Content Must Use Auto-Layout** — no manual x/y math for centering
+- **Illustration Centering + Layer Order** — draw background first, center icon last (top layer)
+- **Text Align vs Layout Align** — `layoutAlign: "STRETCH"` ≠ `textAlign: "CENTER"`, both needed
+- **Text Wrapping in Auto-Layout** — use `layoutAlign: "STRETCH"` on text that should wrap
+- **Header Title Centering** — `layoutGrow: 1` + `textAlign: "CENTER"` for [action][title][action] pattern
+- **Component Reuse** — create master components, use `clone` for instances across screens
+- **MANDATORY workflow**: components frame → create frame → convert to component → clone instances
+
+### Improved — README
+- Added step-by-step usage guide: connect → prompt → iterate
+- Added 6 prompt examples with expected results
+- Added tips for better AI design results
+- Added workflow conversation example
+
+---
+
+## [1.9.2] — 2026-03-23
+
+### Fixed — Text wrapping in mobile UI
+- **Auto-detect text wrap**: when `width` is set on TEXT node, plugin now defaults `textAutoResize: "HEIGHT"` — text wraps within frame instead of overflowing
+- Previously text with fixed width still used `WIDTH_AND_HEIGHT` (Figma default) → multi-line text spilled outside containers
+- No code change needed from AI side — plugin handles it automatically
+
+### Fixed — Stale bridge port conflict
+- **Auto-kill stale bridges**: on startup, scans ports 38451-38460 for disconnected figma-ui-mcp processes and kills them before binding
+- Fixes issue where multiple Claude Code sessions leave zombie bridge servers, causing plugin to connect to wrong port
+- Always reclaims port 38451 when possible
+
+### Improved — SEO & discoverability
+- README: added IDE-specific subtitle (Claude Code, Antigravity, Cursor, VS Code)
+- README: added keywords section for Google indexing
+- package.json: expanded keywords and description for npm search
+- Clarified tested vs compatible IDEs
+
+---
+
+## [1.9.1] — 2026-03-19
+
+### Fixed — Connection stability
+- **OP_TIMEOUT**: 10s → 30s — prevents first-run timeout during font loading and large exports
+- **HEALTH_TTL**: 30s → 60s — plugin won't be marked offline while processing heavy operations
+- **Plugin UI messages**: clear feedback during first connection ("Waiting for MCP server", "first run may take 15s to download", "Cannot connect — run: npx figma-ui-mcp")
+
+---
+
+## [1.9.0] — 2026-03-19
+
+### Added — `scan_design` operation (progressive reading for large files)
+- Walks entire tree, returns structured summary without token overflow
+- Extracts: all text (500 max), top 30 colors by usage frequency, fonts by usage, images (50), icons (50), component instances, sections with text summaries
+- Recommended first step for complex designs before drilling into sections
+
+### Added — `search_nodes` operation (property-based search)
+- Find nodes by: fill color, type, namePattern (wildcard `*header*`), fontFamily, fontWeight, fontSize, hasImage, hasIcon, min/maxWidth, min/maxHeight
+- Returns up to 50 matches with parent path context
+- No tree traversal needed — direct property queries
+
+### Added — Compact output mode for `get_design` / `get_selection`
+- `detail: "minimal"` — ~5% tokens: id, name, type, position, size only
+- `detail: "compact"` — ~30% tokens: + fill, stroke, layout, text content, icon/image flags
+- `detail: "full"` — 100% tokens: + effects, boundVariables, inline SVG (default)
+- Enables progressive reading: minimal overview → compact section → full node detail
+
+### Added — Restart IDE warning in README
+- Clear note after MCP setup: must quit and reopen IDE for MCP server to load
+
+---
+
+## [1.8.0] — 2026-03-18
+
+### Fixed — BLOCKER: export_svg TextDecoder crash
+- Replaced `new TextDecoder()` with manual UTF-8 decoder — Figma sandbox has no TextDecoder
+
+### Added — `export_image` operation
+- Export node as base64 PNG/JPG for saving to disk (scale, format params)
+- Returns `{ base64, format, width, height, nodeId, sizeBytes }`
+
+### Added — `get_node_detail` operation
+- CSS-like properties for single node — no tree traversal needed
+- Includes `css` object with mapped values (flexDirection, justifyContent, alignItems, gap, padding)
+- blendMode, visible, opacity, boxShadow (CSS string), boundVariables
+
+### Improved — Mixed text segments
+- TEXT nodes with mixed styles now return `segments` array with per-run fill, fontWeight, fontSize
+- First segment used as representative for top-level fontFamily/fontWeight/fill
+
+### Improved — Design data extraction
+- Inline SVG for icon nodes in `get_design` (auto-export up to 20 icons, <5KB each)
+- Padding always detailed 4 values + counterAxisSpacing + itemSpacing rename
+- fillOpacity included at all depths when !== 1.0
+- strokes include strokeAlign on all node types
+
+---
+
+## [1.7.3] — 2026-03-18
+
+### Added — `export_image` operation (figma_read)
+- Export any node as base64 PNG/JPG string — for saving images to disk
+- Supports `format` param ("png" default, "jpg") and `scale` param (default 2x)
+- Returns `{ base64, format, width, height, nodeId, nodeName, sizeBytes }`
+- Use case: extract avatars, thumbnails, icons from Figma designs as files
+- Separate from `screenshot` (which displays inline in chat)
+
+---
+
+## [1.7.2] — 2026-03-18
+
+### Fixed — BLOCKER: export_svg TextDecoder crash
+- Replaced `new TextDecoder()` with manual UTF-8 decoder (`uint8ArrayToString`) — Figma plugin sandbox has no TextDecoder
+- `export_svg` now returns width/height alongside SVG markup
+- Created shared `exportNodeSvg()` helper used by both export_svg and inline icon extraction
+
+### Added — `get_node_detail` operation (figma_read)
+- Query a single node by ID/name → returns CSS-like properties
+- Includes: fills (multi-fill, gradient), stroke, borderRadius, boxShadow (CSS string), opacity, padding, gap, flexDirection, fontSize, fontFamily, color, content, boundVariables
+- No tree traversal needed — replaces parsing 432K chars to find 1 node
+
+### Improved — Inline SVG for icon nodes
+- `get_design` now auto-exports SVG markup for icon nodes (max 20, <5KB each)
+- `svgMarkup` field replaces `iconHint` — no separate export_svg call needed
+
+### Improved — Padding always detailed
+- Layout padding now always shows 4 values (paddingTop/Right/Bottom/Left) — no more compact `padding` that loses detail
+- Added `counterAxisSpacing` for wrapped layouts
+- Renamed `spacing` → `itemSpacing` for clarity
+
+---
+
+## [1.7.1] — 2026-03-18
+
+### Added — New Handlers (`plugin/code.js`)
+- **`modifyVariable`** — change value of an existing variable by name or ID. Supports COLOR (hex), FLOAT, STRING, BOOLEAN. All bound nodes update instantly
+- **`setupDesignTokens`** — bootstrap complete design token system in one call (idempotent). Creates collection + color/number variables, skips existing, updates values
+
+### Improved — Design Data Extraction (`plugin/code.js`)
+- **Bound Variables** — `extractDesignTree` now reads `node.boundVariables` and includes variable binding IDs in output (shows which tokens are applied to each node)
+
+### Updated — API Docs (`server/api-docs.js`)
+- **Rule 0 — Token-First Workflow** (HIGHEST PRIORITY): mandatory `setupDesignTokens` bootstrap before any design, never hardcode hex colors
+- **Rule 0b — Component-First Workflow**: never draw same element twice, create Component → instantiate
+- Full reference for `setupDesignTokens`, `modifyVariable`, `applyVariable`, `createComponent` with examples
+- Updated Rule 1 to integrate with token-first workflow
+
+### Updated — Code Executor (`server/code-executor.js`)
+- Added `modifyVariable`, `setupDesignTokens` to WRITE_OPS
+
+---
+
+## [1.7.0] — 2026-03-18
+
+### Added — Design Token Operations (6 new handlers)
+- **`createVariableCollection`** — create named variable collections ("Colors", "Spacing")
+- **`createVariable`** — create COLOR/FLOAT/STRING/BOOLEAN variables with initial values. Supports hex color auto-conversion
+- **`applyVariable`** — bind variable to node fill/stroke/opacity/cornerRadius. Changes variable once → all bound nodes update
+- **`createPaintStyle`** — create reusable local paint styles with name + hex color
+- **`createTextStyle`** — create reusable text styles with font family, weight, size, line height, letter spacing
+- **`createComponent`** — convert FRAME/GROUP into reusable Figma component
+
+### Updated
+- `server/code-executor.js` — registered all new + existing operations in WRITE_OPS and READ_OPS
+- `server/tool-definitions.js` — figma_write description includes Design Token operations
+
+### Workflow enabled
+```
+createVariableCollection("Colors")
+→ createVariable("accent-blue", "#2563EB", collection)
+→ createVariable("bg-base", "#08090E", collection)
+→ create card frame
+→ applyVariable(cardId, "fill", "bg-base")
+→ change variable value once → all nodes auto-update
+```
+
+---
+
+## [1.6.5] — 2026-03-17
+
+### Added — New Design Rules (inspired by HeroUI design system)
+- **Rule 15 — Button Variants System**: 6 variants (solid, flat, bordered, ghost, light, shadow) with size scale (sm/md/lg) — height, padding, fontSize, cornerRadius
+- **Rule 16 — Consistent Spacing Scale**: 8 fixed values (4-48px) — eliminates random pixel values
+- **Rule 17 — Border Radius Consistency**: element-size-based radius table + nested radius rule
+- **Rule 18 — Shadow/Elevation System**: 4-level hierarchy (flat/sm/md/lg) with dark theme border fallback
+- **Rule 19 — Semantic Color Usage**: role-based colors (primary/success/warning/danger/default) with light/dark theme pairs and WCAG contrast rule
+- **Rule 20 — Component State Indicators**: 6 states (default/hover/pressed/focused/disabled/loading) with visual implementation guide
+
+---
+
+## [1.6.4] — 2026-03-17
+
+### Added — CI/CD MCP Registry Auto-Publish
+- GitHub Actions workflow now auto-publishes to MCP Registry on version bump
+- `server.json` version auto-synced from `package.json` in CI
+- Uses `mcp-publisher` CLI with GitHub OIDC authentication (no token needed)
+
+### Updated
+- `server.json` version synced to 1.6.4
+
+---
+
+## [1.6.3] — 2026-03-17
+
+### Fixed — Deep Design Extraction (critical)
+- **Depth limit**: default 4 → 10 levels deep (was losing ~40% content). Support `depth: "full"` for unlimited
+- **Truncated node summaries**: when depth limit hit, nodes now include `textContent` (all text within) and `iconNames` (all icon names within) instead of empty `children: []`
+- **`get_selection`** also supports `depth` parameter with default 15
+- **`depth` param** exposed in MCP tool schema — AI can request deeper extraction when needed
+- **`collectTextContent()`** — walks subtree, extracts up to 15 text strings
+- **`collectIconNames()`** — walks subtree, extracts up to 10 icon names
+
+---
+
+## [1.6.2] — 2026-03-17
+
+### Improved — Plugin UI Redesign (`plugin/ui.html`)
+- Modern dark theme (purple-navy palette) with gradient accents
+- Custom SVG logo matching project branding (S-curve flows, donut nodes, code symbols)
+- Window resized to 320×420 — no body scroll, log area flex-grows to fill
+- Stats counters colored per type (purple writes, blue reads, red errors)
+- Custom thin scrollbar for activity log
+- Button press animation and gradient primary button
+
+### Improved — Connection Stability
+- **Exponential backoff** on disconnect: 900ms → 1.8s → 3.6s → 5s cap (was fixed 900ms flood)
+- **Graceful reconnect states**: yellow "Reconnecting (1/3)" → red "Offline" after 3 fails
+- **Health TTL** increased 15s → 30s — tolerates Figma Desktop lag/tab switching
+- **Port conflict recovery** (`bridge-server.js`): auto-kill old process on `EADDRINUSE` + retry
+- **Graceful shutdown** method `bridge.stop()` clears pending ops and queue
+- **Reconnect button** resets backoff counter for immediate retry
+- **Read ops list** updated with all new operations for correct stats counting
+
+---
+
+## [1.6.1] — 2026-03-17
+
+### Fixed — Async API Compatibility (`plugin/code.js`)
+- **`get_styles`** — migrated to async Figma API (`getLocalPaintStylesAsync`, etc.) for `documentAccess: "dynamic-page"` compatibility
+- **`get_local_components`** — added `figma.loadAllPagesAsync()` before `findAllWithCriteria`
+- **`get_variables`** — migrated to `getLocalVariableCollectionsAsync` and `getVariableByIdAsync`
+- **`listComponents`** — added `figma.loadAllPagesAsync()` for cross-page component discovery
+
+### Improved — Screenshot Inline Display (`server/index.js`)
+- Screenshots now return as MCP `image` content type (base64 PNG) instead of JSON text
+- Claude Code displays screenshots **inline** in chat — no bash permission needed
+- Metadata (nodeId, width, height) returned as separate text content alongside image
+
+### Improved — Design Data Extraction (`plugin/code.js` — `extractDesignTree`)
+- **Fill**: multiple fills, gradient stops (linear/radial/angular), image fills with scaleMode, fill opacity
+- **Text**: color (`fill`), letter spacing, line height (auto/percent/px), text decoration, truncation, auto-resize mode, vertical align
+- **Layout**: sizing modes (`primarySizing`, `counterSizing`), layout wrap, compact uniform padding, `layoutGrow`, `layoutAlign`, absolute positioning
+- **Effects**: drop shadow, inner shadow, blur — with color, offset, radius, spread
+- **Corner radius**: per-corner support (tl/tr/br/bl)
+- **Visual**: blend mode, clip content, opacity (rounded)
+- **Constraints**: horizontal/vertical constraint detection
+- **Components**: instance override count, component description
+- **Icon detection**: `isIcon: true` flag on small VECTOR/GROUP/INSTANCE nodes with SVG export hint
+- **Image detection**: `hasImage: true` flag on nodes with IMAGE fills with screenshot export hint
+- **VECTOR nodes**: path count for vector/boolean operations
+
+### Updated — Plugin Manifest (`plugin/manifest.json`)
+- Added `"documentAccess": "dynamic-page"` for Figma Community publish compatibility
+
+---
+
+## [1.6.0] — 2026-03-17
+
+### Added — New Read Operations (`plugin/code.js`)
+- **`get_styles`** — read all local paint, text, effect, grid styles from the document
+- **`get_local_components`** — enhanced component listing with descriptions, dimensions, variant properties, and component sets
+- **`get_viewport`** — read current viewport position, zoom level, and visible bounds
+- **`get_variables`** — read Figma local variables (Design Tokens) with collections, modes, and resolved values
+- **`set_viewport`** — navigate viewport to a node or specific position/zoom
+
+### Added — New Write Operations
+- **`clone`** — duplicate any node with optional repositioning and reparenting
+- **`group`** — group multiple nodes by IDs into a named group
+- **`ungroup`** — ungroup a GROUP/FRAME, moving children to parent
+- **`flatten`** — flatten/merge vectors into a single path
+- **`resize`** — resize any node with width/height params
+- **`set_selection`** — programmatically select nodes by IDs
+- **`batch`** — execute up to 50 operations in a single call for 10-25x performance
+
+### Updated — Tool Definitions (`server/tool-definitions.js`)
+- `figma_read` enum expanded: `get_styles`, `get_local_components`, `get_viewport`, `get_variables`
+- `figma_write` description updated with new operations list
+
+### Updated — API Docs (`server/api-docs.js`)
+- Full reference for all new read operations with examples
+- Full reference for clone, group, ungroup, flatten, resize, set_selection, set_viewport, batch
+- Batch operation examples showing multi-op patterns
+
+---
+
+## [1.5.0] — 2026-03-16
+
+### Added — Plugin (`plugin/code.js`)
+- **VECTOR node type** — create diagonal lines, bezier curves, arcs, polygons from SVG path data (`d` param or `paths` array), with `strokeCap` and `strokeJoin` support
+- **Component-aware design tree** — `COMPONENT`, `COMPONENT_SET` show description; `INSTANCE` shows `componentName` + `componentId`
+- **Mixed text style handling** — `extractDesignTree` now reads `getRangeFontName()/getRangeFontSize()` for multi-style text nodes instead of crashing
+- **Deep search for screenshot/export** — `screenshot` and `export_svg` now use `findOne()` fallback when node not found at top level
+- **Expanded exportable types** — screenshot supports `COMPONENT`, `COMPONENT_SET`, `SECTION`, `INSTANCE`, `GROUP` (not just FRAME)
+- **Extended font style map** — added Thin, Heavy, Condensed Heavy, Thin Italic, Light Italic, Extra Bold
+- **`sanitizeForPostMessage()`** — strips `figma.mixed` Symbol values before postMessage to prevent structured clone errors
+
+### Fixed — Plugin
+- **COMPONENT_SET crash** — try/catch around fills/strokes/cornerRadius/opacity/layoutMode reads that threw "Cannot unwrap symbol"
+- **get_design error reporting** — wraps tree extraction with nodeType + id in error message for easier debugging
+
+### Added — API Docs (`server/api-docs.js`)
+- **6 new design rules** (Rule 6–10): layer order, text vs bg color, container height, no emoji as icons, layout quality standards
+- **Design Library tokens** — full color table (9 tokens) + text style table (8 tokens) in API docs
+- **Auto Layout reference** — complete guide with creation, common patterns, child properties, modification
+- **Icon system docs** — library priority table, coloring rule, sizing rule with container ratios
+- **VECTOR type documentation** — path data examples (diagonal, bezier, quadratic, wave, arc, multi-path)
+- **Image & icon helper docs** — `loadImage`, `loadIcon`, `loadIconIn` with usage examples
+
+---
+
+## [1.4.1] — 2026-03-15
+
+### Added
+- **CLAUDE.md** — 3 new mandatory design rules:
+  - **Progress Bar Rule** — overlapping elements must use non-auto-layout wrapper frame
+  - **Badge/Pill Rule** — separate concerns for text centering (auto-layout) vs position on parent (absolute x,y)
+  - **Container Height Rule** — height formula to prevent content overflow/clipping
+
+---
+
+## [1.4.0] — 2026-03-15
+
+### Added
+- **`figma.loadImage(url, opts)`** — download image from URL server-side, convert to base64, create IMAGE node on canvas (supports `scaleMode`, `cornerRadius`, up to 5MB)
+- **`figma.loadIcon(name, opts)`** — fetch SVG icon with auto fallback chain: Fluent UI → Bootstrap → Phosphor → Lucide; auto-detects fill vs stroke and applies color
+- **`figma.loadIconIn(name, opts)`** — icon inside a centered circle background with configurable `containerSize`, `fill`, `bgOpacity`
+- **`httpFetch()` helper** — server-side HTTP/HTTPS fetcher with redirect following (up to 3), size limits, and timeout (15s)
+- Icon library config supporting 4 icon sources with fill-type detection
+
+### Changed
+- `code-executor.js` — sandbox timeout increased from 10s to 30s (needed for image/icon downloads)
+- `CLAUDE.md` — updated API reference with `loadImage`, `loadIcon`, `loadIconIn` docs and examples
+
+---
+
+## [1.3.0] — 2026-03-15
+
+### Added
+- **HTTP proxy mode** — MCP server auto-detects if bridge port is in use; connects to existing bridge via HTTP instead of crashing (supports multiple MCP clients sharing one bridge)
+- **Name-based lookups** — `append`, `instantiate`, `get_selection`, `screenshot` now accept `name`/`parentName`/`componentName` params alongside IDs
+- **fillOpacity on modify** — can update opacity on existing fills without changing color
+- **Version reporting** — `figma_status` now returns plugin version and bridge mode (direct/http-proxy)
+
+### Changed
+- `plugin/manifest.json` — official Figma plugin ID `1614927480683426278`, added `documentAccess: "dynamic-page"`
+- `plugin/code.js` — refactored `append`, `instantiate`, `get_selection`, `screenshot` to use `var`/`function` syntax (Figma sandbox safe, no arrow functions)
+- `server/index.js` — bridge connection strategy: try own server first, fallback to HTTP proxy if port taken
+- Plugin cover image and 128px icon added to `assets/`
+
+---
+
+## [1.2.0] — 2026-03-15
+
+### Added
+- **SVG node type** — `type: "SVG"` with `svg` param; auto-detects fill vs stroke icons (Lucide, Phosphor, etc.) and applies color correctly
+- **IMAGE node type** — `type: "IMAGE"` with base64 `imageData` param; supports `scaleMode` (FILL/FIT/CROP/TILE) and `cornerRadius`
+- **Auto Layout** — full support on `create` and `modify`:
+  - `layoutMode` (HORIZONTAL/VERTICAL), `primaryAxisAlignItems`, `counterAxisAlignItems`
+  - Uniform/axis/individual padding, `itemSpacing`
+  - `primaryAxisSizingMode`, `counterAxisSizingMode`, `clipsContent`
+  - Child properties: `layoutAlign`, `layoutGrow`
+- **Fill opacity** — `fillOpacity` param on FRAME, RECTANGLE, ELLIPSE
+- **Text alignment** — `textAlignHorizontal`, `textAlignVertical`, `textAutoResize` params
+
+### Changed
+- `bridge-server.js` — `MAX_BODY_BYTES` increased from 500 KB to 5 MB to support image payloads
+
+---
+
+## [1.1.4] — 2026-03-14
+
+### Fixed
+- CI: use `NPM_TOKEN` secret for npm authentication with `--provenance` attestation
+
+---
+
+## [1.1.3] — 2026-03-14
+
+### Fixed
+- CI: remove `registry-url` from `setup-node` — was auto-injecting `GITHUB_TOKEN` as `NODE_AUTH_TOKEN`, blocking npm OIDC Trusted Publishing flow
+- CI: manually configure npm registry with empty token so npm CLI uses OIDC exchange
+
+---
+
+## [1.1.2] — 2026-03-14
+
+### Fixed
+- `package.json` `files` field now lists explicit files instead of whole `server/` directory — prevents `server/node_modules/` from being bundled into the npm package (was 2.9 MB / 3499 files, now 22 kB / 13 files)
+- Add `.npmignore` to exclude `assets/`, `.github/`, `CHANGELOG.md` from npm tarball
+
+---
+
+## [1.1.1] — 2026-03-14
+
+### Changed
+- README: clarify Figma Desktop requirement and localhost bridge mechanism
+- README: reorder sections — Star History moved before License
+
+### CI
+- Switch to npm Trusted Publishing (OIDC) — remove `NPM_TOKEN` dependency
+- Add `--provenance` flag for signed npm attestation
+
+---
+
+## [1.1.0] — 2026-03-14
+
+### Added
+- **Design Library system** — `ensure_library` and `get_library_tokens` operations in `plugin/code.js`
+  - Creates a `🎨 Design Library` frame off-canvas (x: -2000) with sections for Colors, Text Styles, Buttons, Badges, Inputs, Cards
+  - Enforces design consistency: AI always reads library tokens before drawing
+- `server/code-executor.js` — `ensure_library`, `get_library_tokens` added to WRITE_OPS allowlist
+- `server/api-docs.js` — mandatory Design System Rules injected at top of docs (AI reads these on every task)
+- `assets/logo-v6.png` — horizontal brand banner (icon + logotype)
+- `assets/logo-icon.png` — square icon (870×870, cropped from banner)
+- `plugin/icon16.png` and `plugin/icon32.png` — Figma plugin icons
+- `LICENSE` — MIT license as standalone file
+
+### Fixed
+- `server/bridge-server.js` — `HOST` changed from `127.0.0.1` to `null` (Node.js dual-stack `::`) — fixes plugin connection failures on systems where Figma connects via `::1` (IPv6 loopback) instead of `127.0.0.1`
+
+### Changed
+- `plugin/manifest.json` — removed `documentAccess: "dynamic-page"` and `devAllowedDomains` (cleanup)
+- `plugin/ui.html` — minor UI cleanup
+- `package.json` — added `author`, `homepage`, `bugs` fields; expanded `keywords` for npm discoverability
+- `README.md` — logo banner in header, license badge, Star History chart
+
+### Removed
+- `server/package.json` and `server/package-lock.json` — redundant; root `package.json` is the npm entry point
+
+---
+
+## [1.0.0] — 2026-03-14
+
+### Added
+- Initial release — bidirectional Figma MCP server
+- **MCP Server** (`server/`) — 4 tools: `figma_status`, `figma_write`, `figma_read`, `figma_docs`
+- **HTTP Bridge** (`server/bridge-server.js`) — polling-based, localhost:38451 only, 500KB body limit, 50-request queue cap
+- **VM Sandbox** (`server/code-executor.js`) — `vm.runInContext()` blocks `require`, `process`, `fs`, `fetch`; 10s timeout
+- **Figma Plugin** (`plugin/`) — handles both write ops (create/modify/delete/query) and read ops (get_selection, get_design, get_page_nodes, screenshot, export_svg)
+- Plugin manifest with `editorType: ["figma", "dev"]` and `networkAccess.reasoning` field
+- Write operations: `create` (FRAME/RECTANGLE/ELLIPSE/LINE/TEXT), `modify`, `delete`, `append`, `query`, `listPages`, `setPage`, `createPage`, `listComponents`, `instantiate`
+- Read operations: `get_selection` (design tree + tokens), `get_design` (full node tree), `get_page_nodes`, `screenshot` (PNG base64), `export_svg`
+- Design token extraction: colors, fonts, sizes from node tree
+- Plugin UI with activity log, write/read/error counters, reconnect button
+
+### Architecture decisions
+- Single-file `plugin/code.js` and `plugin/ui.html` — Figma plugin sandbox does not support ES modules without a bundler
+- MCP server modularized into 5 files for maintainability
+- No external dependencies beyond `@modelcontextprotocol/sdk`
+- Derived from and improves upon figma-pilot architecture (youware-labs/figma-pilot): added read direction, VM sandbox, cleaner tool API
