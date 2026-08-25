@@ -281,8 +281,6 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                             Ok(disk_res) => ToolResult::text(serde_json::to_string_pretty(&disk_res).unwrap_or_default()),
                             Err(e) => ToolResult::error(e),
                         }
-                    } else if format == "svg" {
-                        ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default())
                     } else {
                         ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default())
                     }

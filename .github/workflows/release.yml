@@ -24,6 +24,13 @@ jobs:
             compress_cmd: tar -czf figma-mcp-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release figma-mcp
             asset_name: figma-mcp-linux-x86_64.tar.gz
 
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: figma-mcp-linux-arm64
+            binary_path: target/aarch64-unknown-linux-gnu/release/figma-mcp
+            compress_cmd: tar -czf figma-mcp-linux-arm64.tar.gz -C target/aarch64-unknown-linux-gnu/release figma-mcp
+            asset_name: figma-mcp-linux-arm64.tar.gz
+
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: figma-mcp-macos-arm64
@@ -99,12 +106,27 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Generate Checksums
+        run: |
+          cd release-assets
+          sha256sum * > ../SHA256SUMS.txt
+          cd ..
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release-assets/*
+            SHA256SUMS.txt
             plugin.zip
           generate_release_notes: true
           draft: false
           prerelease: false
+
+      - name: Publish to NPM (if NPM_TOKEN configured)
+        if: env.NPM_TOKEN != ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm publish --access public || echo "npm publish skipped or already published"

@@ -7,3 +7,8 @@ assets/
 CHANGELOG.md
 CLAUDE.md
 *.log
+target/
+src/
+Cargo.lock
+Cargo.toml
+plugin-src/

@@ -41,7 +41,32 @@ Enables AI agents (Claude Code, Cursor, Windsurf, Antigravity, VS Code, Zed) to 
 
 ## 🚀 Quick Start
 
-### 1. Build the Rust Server
+### 1. One-Line Launch with NPX (No Rust toolchain needed)
+
+You can launch `figma-mcp` on any Mac, Linux, or Windows machine with zero setup:
+
+```bash
+npx figma-mcp
+```
+
+This automatically downloads the prebuilt native binary for your architecture and starts the server.
+
+Or if configuring in **Cursor / Claude Desktop / Windsurf / Antigravity MCP Settings**:
+
+```json
+{
+  "mcpServers": {
+    "figma-mcp": {
+      "command": "npx",
+      "args": ["-y", "figma-mcp", "--stdio"]
+    }
+  }
+}
+```
+
+---
+
+### 2. Or Build from Source (Rust)
 
 Prerequisites: [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`).
 
@@ -49,23 +74,8 @@ Prerequisites: [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`).
 git clone https://github.com/BuiHung1612/figma-mcp.git
 cd figma-mcp
 cargo build --release
-```
-
-The optimized static binary will be generated at `target/release/figma-mcp`.
-
----
-
-### 2. Run in Terminal (Recommended)
-
-Run `figma-mcp` directly in your terminal:
-
-```bash
 ./target/release/figma-mcp
-# or using cargo
-cargo run --release
 ```
-
-This starts the standalone server with live logging, keeps the Figma connection permanently active, and exposes both WebSocket and MCP SSE endpoints.
 
 ---
 
@@ -107,13 +117,13 @@ You can connect via SSE or stdio:
 }
 ```
 
-**Option B: Stdio Subprocess**
+**Option B: Stdio Subprocess (via NPX)**
 ```json
 {
   "mcpServers": {
     "figma-mcp": {
-      "command": "/path/to/figma-mcp/target/release/figma-mcp",
-      "args": ["--stdio"]
+      "command": "npx",
+      "args": ["-y", "figma-mcp", "--stdio"]
     }
   }
 }
@@ -123,10 +133,20 @@ You can connect via SSE or stdio:
 
 ## 🛠️ MCP Tools Reference
 
-`figma-mcp` exposes 5 MCP tools:
+`figma-mcp` exposes 7 first-class MCP tools:
+
+### `figma_get_selection`
+Ultra-fast, token-compressed inspection of currently selected layers/frames on the Figma canvas. Returns compacted layout and typography hierarchy with 60-80% fewer tokens.
+
+### `figma_inspect_node`
+Inspects a specific node by ID or name, returning complete design context, CSS, auto-layout rules, and typography.
+
+### `figma_export_asset`
+Exports any Figma node/layer directly into PNG, JPG, or SVG.
+- `outputPath`: When specified (e.g. `src/assets/logo.png`), saves directly to disk and returns minimal JSON metadata instead of filling context window with large base64 strings!
 
 ### `figma_status`
-Checks the live bridge connection status, connected Figma tabs, active file name, and latency statistics.
+Checks live bridge connection status, connected Figma tabs, active file name, and latency statistics.
 
 ### `figma_write`
 Executes JavaScript draw commands inside the sandboxed VM to build or modify designs on the Figma canvas.
@@ -135,14 +155,7 @@ Executes JavaScript draw commands inside the sandboxed VM to build or modify des
 - Supports image insertion: `figma.loadImage(url, { width: 300, height: 200 })`.
 
 ### `figma_read`
-Extracts rich design data from the canvas back to the AI.
-- `get_selection`: Returns node trees and CSS for currently selected elements.
-- `get_design`: Extracts full or subtree layout hierarchy.
-- `scan_design`: Compact scan with typography, color palette, and component list.
-- `screenshot`: Renders canvas node directly into an inline image preview.
-- `export_svg`: Exports vector markup for icons/illustrations.
-- `get_variables`: Retrieves all Design Token collections and variable modes.
-- `get_styles`: Retrieves paint styles and text styles.
+Universal reader for advanced queries: `get_design`, `scan_design`, `screenshot`, `export_svg`, `get_variables`, `get_styles`, `search_nodes`. Supports `outputPath` for file exports.
 
 ### `figma_docs`
 Fetches built-in documentation, design rules, layout guidelines, and code examples for `figma_write`.

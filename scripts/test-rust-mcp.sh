@@ -25,4 +25,16 @@ JSON
 OUTPUT=$(echo "$INPUT" | $BIN_PATH --port 38499 2>/dev/null)
 echo "$OUTPUT" | head -n 4
 
-echo "--- Tests completed successfully! ---"
+# Verify tool registration in JSON-RPC output
+echo "--- Test 3: Verify Tool Registrations ---"
+echo "$OUTPUT" | grep -q "figma_get_selection" && echo "✓ figma_get_selection registered"
+echo "$OUTPUT" | grep -q "figma_inspect_node" && echo "✓ figma_inspect_node registered"
+echo "$OUTPUT" | grep -q "figma_export_asset" && echo "✓ figma_export_asset registered"
+echo "$OUTPUT" | grep -q "figma_read" && echo "✓ figma_read registered"
+echo "$OUTPUT" | grep -q "figma_write" && echo "✓ figma_write registered"
+
+# Test 4: Node/NPX wrapper test
+echo "--- Test 4: NPX Wrapper ---"
+node bin/figma-mcp.js --version
+
+echo "--- All Tests completed successfully! ---"

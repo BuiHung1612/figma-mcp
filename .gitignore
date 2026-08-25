@@ -9,3 +9,4 @@ node_modules/
 plugin.zip
 plans/*
 feedback.md
+.codegraph/
