@@ -38,7 +38,7 @@ jobs:
             compress_cmd: tar -czf figma-mcp-macos-arm64.tar.gz -C target/aarch64-apple-darwin/release figma-mcp
             asset_name: figma-mcp-macos-arm64.tar.gz
 
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: figma-mcp-macos-x86_64
             binary_path: target/x86_64-apple-darwin/release/figma-mcp
