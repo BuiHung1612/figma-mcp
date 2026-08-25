@@ -777,31 +777,3 @@ pub fn create_router(state: BridgeState) -> Router {
         .with_state(state)
 }
 
-pub async fn kill_stale_bridges(port: u16) {
-    #[cfg(unix)]
-    {
-        use std::process::Command;
-        if let Ok(output) = Command::new("lsof").arg("-ti").arg(format!("tcp:{}", port)).output() {
-            if let Ok(pids_str) = String::from_utf8(output.stdout) {
-                let current_pid = std::process::id();
-                let pids: Vec<&str> = pids_str
-                    .split_whitespace()
-                    .filter(|p| p.parse::<u32>().is_ok_and(|pid| pid != current_pid))
-                    .collect();
-
-                if !pids.is_empty() {
-                    for pid in &pids {
-                        let _ = Command::new("kill").arg("-9").arg(pid).output();
-                    }
-                    eprintln!(
-                        "[figma-mcp] Killed {} zombie(s) on port {}: {}",
-                        pids.len(),
-                        port,
-                        pids.join(",")
-                    );
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                }
-            }
-        }
-    }
-}

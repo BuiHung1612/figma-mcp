@@ -89,9 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         // Stdio MCP Client Mode (Piped or Subprocess)
         let proxy = HttpProxy::new(port);
-        let existing_health = proxy.check_health().await;
 
-        if existing_health.plugin_connected {
+        if proxy.is_running().await {
             eprintln!(
                 "[figma-mcp] Existing bridge detected on port {}, using HTTP proxy",
                 port

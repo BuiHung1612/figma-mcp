@@ -12,7 +12,12 @@
       "http://localhost:38452",
       "http://localhost:38453",
       "http://localhost:38454",
-      "http://localhost:38455"
+      "http://localhost:38455",
+      "ws://localhost:38451",
+      "ws://localhost:38452",
+      "ws://localhost:38453",
+      "ws://localhost:38454",
+      "ws://localhost:38455"
     ],
     "reasoning": "This plugin bridges Figma to the local figma-mcp Rust server running on port 38451-38455."
   }

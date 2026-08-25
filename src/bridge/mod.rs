@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
 pub use proxy::HttpProxy;
-pub use server::{kill_stale_bridges, BridgeState, DEFAULT_PORT, PORT_RANGE};
+pub use server::{BridgeState, DEFAULT_PORT, PORT_RANGE};
 pub use session::SessionInfo;
 
 #[derive(Clone)]
@@ -84,50 +84,32 @@ impl BridgeHandle {
 pub async fn start_bridge_server(port: u16) -> Result<(BridgeState, u16), String> {
     for attempt in 0..PORT_RANGE {
         let current_port = port + attempt;
-        let addr = SocketAddr::from(([0, 0, 0, 0], current_port));
+        let addr_v4 = SocketAddr::from(([0, 0, 0, 0], current_port));
+        let addr_v6 = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], current_port));
 
-        match TcpListener::bind(addr).await {
-            Ok(listener) => {
+        match TcpListener::bind(addr_v4).await {
+            Ok(listener_v4) => {
                 let state = BridgeState::new(current_port);
                 let app = server::create_router(state.clone());
 
+                let app_v4 = app.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = axum::serve(listener, app).await {
+                    if let Err(e) = axum::serve(listener_v4, app_v4).await {
                         eprintln!("[figma-mcp bridge] Server error: {}", e);
                     }
                 });
 
+                // Also bind IPv6 (localhost / ::1) so Figma desktop on macOS connects seamlessly
+                if let Ok(listener_v6) = TcpListener::bind(addr_v6).await {
+                    let app_v6 = app.clone();
+                    tokio::spawn(async move {
+                        let _ = axum::serve(listener_v6, app_v6).await;
+                    });
+                }
+
                 return Ok((state, current_port));
             }
             Err(_) => {
-                // Check if existing process is responsive to health check
-                let proxy = HttpProxy::new(current_port);
-                let is_healthy = proxy
-                    .client
-                    .get(format!("http://127.0.0.1:{}/health", current_port))
-                    .timeout(std::time::Duration::from_millis(500))
-                    .send()
-                    .await
-                    .is_ok();
-
-                if !is_healthy {
-                    eprintln!(
-                        "[figma-mcp] Port {} occupied by unresponsive process — attempting cleanup...",
-                        current_port
-                    );
-                    kill_stale_bridges(current_port).await;
-                    if let Ok(listener) = TcpListener::bind(addr).await {
-                        let state = BridgeState::new(current_port);
-                        let app = server::create_router(state.clone());
-                        tokio::spawn(async move {
-                            if let Err(e) = axum::serve(listener, app).await {
-                                eprintln!("[figma-mcp bridge] Server error: {}", e);
-                            }
-                        });
-                        return Ok((state, current_port));
-                    }
-                }
-
                 eprintln!(
                     "[figma-mcp] Port {} in use — trying {}...",
                     current_port,
