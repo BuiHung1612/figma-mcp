@@ -6,7 +6,7 @@ pub fn generate_code_from_context(
     component_name: Option<&str>,
 ) -> Result<String, String> {
     let name = component_name
-        .map(|s| sanitize_component_name(s))
+        .map(sanitize_component_name)
         .unwrap_or_else(|| {
             let n = context.get("name").and_then(|v| v.as_str()).unwrap_or("Component");
             sanitize_component_name(n)

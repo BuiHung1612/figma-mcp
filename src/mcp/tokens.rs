@@ -30,10 +30,7 @@ pub fn generate_tokens(
 fn sanitize_token_name(name: &str) -> String {
     let s = name
         .trim()
-        .replace('/', "-")
-        .replace(' ', "-")
-        .replace('_', "-")
-        .replace('.', "-");
+        .replace(['/', ' ', '_', '.'], "-");
     let clean: String = s
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-')
@@ -375,14 +372,19 @@ fn insert_nested_key(map: &mut BTreeMap<String, Value>, key: &str, val: Value) {
     if parts.len() == 2 {
         let parent = parts[0].to_string();
         let child = parts[1].to_string();
-        if let Some(Value::Object(ref mut sub)) = map.get_mut(&parent) {
-            sub.insert(child, val);
-            return;
-        } else if !map.contains_key(&parent) {
-            let mut sub = serde_json::Map::new();
-            sub.insert(child, val);
-            map.insert(parent, Value::Object(sub));
-            return;
+        match map.entry(parent) {
+            std::collections::btree_map::Entry::Occupied(mut occ) => {
+                if let Value::Object(ref mut sub) = occ.get_mut() {
+                    sub.insert(child, val);
+                    return;
+                }
+            }
+            std::collections::btree_map::Entry::Vacant(vac) => {
+                let mut sub = serde_json::Map::new();
+                sub.insert(child, val);
+                vac.insert(Value::Object(sub));
+                return;
+            }
         }
     }
     map.insert(key.to_string(), val);
