@@ -255,6 +255,55 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
             }
 
+            let node_id = args.get("nodeId").and_then(|v| v.as_str());
+            let node_name = args.get("nodeName").and_then(|v| v.as_str());
+
+            // Fast-path: Check if node detail is available directly in Rust In-Memory Index
+            if let BridgeHandle::Direct(ref state) = bridge {
+                let sid = session_id.unwrap_or("_default");
+                let inner = state.inner.lock().await;
+                if let Some(session) = inner.sessions.get(sid) {
+                    if let Some(ref idx) = session.index {
+                        if idx.is_ready() {
+                            let matched_node = if let Some(id) = node_id {
+                                idx.get_node(id)
+                            } else if let Some(name) = node_name {
+                                idx.get_node_by_name(name)
+                            } else {
+                                None
+                            };
+
+                            if let Some(n) = matched_node {
+                                let context = json!({
+                                    "cached": true,
+                                    "source": "rust_memory_index",
+                                    "id": n.id,
+                                    "name": n.name,
+                                    "type": n.node_type,
+                                    "width": n.width,
+                                    "height": n.height,
+                                    "x": n.x,
+                                    "y": n.y,
+                                    "characters": n.characters,
+                                    "visible": n.visible,
+                                    "layoutMode": n.layout_mode,
+                                    "itemSpacing": n.item_spacing,
+                                    "padding": n.padding,
+                                    "fills": n.fills,
+                                    "strokes": n.strokes,
+                                    "borderRadius": n.border_radius,
+                                    "effects": n.effects,
+                                    "textStyle": n.text_style,
+                                    "children": n.children,
+                                    "full": n.full_data
+                                });
+                                return ToolResult::text(serde_json::to_string(&context).unwrap_or_default());
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut op_params = json!({});
             if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
             if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
@@ -349,6 +398,52 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                                         "components": idx.components,
                                     });
                                     return ToolResult::text(serde_json::to_string(&comps_json).unwrap_or_default());
+                                } else if operation == "search_nodes" {
+                                    let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                                    let t = args.get("type").and_then(|v| v.as_str());
+                                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
+                                    let matches = idx.search_nodes(q, t, limit);
+                                    let res = json!({
+                                        "cached": true,
+                                        "query": q,
+                                        "count": matches.len(),
+                                        "nodes": matches
+                                    });
+                                    return ToolResult::text(serde_json::to_string(&res).unwrap_or_default());
+                                } else if operation == "get_node_detail" {
+                                    let node_id = args.get("nodeId").or_else(|| args.get("id")).and_then(|v| v.as_str());
+                                    let node_name = args.get("nodeName").or_else(|| args.get("name")).and_then(|v| v.as_str());
+                                    let matched = if let Some(id) = node_id {
+                                        idx.get_node(id)
+                                    } else if let Some(name) = node_name {
+                                        idx.get_node_by_name(name)
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(n) = matched {
+                                        let detail = json!({
+                                            "cached": true,
+                                            "id": n.id,
+                                            "name": n.name,
+                                            "type": n.node_type,
+                                            "x": n.x,
+                                            "y": n.y,
+                                            "width": n.width,
+                                            "height": n.height,
+                                            "fills": n.fills,
+                                            "strokes": n.strokes,
+                                            "borderRadius": n.border_radius,
+                                            "layoutMode": n.layout_mode,
+                                            "padding": n.padding,
+                                            "itemSpacing": n.item_spacing,
+                                            "effects": n.effects,
+                                            "textStyle": n.text_style,
+                                            "characters": n.characters,
+                                            "visible": n.visible,
+                                            "children": n.children
+                                        });
+                                        return ToolResult::text(serde_json::to_string(&detail).unwrap_or_default());
+                                    }
                                 }
                             }
                         }

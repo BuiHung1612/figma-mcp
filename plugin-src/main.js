@@ -106,13 +106,20 @@ function stringifyForBridge(data) {
 figma.ui.onmessage = async (request) => {
   if (!request) return;
 
-  // Handle window resizing from UI drag handle
-  if (request.type === "resize") {
-    var newW = Math.max(260, Math.min(1000, Math.round(request.width)));
-    var newH = Math.max(200, Math.min(1200, Math.round(request.height)));
+  // Handle manual reindex request from UI
+  if (request.type === "manual-reindex") {
     try {
-      figma.ui.resize(newW, newH);
-      figma.clientStorage.setAsync("mcp_window_size", { width: newW, height: newH }).catch(function() {});
+      if (handlers.index_scan) {
+        var startMs = Date.now();
+        var scanResult = await handlers.index_scan();
+        figma.ui.postMessage({
+          type: "index-update",
+          data: scanResult,
+          fileName: figma.root ? figma.root.name : "unknown",
+          sessionId: figma.root ? figma.root.id : "_default",
+          startMs: startMs
+        });
+      }
     } catch(e) {}
     return;
   }
@@ -128,12 +135,15 @@ figma.ui.onmessage = async (request) => {
     return;
   }
 
+  const startTime = Date.now();
   try {
     var data = await handler(params || {});
-    figma.ui.postMessage({ id: id, operation: operation, success: true, dataJson: stringifyForBridge(data) });
+    var durationMs = Date.now() - startTime;
+    figma.ui.postMessage({ id: id, operation: operation, success: true, dataJson: stringifyForBridge(data), durationMs: durationMs });
   } catch (err) {
+    var durationMs = Date.now() - startTime;
     var errMsg = "[dispatch:" + operation + "] " + (err && err.message ? err.message : String(err));
-    figma.ui.postMessage({ id: id, operation: operation, success: false, error: errMsg });
+    figma.ui.postMessage({ id: id, operation: operation, success: false, error: errMsg, durationMs: durationMs });
   }
 };
 

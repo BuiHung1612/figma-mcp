@@ -140,8 +140,14 @@
     /* STATS ROW */
     .stats-row {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr auto;
-      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .stats-subrow {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 5px;
       flex-shrink: 0;
     }
 
@@ -149,38 +155,45 @@
       background: var(--surface-1);
       border: 1px solid var(--border-1);
       border-radius: var(--radius-sm);
-      padding: 7px 8px;
-      display: flex; flex-direction: column; gap: 3px;
+      padding: 6px 7px;
+      display: flex; flex-direction: column; gap: 2px;
       transition: border-color var(--transition);
     }
     .stat-card:hover { border-color: var(--border-2); }
 
     .stat-label {
-      font-size: 8.5px; font-weight: 700;
-      letter-spacing: 0.8px; text-transform: uppercase;
+      font-size: 8px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
       color: var(--text-3);
     }
     .stat-value {
-      font-size: 17px; font-weight: 800;
+      font-size: 15px; font-weight: 800;
       font-family: 'SF Mono', 'Fira Code', monospace;
-      line-height: 1;
+      line-height: 1.1;
+      display: flex; align-items: baseline; gap: 2px;
+    }
+    .stat-unit {
+      font-size: 8.5px; font-weight: 600; color: var(--text-3);
     }
     .stat-card.writes .stat-value { color: var(--violet); }
     .stat-card.reads  .stat-value { color: var(--accent-2); }
     .stat-card.errors .stat-value { color: var(--rose); }
+    .stat-card.speed  .stat-value { color: var(--green); }
+    .stat-card.memory .stat-value { color: var(--amber); }
 
     .port-card {
       background: var(--surface-1);
       border: 1px solid var(--border-1);
       border-radius: var(--radius-sm);
-      padding: 7px 10px;
-      display: flex; flex-direction: column; gap: 3px;
+      padding: 6px 9px;
+      display: flex; flex-direction: column; gap: 2px;
       cursor: pointer;
+      justify-content: center;
       transition: border-color var(--transition), background var(--transition);
     }
     .port-card:hover { border-color: rgba(6,182,212,0.35); background: rgba(6,182,212,0.04); }
-    .port-label { font-size: 8.5px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: var(--text-3); }
-    .port-value { font-size: 12px; font-weight: 700; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--accent-2); line-height: 1; }
+    .port-label { font-size: 8px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; color: var(--text-3); }
+    .port-value { font-size: 12px; font-weight: 700; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--accent-2); line-height: 1.1; }
 
     /* TERMINAL */
     .terminal-wrap {
@@ -334,13 +347,13 @@
         <span class="stat-label">Reads</span>
         <span class="stat-value" id="read-count">0</span>
       </div>
-      <div class="stat-card errors" title="Errors">
-        <span class="stat-label">Errors</span>
-        <span class="stat-value" id="err-count">0</span>
+      <div class="stat-card speed" title="Last Request Execution Time / Speed">
+        <span class="stat-label">Speed</span>
+        <span class="stat-value"><span id="speed-display">0</span><span class="stat-unit">ms</span></span>
       </div>
-      <div class="port-card" onclick="changePort()" title="Click to change port">
-        <span class="port-label">Port</span>
-        <span class="port-value" id="port-display">38451</span>
+      <div class="stat-card memory" title="Server Memory Usage (RAM RSS)">
+        <span class="stat-label">RAM</span>
+        <span class="stat-value"><span id="ram-display">3.2</span><span class="stat-unit">MB</span></span>
       </div>
     </div>
 
@@ -365,6 +378,13 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
         </svg>
+      </button>
+
+      <button class="btn" id="reindex-btn" onclick="triggerManualReindex()" title="Re-index Figma document to Rust memory" style="background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-2);font-size:10px;padding:0 10px;gap:5px;">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+        </svg>
+        <span id="reindex-btn-label">⚡ Index</span>
       </button>
 
       <button class="btn btn-primary" id="launch-btn" onclick="launchServer()" title="Start Figma MCP server">
@@ -416,6 +436,34 @@
     var launchBtn     = document.getElementById("launch-btn");
     var launchBtnLabel = document.getElementById("launch-btn-label");
     var statusPill    = document.getElementById("status-pill");
+    var speedEl       = document.getElementById("speed-display");
+    var ramEl         = document.getElementById("ram-display");
+    var reindexBtn    = document.getElementById("reindex-btn");
+    var reindexBtnLabel = document.getElementById("reindex-btn-label");
+
+    async function fetchServerStats() {
+      if (!everConnected) return;
+      try {
+        var res = await fetch(BRIDGE + "/health", { signal: AbortSignal.timeout(1000) });
+        if (res.ok) {
+          var data = await res.json();
+          if (data && data.stats && data.stats.memoryMb !== undefined && ramEl) {
+            ramEl.textContent = data.stats.memoryMb.toFixed(1);
+          }
+        }
+      } catch(e) {}
+    }
+    setInterval(fetchServerStats, 4000);
+
+    function triggerManualReindex() {
+      if (!everConnected) {
+        log("Cannot index: Server is offline", "err");
+        return;
+      }
+      if (reindexBtnLabel) reindexBtnLabel.textContent = "Indexing…";
+      log("⚡ Manual re-index triggered…", "info");
+      parent.postMessage({ pluginMessage: { type: "manual-reindex" } }, "*");
+    }
 
     var READ_OPS = [
       "get_selection","get_design","get_page_nodes","screenshot",
@@ -926,6 +974,7 @@
       }
 
       if (msg.type === "index-update") {
+        if (reindexBtnLabel) reindexBtnLabel.textContent = "⚡ Indexed";
         if (ws && ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(JSON.stringify({
@@ -935,13 +984,21 @@
               sessionId: msg.sessionId,
               startMs: msg.startMs
             }));
-            log("⚡ Pre-indexed file data", "info");
+            var nodeCount = (msg.data && msg.data.pageNodes) ? msg.data.pageNodes.length : 0;
+            log("⚡ Indexed " + (msg.fileName || "file") + " (" + (Date.now() - msg.startMs) + "ms)", "ok");
           } catch(e) {}
         }
+        setTimeout(function() {
+          if (reindexBtnLabel) reindexBtnLabel.textContent = "⚡ Index";
+        }, 3000);
         return;
       }
 
       var isRead = READ_OPS.indexOf(msg.operation) >= 0;
+      var durationStr = msg.durationMs !== undefined ? " (" + msg.durationMs + "ms)" : "";
+      if (msg.durationMs !== undefined && speedEl) {
+        speedEl.textContent = msg.durationMs;
+      }
       if (msg.success) {
         if (isRead) {
           readCount++;
@@ -950,11 +1007,11 @@
           writeCount++;
           document.getElementById("write-count").textContent = writeCount;
         }
-        log("✓ " + (msg.id ? msg.id.slice(-6) : "ok"), "ok");
+        log("✓ " + (msg.id ? msg.id.slice(-6) : "ok") + durationStr, "ok");
       } else {
         errCount++;
         document.getElementById("err-count").textContent = errCount;
-        log("✗ " + (msg.id ? msg.id.slice(-6) : "err") + ": " + (msg.error || "fail"), "err");
+        log("✗ " + (msg.id ? msg.id.slice(-6) : "err") + durationStr + ": " + (msg.error || "fail"), "err");
       }
       var payloadJson = msg.dataJson !== undefined
         ? msg.dataJson

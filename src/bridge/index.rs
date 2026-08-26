@@ -24,6 +24,24 @@ pub struct IndexNode {
     pub characters: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_spacing: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub padding: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fills: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strokes: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_radius: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effects: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_data: Option<Value>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub children: Vec<String>,
 }
@@ -177,6 +195,32 @@ impl FigmaIndex {
             y: node.get("y").and_then(|v| v.as_f64()),
             characters: node.get("characters").and_then(|v| v.as_str()).map(|s| s.to_string()),
             visible: node.get("visible").and_then(|v| v.as_bool()),
+            layout_mode: node.get("layoutMode").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            item_spacing: node.get("itemSpacing").and_then(|v| v.as_f64()),
+            padding: node.get("padding").cloned()
+                .or_else(|| {
+                    let top = node.get("paddingTop").and_then(|v| v.as_f64());
+                    let right = node.get("paddingRight").and_then(|v| v.as_f64());
+                    let bottom = node.get("paddingBottom").and_then(|v| v.as_f64());
+                    let left = node.get("paddingLeft").and_then(|v| v.as_f64());
+                    if top.is_some() || right.is_some() || bottom.is_some() || left.is_some() {
+                        Some(serde_json::json!({
+                            "top": top.unwrap_or(0.0),
+                            "right": right.unwrap_or(0.0),
+                            "bottom": bottom.unwrap_or(0.0),
+                            "left": left.unwrap_or(0.0)
+                        }))
+                    } else {
+                        None
+                    }
+                }),
+            fills: node.get("fills").cloned(),
+            strokes: node.get("strokes").cloned(),
+            border_radius: node.get("borderRadius").cloned()
+                .or_else(|| node.get("cornerRadius").cloned()),
+            effects: node.get("effects").cloned(),
+            text_style: node.get("textStyle").cloned(),
+            full_data: Some(node.clone()),
             children: children_ids,
         };
 
@@ -285,6 +329,11 @@ impl FigmaIndex {
     }
 
     pub fn get_node(&self, id: &str) -> Option<&IndexNode> { self.nodes.get(id) }
+
+    pub fn get_node_by_name(&self, name: &str) -> Option<&IndexNode> {
+        let q = name.to_lowercase();
+        self.nodes.values().find(|n| n.name.to_lowercase() == q)
+    }
 
     pub fn search_components(&self, name: &str, limit: usize) -> Vec<&IndexComponent> {
         let q = name.to_lowercase();

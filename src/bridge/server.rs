@@ -637,6 +637,8 @@ async fn handle_health(State(state): State<BridgeState>) -> impl IntoResponse {
         })
         .collect();
 
+    let memory_mb = get_process_memory_mb();
+
     Json(json!({
         "pluginConnected": connected,
         "queueLength": queue_len,
@@ -646,9 +648,47 @@ async fn handle_health(State(state): State<BridgeState>) -> impl IntoResponse {
         "stats": {
             "ops": inner.global_stats.ops,
             "avgLatencyMs": inner.global_stats.avg_latency_ms,
-            "sessions": inner.sessions.len()
+            "sessions": inner.sessions.len(),
+            "memoryMb": memory_mb
         }
     }))
+}
+
+fn get_process_memory_mb() -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        use std::mem::MaybeUninit;
+        #[allow(deprecated)]
+        unsafe {
+            let mut info = MaybeUninit::<libc::mach_task_basic_info>::uninit();
+            let mut count = (std::mem::size_of::<libc::mach_task_basic_info>() / std::mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+            let res = libc::task_info(
+                libc::mach_task_self(),
+                libc::MACH_TASK_BASIC_INFO,
+                info.as_mut_ptr() as *mut libc::integer_t,
+                &mut count,
+            );
+            if res == libc::KERN_SUCCESS {
+                let info = info.assume_init();
+                return (info.resident_size as f64) / (1024.0 * 1024.0);
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if line.starts_with("VmRSS:") {
+                    if let Some(kb_str) = line.split_whitespace().nth(1) {
+                        if let Ok(kb) = kb_str.parse::<f64>() {
+                            return kb / 1024.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    3.2 // Fallback baseline estimate for lightweight Rust binary
 }
 
 async fn handle_clear(

@@ -21,6 +21,7 @@ uuid = { version = "1.10", features = ["v4"] }
 url = "2.5"
 regex = "1.10"
 base64 = "0.22"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3
