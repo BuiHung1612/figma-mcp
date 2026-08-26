@@ -106,6 +106,25 @@ function stringifyForBridge(data) {
 figma.ui.onmessage = async (request) => {
   if (!request) return;
 
+  // Handle window resizing from UI drag handle
+  if (request.type === "resize") {
+    var newW = Math.max(260, Math.min(1000, Math.round(request.width)));
+    var newH = Math.max(200, Math.min(1200, Math.round(request.height)));
+    try {
+      figma.ui.resize(newW, newH);
+    } catch(e) {}
+    return;
+  }
+
+  if (request.type === "save-window-size") {
+    var sw = Math.max(260, Math.min(1000, Math.round(request.width)));
+    var sh = Math.max(200, Math.min(1200, Math.round(request.height)));
+    try {
+      figma.clientStorage.setAsync("mcp_window_size", { width: sw, height: sh }).catch(function() {});
+    } catch(e) {}
+    return;
+  }
+
   // Handle manual reindex request from UI
   if (request.type === "manual-reindex") {
     try {
