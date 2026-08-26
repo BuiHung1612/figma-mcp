@@ -577,8 +577,37 @@ handlers.screenshot = async function(params) {
     return Promise.reject(new Error("[v1.9.1-export] " + exportErr.message + " type=" + node.type + " id=" + node.id));
   }
 
+  var annotations = [];
+  if (params && (params.withAnnotations || params.annotated) && "children" in node && Array.isArray(node.children)) {
+    var annCount = 0;
+    for (var ci = 0; ci < node.children.length; ci++) {
+      var child = node.children[ci];
+      if (child.visible === false) continue;
+      annCount++;
+      annotations.push({
+        index: annCount,
+        id: child.id,
+        name: child.name,
+        type: child.type,
+        x: Math.round(child.x),
+        y: Math.round(child.y),
+        width: Math.round(child.width),
+        height: Math.round(child.height)
+      });
+      if (annCount >= 40) break;
+    }
+  }
+
   try {
-    return { dataUrl: "data:image/png;base64," + uint8ArrayToBase64(bytes), nodeId: node.id, width: node.width, height: node.height };
+    var resObj = {
+      dataUrl: "data:image/png;base64," + uint8ArrayToBase64(bytes),
+      nodeId: node.id,
+      nodeName: node.name,
+      width: node.width,
+      height: node.height
+    };
+    if (annotations.length) resObj.annotations = annotations;
+    return resObj;
   } catch(encodeErr) {
     return Promise.reject(new Error("[v1.9.1-encode] " + encodeErr.message));
   }

@@ -15,12 +15,14 @@ pub fn generate_code_from_context(
     let fmt = framework.to_lowercase();
     match fmt.as_str() {
         "react-tailwind" | "react" | "next" | "tailwind" => Ok(generate_react_tailwind(context, &name)),
+        "react-shadcn" | "shadcn" | "shadcn-ui" => Ok(generate_shadcn_react(context, &name)),
         "react-native" | "rn" => Ok(generate_react_native(context, &name)),
         "vue" | "vue-tailwind" => Ok(generate_vue_tailwind(context, &name)),
         "html" | "html-tailwind" => Ok(generate_html_tailwind(context)),
         "swiftui" => Ok(generate_swiftui(context, &name)),
+        "clean-spec" | "clean" | "spec" | "yaml-spec" => Ok(generate_clean_spec(context)),
         _ => Err(format!(
-            "Unsupported framework: '{}'. Available: 'react-tailwind', 'react-native', 'vue-tailwind', 'html', 'swiftui'",
+            "Unsupported framework: '{}'. Available: 'react-tailwind', 'react-shadcn', 'react-native', 'vue-tailwind', 'html', 'swiftui', 'clean-spec'",
             framework
         )),
     }
@@ -112,10 +114,26 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
     // 1. Layout
     if let Some(layout) = node.get("layout") {
         classes.push("flex".to_string());
-        if layout.get("flexDirection").and_then(|v| v.as_str()) == Some("column") {
+        
+        let width = node.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let is_column = layout.get("flexDirection").and_then(|v| v.as_str()) == Some("column");
+        
+        if is_column {
             classes.push("flex-col".to_string());
         } else {
-            classes.push("flex-row".to_string());
+            // Responsive breakpoint inference: large horizontal frames collapse to column on mobile
+            if width >= 768.0 {
+                classes.push("flex-col md:flex-row".to_string());
+            } else {
+                classes.push("flex-row".to_string());
+            }
+        }
+
+        // Wrap inference
+        if layout.get("layoutWrap").and_then(|v| v.as_str()) == Some("WRAP")
+            || layout.get("wrap").and_then(|v| v.as_bool()) == Some(true)
+        {
+            classes.push("flex-wrap".to_string());
         }
 
         if let Some(gap_str) = layout.get("gap").and_then(|v| v.as_str()) {
@@ -170,7 +188,29 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
         }
     }
 
-    // 2. Fill (Background / Text color)
+    // 2. Sizing / Constraints
+    if let Some(grow) = node.get("layoutGrow").and_then(|v| v.as_f64()) {
+        if grow > 0.0 { classes.push("flex-1".to_string()); }
+    }
+    if let Some(align) = node.get("layoutAlign").and_then(|v| v.as_str()) {
+        if align == "STRETCH" { classes.push("w-full".to_string()); }
+    }
+    if let Some(min_w) = node.get("minWidth").and_then(|v| v.as_f64()) {
+        if min_w > 0.0 { classes.push(format!("min-w-[{}px]", min_w as i64)); }
+    }
+    if let Some(max_w) = node.get("maxWidth").and_then(|v| v.as_f64()) {
+        if max_w > 0.0 {
+            if (max_w - 1280.0).abs() < 10.0 {
+                classes.push("max-w-screen-xl".to_string());
+            } else if (max_w - 1024.0).abs() < 10.0 {
+                classes.push("max-w-screen-lg".to_string());
+            } else {
+                classes.push(format!("max-w-[{}px]", max_w as i64));
+            }
+        }
+    }
+
+    // 3. Fill (Background / Text color)
     if let Some(fill) = node.get("fill").and_then(|v| v.as_str()) {
         let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if node_type == "TEXT" {
@@ -180,7 +220,7 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
         }
     }
 
-    // 3. Border / Stroke
+    // 4. Border / Stroke
     if let Some(stroke) = node.get("stroke") {
         if let Some(color) = stroke.get("color").and_then(|v| v.as_str()) {
             classes.push("border".to_string());
@@ -188,14 +228,14 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
         }
     }
 
-    // 4. Border Radius
+    // 5. Border Radius
     if let Some(radius_str) = node.get("borderRadius").and_then(|v| v.as_str()) {
         if let Ok(num) = radius_str.trim_end_matches("px").parse::<f64>() {
             classes.push(px_to_tailwind_radius(num).to_string());
         }
     }
 
-    // 5. Effects (Shadows)
+    // 6. Effects (Shadows)
     if let Some(effects) = node.get("effects").and_then(|v| v.as_array()) {
         for eff in effects {
             if eff.get("type").and_then(|v| v.as_str()) == Some("DROP_SHADOW") {
@@ -210,7 +250,7 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
         }
     }
 
-    // 6. Typography (For TEXT nodes)
+    // 7. Typography (For TEXT nodes)
     if let Some(typo) = node.get("typography") {
         if let Some(size) = typo.get("fontSize").and_then(|v| v.as_f64()) {
             if size <= 12.0 { classes.push("text-xs".to_string()); }
@@ -296,6 +336,256 @@ fn render_jsx_node(node: &Value, out: &mut String, indent_level: usize) {
     }
 
     out.push_str(&format!("{}<{}{} />\n", indent, tag, class_attr));
+}
+
+// ── React + Shadcn/UI Component Generator ─────────────────────────────────────
+
+#[derive(Default)]
+struct ShadcnImports {
+    button: bool,
+    badge: bool,
+    card: bool,
+    input: bool,
+    avatar: bool,
+    switch: bool,
+}
+
+fn generate_shadcn_react(context: &Value, component_name: &str) -> String {
+    let mut imports = ShadcnImports::default();
+    let mut jsx_buffer = String::new();
+    render_shadcn_node(context, &mut jsx_buffer, 2, &mut imports);
+
+    let mut import_lines = vec!["import React from 'react';".to_string()];
+    if imports.button {
+        import_lines.push("import { Button } from '@/components/ui/button';".to_string());
+    }
+    if imports.badge {
+        import_lines.push("import { Badge } from '@/components/ui/badge';".to_string());
+    }
+    if imports.card {
+        import_lines.push("import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';".to_string());
+    }
+    if imports.input {
+        import_lines.push("import { Input } from '@/components/ui/input';".to_string());
+    }
+    if imports.avatar {
+        import_lines.push("import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';".to_string());
+    }
+    if imports.switch {
+        import_lines.push("import { Switch } from '@/components/ui/switch';".to_string());
+    }
+
+    format!(
+        "{imports}\n\ninterface {name}Props {{\n  className?: string;\n}}\n\nexport const {name}: React.FC<{name}Props> = ({{\n  className = '',\n}}) => {{\n  return (\n{jsx}\n  );\n}};\n\nexport default {name};\n",
+        imports = import_lines.join("\n"),
+        name = component_name,
+        jsx = jsx_buffer
+    )
+}
+
+fn render_shadcn_node(node: &Value, out: &mut String, indent_level: usize, imports: &mut ShadcnImports) {
+    let indent = "  ".repeat(indent_level);
+    let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("FRAME");
+    let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+    let text = node.get("characters").and_then(|v| v.as_str());
+
+    // 1. Detect Button
+    if name.contains("button") || name.contains("btn") {
+        imports.button = true;
+        let mut variant = "default";
+        let fill = node.get("fill").and_then(|v| v.as_str()).unwrap_or("");
+        if fill.contains("red") || fill.contains("#ef4444") || fill.contains("#dc2626") {
+            variant = "destructive";
+        } else if node.get("stroke").is_some() {
+            variant = "outline";
+        } else if fill.contains("secondary") || fill.contains("#f1f5f9") {
+            variant = "secondary";
+        } else if fill.is_empty() || fill == "#ffffff" || fill == "transparent" {
+            variant = "ghost";
+        }
+
+        let label = find_child_text(node).unwrap_or_else(|| "Button".to_string());
+        if variant == "default" {
+            out.push_str(&format!("{}<Button>{}</Button>\n", indent, label));
+        } else {
+            out.push_str(&format!("{}<Button variant=\"{}\">{}</Button>\n", indent, variant, label));
+        }
+        return;
+    }
+
+    // 2. Detect Badge
+    if name.contains("badge") || name.contains("tag") || name.contains("pill") {
+        imports.badge = true;
+        let label = find_child_text(node).unwrap_or_else(|| "Badge".to_string());
+        out.push_str(&format!("{}<Badge>{}</Badge>\n", indent, label));
+        return;
+    }
+
+    // 3. Detect Avatar
+    if name.contains("avatar") || name.contains("userpic") || name.contains("profile-pic") {
+        imports.avatar = true;
+        out.push_str(&format!("{}<Avatar>\n{}  <AvatarImage src=\"https://github.com/shadcn.png\" alt=\"User\" />\n{}  <AvatarFallback>CN</AvatarFallback>\n{}</Avatar>\n", indent, indent, indent, indent));
+        return;
+    }
+
+    // 4. Detect Input
+    if name.contains("input") || name.contains("textfield") || name.contains("searchbar") {
+        imports.input = true;
+        let placeholder = find_child_text(node).unwrap_or_else(|| "Type here...".to_string());
+        out.push_str(&format!("{}<Input placeholder=\"{}\" />\n", indent, placeholder));
+        return;
+    }
+
+    // 5. Detect Card
+    if name.contains("card") && node_type == "FRAME" {
+        imports.card = true;
+        let classes = node_to_tailwind_classes(node);
+        let class_attr = if classes.is_empty() { String::new() } else { format!(" className=\"{}\"", classes.join(" ")) };
+        out.push_str(&format!("{}<Card{}>\n", indent, class_attr));
+        if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
+            for child in children {
+                render_shadcn_node(child, out, indent_level + 1, imports);
+            }
+        }
+        out.push_str(&format!("{}</Card>\n", indent));
+        return;
+    }
+
+    // Default: Fallback to standard JSX
+    let tag = if node_type == "TEXT" { "span" } else { "div" };
+    let classes = node_to_tailwind_classes(node);
+    let class_attr = if classes.is_empty() { String::new() } else { format!(" className=\"{}\"", classes.join(" ")) };
+
+    if node_type == "TEXT" {
+        let content = text.unwrap_or(&name);
+        out.push_str(&format!("{}<{}{}>{}</{}>\n", indent, tag, class_attr, content, tag));
+        return;
+    }
+
+    if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
+        if !children.is_empty() {
+            out.push_str(&format!("{}<{}{}>\n", indent, tag, class_attr));
+            for child in children {
+                render_shadcn_node(child, out, indent_level + 1, imports);
+            }
+            out.push_str(&format!("{}</{}>\n", indent, tag));
+            return;
+        }
+    }
+
+    out.push_str(&format!("{}<{}{} />\n", indent, tag, class_attr));
+}
+
+fn find_child_text(node: &Value) -> Option<String> {
+    if let Some(c) = node.get("characters").and_then(|v| v.as_str()) {
+        return Some(c.to_string());
+    }
+    if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
+        for child in children {
+            if let Some(txt) = find_child_text(child) {
+                return Some(txt);
+            }
+        }
+    }
+    None
+}
+
+// ── Clean Spec / Token-Pruned AST Generator ──────────────────────────────────
+
+pub fn prune_ast_node(node: &Value) -> Value {
+    if let Some(obj) = node.as_object() {
+        let mut pruned = serde_json::Map::new();
+
+        for (k, v) in obj {
+            match k.as_str() {
+                "visible" => { if v.as_bool() == Some(false) { pruned.insert(k.clone(), v.clone()); } }
+                "opacity" => { if let Some(op) = v.as_f64() { if (op - 1.0).abs() > 0.01 { pruned.insert(k.clone(), v.clone()); } } }
+                "blendMode" => { if v.as_str() != Some("PASS_THROUGH") { pruned.insert(k.clone(), v.clone()); } }
+                "padding" => {
+                    if let Some(pad_str) = v.as_str() {
+                        if pad_str != "0px 0px 0px 0px" && pad_str != "0 0 0 0" {
+                            pruned.insert(k.clone(), v.clone());
+                        }
+                    } else if !v.is_null() {
+                        pruned.insert(k.clone(), v.clone());
+                    }
+                }
+                "borderRadius" => {
+                    if let Some(r_str) = v.as_str() {
+                        if r_str != "0px" && r_str != "0" {
+                            pruned.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                "children" => {
+                    if let Some(arr) = v.as_array() {
+                        if !arr.is_empty() {
+                            let pruned_children: Vec<Value> = arr.iter().map(prune_ast_node).collect();
+                            pruned.insert(k.clone(), Value::Array(pruned_children));
+                        }
+                    }
+                }
+                _ => {
+                    if !v.is_null() {
+                        pruned.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        return Value::Object(pruned);
+    }
+    node.clone()
+}
+
+fn generate_clean_spec(context: &Value) -> String {
+    let mut out = String::new();
+    render_clean_spec_node(context, &mut out, 0);
+    out
+}
+
+fn render_clean_spec_node(node: &Value, out: &mut String, indent_level: usize) {
+    let indent = "  ".repeat(indent_level);
+    let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("Layer");
+    let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("FRAME");
+    let text = node.get("characters").and_then(|v| v.as_str());
+
+    let mut attrs = Vec::new();
+    if let Some(fill) = node.get("fill").and_then(|v| v.as_str()) {
+        attrs.push(format!("fill=\"{}\"", fill));
+    }
+    if let Some(layout) = node.get("layout") {
+        if let Some(dir) = layout.get("flexDirection").and_then(|v| v.as_str()) {
+            attrs.push(format!("flex=\"{}\"", dir));
+        }
+        if let Some(gap) = layout.get("gap").and_then(|v| v.as_str()) {
+            if gap != "0px" { attrs.push(format!("gap=\"{}\"", gap)); }
+        }
+    }
+    if let Some(radius) = node.get("borderRadius").and_then(|v| v.as_str()) {
+        if radius != "0px" { attrs.push(format!("radius=\"{}\"", radius)); }
+    }
+
+    let attr_str = if attrs.is_empty() { String::new() } else { format!(" {}", attrs.join(" ")) };
+
+    if node_type == "TEXT" {
+        let content = text.unwrap_or(name);
+        out.push_str(&format!("{}<Text name=\"{}\"{}>{}</Text>\n", indent, name, attr_str, content));
+        return;
+    }
+
+    let children = node.get("children").and_then(|v| v.as_array());
+    if let Some(child_nodes) = children {
+        if !child_nodes.is_empty() {
+            out.push_str(&format!("{}<{} name=\"{}\"{}>\n", indent, node_type, name, attr_str));
+            for child in child_nodes {
+                render_clean_spec_node(child, out, indent_level + 1);
+            }
+            out.push_str(&format!("{}</{}>\n", indent, node_type));
+            return;
+        }
+    }
+
+    out.push_str(&format!("{}<{} name=\"{}\"{} />\n", indent, node_type, name, attr_str));
 }
 
 // ── React Native Generator ───────────────────────────────────────────────────
@@ -420,9 +710,10 @@ mod tests {
         let context = json!({
             "name": "UserProfileCard",
             "type": "FRAME",
+            "width": 800.0,
             "layout": {
                 "display": "flex",
-                "flexDirection": "column",
+                "flexDirection": "row",
                 "gap": "16px",
                 "alignItems": "center",
                 "justifyContent": "space-between",
@@ -468,7 +759,7 @@ mod tests {
 
         let code = generate_code_from_context(&context, "react-tailwind", Some("UserProfileCard")).unwrap();
         assert!(code.contains("export const UserProfileCard: React.FC<UserProfileCardProps>"));
-        assert!(code.contains("flex flex-col"));
+        assert!(code.contains("flex flex-col md:flex-row"));
         assert!(code.contains("gap-4"));
         assert!(code.contains("p-6"));
         assert!(code.contains("bg-white"));
@@ -476,6 +767,13 @@ mod tests {
         assert!(code.contains("<button"));
         assert!(code.contains("bg-[#6366f1]"));
         assert!(code.contains("Welcome Back, User!"));
+
+        let shadcn_code = generate_code_from_context(&context, "react-shadcn", Some("UserProfileCard")).unwrap();
+        assert!(shadcn_code.contains("import { Button } from '@/components/ui/button';"));
+        assert!(shadcn_code.contains("<Button>Get Started</Button>"));
+
+        let clean_spec = generate_code_from_context(&context, "clean-spec", None).unwrap();
+        assert!(clean_spec.contains("<FRAME name=\"UserProfileCard\" fill=\"#ffffff\" flex=\"row\" gap=\"16px\" radius=\"16px\">"));
 
         let rn_code = generate_code_from_context(&context, "react-native", Some("UserProfileCard")).unwrap();
         assert!(rn_code.contains("import { View, Text, StyleSheet, TouchableOpacity } from 'react-native'"));
@@ -487,6 +785,6 @@ mod tests {
 
         let swift_code = generate_code_from_context(&context, "swiftui", Some("UserProfileCard")).unwrap();
         assert!(swift_code.contains("struct UserProfileCard: View"));
-        assert!(swift_code.contains("VStack {"));
+        assert!(swift_code.contains("HStack {"));
     }
 }

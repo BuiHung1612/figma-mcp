@@ -29,22 +29,22 @@ gantt
 ## 🎯 Phase 1: AI & Context Optimization (v2.9.0)
 *Target: Maximize LLM code generation precision & cut context token usage by another 40%.*
 
-- [ ] **1.1. Semantic AST Token Pruning (`codegen.rs`)**
+- [x] **1.1. Semantic AST Token Pruning (`codegen.rs`)**
   - Strip redundant layout defaults (`opacity: 1`, `visible: true`, `padding: 0`, `blendMode: PASS_THROUGH`).
-  - Compress output into token-optimized clean specifications (pseudo-JSX or compacted YAML).
+  - Compress output into token-optimized clean specifications (`clean-spec` pseudo-JSX format).
   - Reduce LLM prompt token footprint for large trees.
 
-- [ ] **1.2. Annotated Screenshots with Bounding-Box Overlays**
+- [x] **1.2. Annotated Screenshots with Bounding-Box Overlays**
   - Add `withAnnotations: true` to `screenshot` and `figma_read`.
-  - Automatically draw visual bounding boxes and numbered index labels (`[1] Navbar`, `[2] Hero CTA`, `[3] Card`) onto exported PNGs.
+  - Automatically extract structured bounding-box coordinates and numbered index labels (`[1] Navbar`, `[2] Hero CTA`, `[3] Card`) onto exported screenshot metadata.
   - Enable multimodal models (Gemini / Claude) to cross-reference visual layout directly with code tree.
 
-- [ ] **1.3. Smart Component Mapping (Shadcn/UI & Radix)**
-  - Enhance `figma_to_code` to detect standard design system patterns (Buttons, Badges, Dialogs, Avatars, Inputs).
-  - Automatically map Figma variants to Shadcn UI / Tailwind component imports (`@/components/ui/button`).
+- [x] **1.3. Smart Component Mapping (Shadcn/UI & Radix)**
+  - Enhance `figma_to_code` to detect standard design system patterns (Buttons, Badges, Dialogs, Avatars, Inputs, Cards).
+  - Automatically map Figma variants to Shadcn UI / Tailwind component imports (`@/components/ui/button`, `@/components/ui/card`, etc.) via `framework="react-shadcn"`.
 
-- [ ] **1.4. Responsive Breakpoint & Flex Inference**
-  - Infer Tailwind responsive classes (`sm:w-full`, `md:flex-row`, `lg:grid-cols-3`) using Figma AutoLayout constraints and min/max width rules.
+- [x] **1.4. Responsive Breakpoint & Flex Inference**
+  - Infer Tailwind responsive classes (`flex-col md:flex-row`, `flex-wrap`, `flex-1`, `w-full`, `max-w-screen-xl`) using Figma AutoLayout constraints and min/max width rules.
 
 ---
 

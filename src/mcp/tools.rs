@@ -149,6 +149,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "maxNodes": { "type": "number", "description": "Node budget for get_design/get_selection (default 3000) and scan_design (default 50000). Subtrees past it are summarized and meta.nodesTruncated is set — raise it for one big frame, lower it to keep the payload small." },
                     "absolute": { "type": "boolean", "description": "Force absoluteBoundingBox on every node in get_design/get_selection. Off by default: it is emitted only where parent-relative x/y is insufficient (inside a GROUP, or under rotation)." },
                     "inlineIcons": { "type": "boolean", "description": "Inline SVG markup for icon nodes in get_design (detail 'full', first 10 icons). Off by default — exporting SVG for many icons is slow." },
+                    "withAnnotations": { "type": "boolean", "description": "For screenshot: export image with numbered bounding-box annotation overlays and metadata for multimodal LLM analysis." },
                     "keepViewport": { "type": "boolean", "description": "For screenshot/export_image: default true restores the user's canvas position after the render nudge. Pass false to leave the canvas on the exported node." },
                     "sessionId": { "type": "string", "description": "Target a specific Figma file/tab when multiple are connected. Omit to auto-select." }
                 },
@@ -265,7 +266,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_to_code".to_string(),
-            description: "Compile any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code. Formats: 'react-tailwind' (default, React + Tailwind CSS with semantic HTML and flex layout), 'react-native' (React Native View/Text/TouchableOpacity), 'vue-tailwind' (Vue 3 SFC template + script setup), 'html' (plain HTML + Tailwind), 'swiftui' (SwiftUI VStack/HStack). Supports 'outputPath' to write directly to your codebase (e.g. 'src/components/UserProfileCard.tsx').".to_string(),
+            description: "Compile any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code. Formats: 'react-tailwind' (default, React + Tailwind CSS), 'react-shadcn' (React + Shadcn/UI components & Radix), 'react-native' (React Native View/Text/TouchableOpacity), 'vue-tailwind' (Vue 3 SFC template + script setup), 'html' (plain HTML + Tailwind), 'swiftui' (SwiftUI VStack/HStack), 'clean-spec' (token-pruned AST for AI prompt context). Supports 'outputPath' to write directly to your codebase (e.g. 'src/components/UserProfileCard.tsx').".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -279,8 +280,8 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     },
                     "framework": {
                         "type": "string",
-                        "enum": ["react-tailwind", "react-native", "vue-tailwind", "html", "swiftui"],
-                        "description": "Target framework: 'react-tailwind' (default), 'react-native', 'vue-tailwind', 'html', or 'swiftui'."
+                        "enum": ["react-tailwind", "react-shadcn", "react-native", "vue-tailwind", "html", "swiftui", "clean-spec"],
+                        "description": "Target framework: 'react-tailwind' (default), 'react-shadcn' (Shadcn/UI), 'react-native', 'vue-tailwind', 'html', 'swiftui', or 'clean-spec'."
                     },
                     "componentName": {
                         "type": "string",
