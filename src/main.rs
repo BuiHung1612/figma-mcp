@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_interactive = (args.server || std::io::stdin().is_terminal()) && !args.stdio;
 
     if is_interactive {
-        // Standalone Server Mode (Terminal Dashboard)
+        // Standalone Server Mode (Terminal Dashboard or Daemon)
         let proxy = HttpProxy::new(port);
         if proxy.is_running().await {
             eprintln!(
@@ -96,16 +96,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 port
             );
             print_banner(port);
-            tokio::signal::ctrl_c().await?;
-            eprintln!("[figma-mcp] Exiting.");
+            if std::io::stdin().is_terminal() {
+                tokio::signal::ctrl_c().await?;
+                eprintln!("[figma-mcp] Exiting.");
+            } else {
+                std::future::pending::<()>().await;
+            }
             return Ok(());
         }
 
         match start_bridge_server(port).await {
             Ok((_state, actual_port)) => {
                 print_banner(actual_port);
-                tokio::signal::ctrl_c().await?;
-                eprintln!("\n[figma-mcp] Server stopped cleanly. Goodbye!");
+                // Keep server process alive
+                if std::io::stdin().is_terminal() {
+                    tokio::signal::ctrl_c().await?;
+                    eprintln!("\n[figma-mcp] Server stopped cleanly. Goodbye!");
+                } else {
+                    // Daemon mode (LaunchAgent / systemd / background daemon): run indefinitely
+                    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+                    let _ = shutdown_rx.await;
+                }
             }
             Err(e) => {
                 eprintln!("[figma-mcp] Failed to start server on port {}: {}", port, e);

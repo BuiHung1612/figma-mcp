@@ -234,6 +234,7 @@ async function installService(binPath) {
   <key>ProgramArguments</key>
   <array>
     <string>${binPath}</string>
+    <string>--server</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -272,7 +273,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${binPath}
+ExecStart=${binPath} --server
 Restart=on-failure
 RestartSec=5
 
@@ -325,6 +326,7 @@ async function uninstallService() {
     }
 
     try { execSync(`launchctl unload -w "${plistPath}"`, { stdio: 'inherit' }); } catch (_) {}
+    try { execSync(`pkill -f figma-mcp 2>/dev/null`, { stdio: 'pipe' }); } catch (_) {}
     fs.unlinkSync(plistPath);
 
     console.log(`\x1b[32m✓ figma-rust-mcp service uninstalled.\x1b[0m`);
