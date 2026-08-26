@@ -43,30 +43,34 @@ Enables AI agents (Claude Code, Cursor, Windsurf, Antigravity, VS Code, Zed) to 
 
 ### 1. One-Line Launch with NPX (No Rust toolchain needed)
 
-You can launch `figma-mcp` on any Mac, Linux, or Windows machine with zero setup:
+You can launch `figma-rust-mcp` on any Mac, Linux, or Windows machine with zero setup:
 
 ```bash
-npx figma-mcp
+npx figma-rust-mcp
 ```
 
 This automatically downloads the prebuilt native binary for your architecture and starts the server.
 
-Or if configuring in **Cursor / Claude Desktop / Windsurf / Antigravity MCP Settings**:
+---
 
-```json
-{
-  "mcpServers": {
-    "figma-mcp": {
-      "command": "npx",
-      "args": ["-y", "figma-mcp", "--stdio"]
-    }
-  }
-}
+### 2. Auto-Start as Background Service (Recommended for SSE)
+
+If you use SSE transport across multiple AI IDEs (Antigravity, Claude, Cursor, Windsurf) and want `figma-rust-mcp` to **automatically start on OS login and keep running in the background**:
+
+```bash
+# Install and start auto-start background service (macOS LaunchAgent, Linux systemd, Windows Task Scheduler)
+npx figma-rust-mcp --install-service
+
+# Check background service status
+npx figma-rust-mcp --service-status
+
+# Uninstall service
+npx figma-rust-mcp --uninstall-service
 ```
 
 ---
 
-### 2. Or Build from Source (Rust)
+### 3. Or Build from Source (Rust)
 
 Prerequisites: [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`).
 
@@ -79,7 +83,7 @@ cargo build --release
 
 ---
 
-### 3. Install the Figma Plugin
+### 4. Install the Figma Plugin
 
 1. Open **Figma Desktop**.
 2. Go to **Plugins** → **Development** → **Import plugin from manifest...**
@@ -89,7 +93,7 @@ cargo build --release
 
 ---
 
-### 4. Configure Your MCP Client
+### 5. Configure Your MCP Client
 
 #### Google Antigravity (SSE Transport - Recommended)
 Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.json`:
@@ -121,9 +125,9 @@ You can connect via SSE or stdio:
 ```json
 {
   "mcpServers": {
-    "figma-mcp": {
+    "figma-rust-mcp": {
       "command": "npx",
-      "args": ["-y", "figma-mcp", "--stdio"]
+      "args": ["-y", "figma-rust-mcp", "--stdio"]
     }
   }
 }

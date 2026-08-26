@@ -298,10 +298,10 @@ WantedBy=default.target
     // Start it immediately too
     try { execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'pipe' }); } catch (_) {}
 
-    console.log(`\x1b[32m✓ figma-mcp Windows Task installed!\x1b[0m`);
+    console.log(`\x1b[32m✓ figma-rust-mcp Windows Task installed!\x1b[0m`);
     console.log(`  Task: ${taskName}`);
     console.log(`\n\x1b[36mThe server will now start automatically on every login.\x1b[0m`);
-    console.log(`\x1b[36mTo uninstall: npx figma-mcp --uninstall-service\x1b[0m`);
+    console.log(`\x1b[36mTo uninstall: npx figma-rust-mcp --uninstall-service\x1b[0m`);
 
   } else {
     console.error(`\x1b[31mUnsupported platform: ${platform}\x1b[0m`);
@@ -327,7 +327,7 @@ async function uninstallService() {
     try { execSync(`launchctl unload -w "${plistPath}"`, { stdio: 'inherit' }); } catch (_) {}
     fs.unlinkSync(plistPath);
 
-    console.log(`\x1b[32m✓ figma-mcp service uninstalled.\x1b[0m`);
+    console.log(`\x1b[32m✓ figma-rust-mcp service uninstalled.\x1b[0m`);
 
   } else if (platform === 'linux') {
     try { execSync(`systemctl --user disable --now figma-mcp`, { stdio: 'inherit' }); } catch (_) {}
@@ -335,13 +335,13 @@ async function uninstallService() {
     if (fs.existsSync(servicePath)) fs.unlinkSync(servicePath);
     try { execSync(`systemctl --user daemon-reload`, { stdio: 'inherit' }); } catch (_) {}
 
-    console.log(`\x1b[32m✓ figma-mcp service uninstalled.\x1b[0m`);
+    console.log(`\x1b[32m✓ figma-rust-mcp service uninstalled.\x1b[0m`);
 
   } else if (platform === 'win32') {
     const taskName = 'FigmaMCPServer';
     try { execSync(`schtasks /Delete /F /TN "${taskName}"`, { stdio: 'inherit' }); } catch (_) {}
 
-    console.log(`\x1b[32m✓ figma-mcp Windows Task removed.\x1b[0m`);
+    console.log(`\x1b[32m✓ figma-rust-mcp Windows Task removed.\x1b[0m`);
 
   } else {
     console.error(`\x1b[31mUnsupported platform: ${platform}\x1b[0m`);
@@ -379,7 +379,7 @@ async function main() {
       const binPath = await findOrDownloadBinary();
       await installService(binPath);
     } catch (err) {
-      console.error(`\x1b[31m[figma-mcp error]\x1b[0m ${err.message}`);
+      console.error(`\x1b[31m[figma-rust-mcp error]\x1b[0m ${err.message}`);
       process.exit(1);
     }
     return;
@@ -389,7 +389,7 @@ async function main() {
     try {
       await uninstallService();
     } catch (err) {
-      console.error(`\x1b[31m[figma-mcp error]\x1b[0m ${err.message}`);
+      console.error(`\x1b[31m[figma-rust-mcp error]\x1b[0m ${err.message}`);
       process.exit(1);
     }
     return;
@@ -398,11 +398,11 @@ async function main() {
   if (args.includes('--service-status')) {
     const installed = isServiceInstalled();
     if (installed) {
-      console.log('\x1b[32m✓ figma-mcp service is installed.\x1b[0m');
-      console.log('  To uninstall: npx figma-mcp --uninstall-service');
+      console.log('\x1b[32m✓ figma-rust-mcp service is installed.\x1b[0m');
+      console.log('  To uninstall: npx figma-rust-mcp --uninstall-service');
     } else {
-      console.log('\x1b[33m✗ figma-mcp service is NOT installed.\x1b[0m');
-      console.log('  To install:   npx figma-mcp --install-service');
+      console.log('\x1b[33m✗ figma-rust-mcp service is NOT installed.\x1b[0m');
+      console.log('  To install:   npx figma-rust-mcp --install-service');
     }
     return;
   }
