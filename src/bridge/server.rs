@@ -106,7 +106,8 @@ impl BridgeState {
     pub async fn is_plugin_connected(&self, session_id: Option<&str>) -> bool {
         let inner = self.inner.lock().await;
         if let Some(sid) = session_id {
-            if let Some(s) = inner.sessions.get(sid) {
+            let resolved_id = Self::resolve_session_id(&inner, Some(sid));
+            if let Some(s) = inner.sessions.get(&resolved_id) {
                 return s.is_connected();
             }
             return false;
@@ -173,15 +174,7 @@ impl BridgeState {
         let (rx, op_id, timeout_ms) = {
             let mut inner = self.inner.lock().await;
 
-            let sid = if let Some(id) = session_id {
-                if inner.sessions.get(id).is_some_and(|s| s.is_connected()) {
-                    id.to_string()
-                } else {
-                    Self::resolve_best_session_id(&inner)
-                }
-            } else {
-                Self::resolve_best_session_id(&inner)
-            };
+            let sid = Self::resolve_session_id(&inner, session_id);
 
             let session = inner
                 .sessions
@@ -285,18 +278,14 @@ impl BridgeState {
 
     pub async fn get_index_stats(&self, session_id: Option<&str>) -> Option<crate::bridge::index::IndexStats> {
         let inner = self.inner.lock().await;
-        let sid = session_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+        let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| s.index.as_ref().map(|idx| idx.stats.clone()))
     }
 
     pub async fn get_index_node(&self, session_id: Option<&str>, node_id: &str) -> Option<crate::bridge::index::IndexNode> {
         let inner = self.inner.lock().await;
-        let sid = session_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+        let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| s.index.as_ref().and_then(|idx| idx.get_node(node_id).cloned()))
     }
@@ -309,9 +298,7 @@ impl BridgeState {
         limit: usize,
     ) -> Option<Vec<crate::bridge::index::IndexNode>> {
         let inner = self.inner.lock().await;
-        let sid = session_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+        let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| {
             s.index.as_ref().map(|idx| {
@@ -330,9 +317,7 @@ impl BridgeState {
         limit: usize,
     ) -> Option<Vec<crate::bridge::index::IndexComponent>> {
         let inner = self.inner.lock().await;
-        let sid = session_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+        let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| {
             s.index.as_ref().map(|idx| {
@@ -351,9 +336,7 @@ impl BridgeState {
         style_type: Option<&str>,
     ) -> Option<Vec<crate::bridge::index::IndexStyle>> {
         let inner = self.inner.lock().await;
-        let sid = session_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+        let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| {
             s.index.as_ref().map(|idx| {
@@ -372,9 +355,7 @@ impl BridgeState {
         collection: Option<&str>,
     ) -> Option<Vec<crate::bridge::index::IndexVariable>> {
         let inner = self.inner.lock().await;
-        let sid = session_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+        let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| {
             s.index.as_ref().map(|idx| {
@@ -384,6 +365,40 @@ impl BridgeState {
                     .collect()
             })
         })
+    }
+
+    pub fn resolve_session_id(inner: &BridgeInner, target: Option<&str>) -> String {
+        if let Some(target) = target {
+            let target_trim = target.trim();
+            if !target_trim.is_empty() {
+                // 1. Exact match on session ID
+                if let Some(s) = inner.sessions.get(target_trim) {
+                    if s.is_connected() {
+                        return target_trim.to_string();
+                    }
+                }
+                // 2. Exact match on file name (case-insensitive)
+                for (id, s) in &inner.sessions {
+                    if s.is_connected() && s.file_name.eq_ignore_ascii_case(target_trim) {
+                        return id.clone();
+                    }
+                }
+                // 3. Substring match on file name (case-insensitive)
+                for (id, s) in &inner.sessions {
+                    if s.is_connected() && s.file_name.to_lowercase().contains(&target_trim.to_lowercase()) {
+                        return id.clone();
+                    }
+                }
+                // 4. Prefix match on session ID
+                for (id, s) in &inner.sessions {
+                    if s.is_connected() && id.starts_with(target_trim) {
+                        return id.clone();
+                    }
+                }
+            }
+        }
+        // Fallback: Pick the most recently active connected session
+        Self::resolve_best_session_id(inner)
     }
 
     fn resolve_best_session_id(inner: &BridgeInner) -> String {

@@ -26,12 +26,10 @@ OUTPUT=$(echo "$INPUT" | $BIN_PATH --port 38499 2>/dev/null)
 echo "$OUTPUT" | head -n 4
 
 # Verify tool registration in JSON-RPC output
-echo "--- Test 3: Verify Tool Registrations ---"
-echo "$OUTPUT" | grep -q "figma_get_selection" && echo "✓ figma_get_selection registered"
-echo "$OUTPUT" | grep -q "figma_inspect_node" && echo "✓ figma_inspect_node registered"
-echo "$OUTPUT" | grep -q "figma_export_asset" && echo "✓ figma_export_asset registered"
-echo "$OUTPUT" | grep -q "figma_read" && echo "✓ figma_read registered"
-echo "$OUTPUT" | grep -q "figma_write" && echo "✓ figma_write registered"
+echo "--- Test 3: Verify Tool Registrations (12 tools) ---"
+for TOOL in figma_status figma_get_selection figma_inspect_node figma_to_code figma_get_tokens figma_export_asset figma_export_assets figma_index figma_read figma_write figma_rules figma_docs; do
+  echo "$OUTPUT" | grep -q "\"name\":\"$TOOL\"" && echo "✓ $TOOL registered"
+done
 
 # Test 4: Node/NPX wrapper test
 echo "--- Test 4: NPX Wrapper ---"

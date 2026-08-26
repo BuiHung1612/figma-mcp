@@ -14,12 +14,39 @@ figma.clientStorage.getAsync("mcp_window_size").then(function(saved) {
   }
 }).catch(function() {});
 
+// ─── UNIQUE SESSION IDENTIFIER (Multi-tab Support) ───────────────────────────
+// In Figma, figma.root.id is always "0:0" across all files. To support running
+// multiple plugins concurrently across multiple tabs/files, generate and persist
+// a unique document session ID in document pluginData.
+function getOrCreateSessionId() {
+  if (figma.fileKey) {
+    return figma.fileKey;
+  }
+  try {
+    var stored = figma.root.getPluginData("mcp_session_id");
+    if (stored && stored.length > 0) {
+      return stored;
+    }
+  } catch(e) {}
+
+  var rand = Math.random().toString(36).substring(2, 10);
+  var ts = Date.now().toString(36);
+  var newId = "doc_" + rand + "_" + ts;
+  try {
+    figma.root.setPluginData("mcp_session_id", newId);
+  } catch(e) {}
+  return newId;
+}
+
+var currentSessionId = getOrCreateSessionId();
+var currentFileName = figma.root ? figma.root.name : "Untitled";
+
 // Broadcast active file / session metadata on startup
 try {
   figma.ui.postMessage({
     type: "session-info",
-    sessionId: figma.root.id,
-    fileName: figma.root.name
+    sessionId: currentSessionId,
+    fileName: currentFileName
   });
 } catch (e) {}
 
@@ -29,11 +56,19 @@ figma.on("selectionchange", function() {
     var sel = figma.currentPage.selection;
     var summary = [];
     for (var i = 0; i < Math.min(sel.length, 5); i++) {
-      summary.push({ id: sel[i].id, name: sel[i].name, type: sel[i].type });
+      var n = sel[i];
+      summary.push({
+        id: n.id,
+        name: n.name,
+        type: n.type,
+        width: typeof n.width === "number" ? Math.round(n.width) : undefined,
+        height: typeof n.height === "number" ? Math.round(n.height) : undefined
+      });
     }
     figma.ui.postMessage({
       type: "selection-change",
       count: sel.length,
+      pageName: figma.currentPage ? figma.currentPage.name : undefined,
       selection: summary
     });
   } catch (e) {}
@@ -101,8 +136,8 @@ setTimeout(async function() {
       figma.ui.postMessage({
         type: "index-update",
         data: scanResult,
-        fileName: figma.root ? figma.root.name : "unknown",
-        sessionId: figma.root ? figma.root.id : "_default",
+        fileName: currentFileName,
+        sessionId: currentSessionId,
         startMs: startMs
       });
     }
@@ -154,6 +189,43 @@ figma.ui.onmessage = async (request) => {
     return;
   }
 
+  // Zoom to selection when clicked on selection bar
+  if (request.type === "zoom-to-selection") {
+    try {
+      if (figma.currentPage.selection.length > 0) {
+        figma.viewport.scrollAndZoomIntoView(figma.currentPage.selection);
+        figma.notify("Focused on selection", { timeout: 1000 });
+      }
+    } catch(e) {}
+    return;
+  }
+
+  // Export selection image as PNG for UI clipboard/download
+  if (request.type === "export-selection-image") {
+    try {
+      var sel = figma.currentPage.selection;
+      if (!sel || sel.length === 0) {
+        figma.notify("Please select a layer to capture", { timeout: 1500 });
+        return;
+      }
+      var targetNode = sel[0];
+      var scale = request.scale || 2;
+      var bytes = await targetNode.exportAsync({
+        format: "PNG",
+        constraint: { type: "SCALE", value: scale }
+      });
+      figma.ui.postMessage({
+        type: "selection-image-exported",
+        nodeId: targetNode.id,
+        nodeName: targetNode.name,
+        bytes: Array.from(bytes)
+      });
+    } catch (err) {
+      figma.notify("Export failed: " + (err && err.message ? err.message : String(err)), { error: true });
+    }
+    return;
+  }
+
   // Handle manual reindex request from UI
   if (request.type === "manual-reindex") {
     try {
@@ -163,8 +235,8 @@ figma.ui.onmessage = async (request) => {
         figma.ui.postMessage({
           type: "index-update",
           data: scanResult,
-          fileName: figma.root ? figma.root.name : "unknown",
-          sessionId: figma.root ? figma.root.id : "_default",
+          fileName: currentFileName,
+          sessionId: currentSessionId,
           startMs: startMs
         });
       }

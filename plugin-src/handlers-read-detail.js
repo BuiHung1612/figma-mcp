@@ -808,3 +808,128 @@ handlers.get_variables = async function() {
   }
   return { collections: collections };
 };
+
+// ─── EXPORT ASSETS (Batch Icon & Image Extractor) ────────────────────────────
+handlers.export_assets = async function(params) {
+  var id = params ? (params.id || params.nodeId) : null;
+  var targetNode = null;
+  if (id) targetNode = await findNodeByIdAsync(id);
+  if (!targetNode) {
+    var sel = figma.currentPage.selection;
+    targetNode = sel && sel.length > 0 ? sel[0] : figma.currentPage;
+  }
+  if (!targetNode) throw new Error("No node found to export assets from");
+
+  var icons = [];
+  var images = [];
+  var seenNames = {};
+
+  function sanitizeAssetName(rawName, fallback) {
+    var name = (rawName || fallback)
+      .toLowerCase()
+      .replace(/^icon[s\/_\-\s]+/, '')
+      .replace(/^ic[_\-\s]+/, '')
+      .replace(/[\/\s_\.]+/g, '-')
+      .replace(/[^a-z0-9\-]/g, '')
+      .replace(/^-+|-+$/g, '');
+    if (!name) name = fallback;
+    if (seenNames[name]) {
+      seenNames[name]++;
+      return name + "-" + seenNames[name];
+    }
+    seenNames[name] = 1;
+    return name;
+  }
+
+  function isVectorIcon(nd) {
+    if (!nd || nd.visible === false) return false;
+    var t = nd.type;
+    if (t === "VECTOR" || t === "BOOLEAN_OPERATION" || t === "STAR" || t === "POLYGON") return true;
+    if ((t === "FRAME" || t === "COMPONENT" || t === "INSTANCE" || t === "GROUP") && nd.width <= 96 && nd.height <= 96) {
+      var n = nd.name.toLowerCase();
+      if (n.indexOf("icon") >= 0 || n.indexOf("ic_") >= 0 || n.indexOf("ic-") >= 0) return true;
+      if (nd.children && nd.children.length > 0 && nd.children.length <= 8) {
+        var allVectors = nd.children.every(function(c) {
+          return c.type === "VECTOR" || c.type === "BOOLEAN_OPERATION" || c.type === "LINE" || c.type === "ELLIPSE" || c.type === "RECTANGLE";
+        });
+        if (allVectors) return true;
+      }
+    }
+    return false;
+  }
+
+  function hasImageFill(nd) {
+    if (!nd || !nd.fills || !Array.isArray(nd.fills)) return false;
+    return nd.fills.some(function(f) { return f && f.type === "IMAGE" && f.visible !== false; });
+  }
+
+  var nodesToInspect = [];
+  function collectAssetNodes(nd, depth) {
+    if (!nd || nd.visible === false || depth > 20) return;
+    if (isVectorIcon(nd)) {
+      nodesToInspect.push({ node: nd, kind: "icon" });
+      return;
+    }
+    if (hasImageFill(nd)) {
+      nodesToInspect.push({ node: nd, kind: "image" });
+    }
+    if (nd.children && Array.isArray(nd.children)) {
+      for (var ci = 0; ci < nd.children.length; ci++) {
+        collectAssetNodes(nd.children[ci], depth + 1);
+      }
+    }
+  }
+
+  if (targetNode === figma.currentPage) {
+    for (var pi = 0; pi < targetNode.children.length; pi++) {
+      collectAssetNodes(targetNode.children[pi], 0);
+    }
+  } else {
+    collectAssetNodes(targetNode, 0);
+  }
+
+  var exportLimit = Math.min(nodesToInspect.length, 60);
+  for (var i = 0; i < exportLimit; i++) {
+    var item = nodesToInspect[i];
+    var nd = item.node;
+    var baseName = sanitizeAssetName(nd.name, "asset-" + (i + 1));
+
+    if (item.kind === "icon") {
+      try {
+        var svgBytes = await nd.exportAsync({ format: "SVG" });
+        var svgStr = String.fromCharCode.apply(null, Array.from(svgBytes));
+        icons.push({
+          id: nd.id,
+          name: baseName,
+          fileName: baseName + ".svg",
+          width: Math.round(nd.width),
+          height: Math.round(nd.height),
+          svg: svgStr
+        });
+      } catch (e) {}
+    } else if (item.kind === "image") {
+      try {
+        var pngBytes = await nd.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: 2 } });
+        var b64 = uint8ArrayToBase64(pngBytes);
+        images.push({
+          id: nd.id,
+          name: baseName,
+          fileName: baseName + ".png",
+          width: Math.round(nd.width),
+          height: Math.round(nd.height),
+          dataUrl: "data:image/png;base64," + b64
+        });
+      } catch (e) {}
+    }
+  }
+
+  return {
+    success: true,
+    sourceNodeId: targetNode.id,
+    sourceNodeName: targetNode.name,
+    totalIcons: icons.length,
+    totalImages: images.length,
+    icons: icons,
+    images: images
+  };
+};

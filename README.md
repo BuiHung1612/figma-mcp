@@ -1,40 +1,48 @@
-# figma-mcp
+# figma-mcp (figma-rust-mcp)
 
 High-performance, bidirectional Model Context Protocol (MCP) server written in **Rust** connecting AI coding assistants directly to **Figma Desktop**.
 
-Enables AI agents (Claude Code, Cursor, Windsurf, Antigravity, VS Code, Zed) to **draw UI directly on the Figma canvas** and **read existing designs back** as structured JSON trees, design tokens, CSS, and screenshots — with zero external API keys needed.
+Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Zed) to **compile Figma designs into production code**, **extract design tokens**, **draw UI directly on canvas**, and **inspect hierarchy, styles, and assets** — with zero external API keys needed.
 
 ---
 
 ## ⚡ Highlights
 
 - **Pure Rust Native Performance**: Starts in `< 1ms`, uses `~3MB RAM`, zero GC pauses.
-- **Bidirectional Bridge**: AI can both write UI (draw vectors, components, frames, autolayout) and read designs (extract hierarchy, compute styles, capture canvas).
-- **Sandboxed JS Runtime**: Powered by **Boa** (pure Rust ECMAScript engine) for safe execution of design scripts.
-- **Built-in Asset CDN**: Auto-fetches and normalizes SVG icons from 7 icon libraries (Ionicons, Lucide, Tabler, Bootstrap, Fluent, Phosphor).
+- **In-Memory Deep Indexing (`figma_index`)**: Queries layers, components, styles, and tokens in `< 1ms` without slow canvas roundtrips.
+- **Binary IPC & Chunk Streaming**: Powered by **MessagePack** (`rmp-serde`) and progressive subtree chunking for instant transfers of massive design files.
+- **Incremental Diff Updates**: Sub-millisecond live document sync (`upsert_node`) keeps the server index fresh as you edit in Figma.
+- **Instant Design-to-Code (`figma_to_code`)**: Compiles Figma frames into clean, semantic components (**React + Tailwind**, **React Native**, **Vue 3 + Tailwind**, **HTML**, **SwiftUI**).
+- **Design Token Exporter (`figma_get_tokens`)**: Exports variables and styles to **Tailwind config**, **CSS custom properties** (`:root` & dark mode), **TypeScript consts**, or **W3C DTCG Token Studio JSON**.
+- **Batch Asset Extractor (`figma_export_assets` / `figma_export_asset`)**: Extracts SVG icons and raster images directly to project folders (`outputPath`) with auto-generated TypeScript barrel exports (`index.ts`) — zero chat token bloating.
+- **Sandboxed JS Drawing Engine (`figma_write`)**: Powered by **Boa** (pure Rust ECMAScript engine) with built-in asset resolvers and 7 icon packs (*Ionicons, Lucide, Tabler, Bootstrap, Fluent, Phosphor*).
 - **Multi-Tab / Multi-Session Support**: Seamlessly connects to multiple open Figma files simultaneously.
-- **100% Localhost Privacy**: All communication stays strictly on `127.0.0.1:38451` via HTTP long-polling.
+- **100% Localhost Privacy**: All communication stays strictly on `127.0.0.1:38451`.
 
 ---
 
 ## 🏛️ Architecture
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│               Terminal (Standalone Server)              │
-│                       figma-mcp                         │
-│  • MCP SSE Transport (/sse, /message)                   │
-│  • Sandboxed JS Runtime (Boa)                           │
-│  • Built-in Asset & Icon Resolver                       │
-│  • Async WebSocket & HTTP Long-Polling Bridge (Axum)    │
-└───────────────▲─────────────────────────▲───────────────┘
-                │ (ws://127.0.0.1:38451)  │ (http://127.0.0.1:38451/sse)
-                │                         │
-      ┌─────────┴─────────┐     ┌─────────┴─────────┐
-      │   Figma Desktop   │     │ AI Assistant(s)   │
-      │ (Plugin Bridge)   │     │ Antigravity/Cursor│
-      └───────────────────┘     │ Claude Code / Zed │
-                                └───────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                      Terminal / Standalone Service                     │
+│                       figma-mcp (Pure Rust Engine)                     │
+│  • MCP SSE Transport (/sse, /message) & Direct HTTP (/mcp)             │
+│  • In-Memory Fast Index (<1ms Lookups & Incremental Diffs)             │
+│  • Design-to-Code Compiler (React/Tailwind, Vue, RN, SwiftUI)          │
+│  • Design Token Transformer (CSS, Tailwind, TypeScript, W3C DTCG)      │
+│  • Sandboxed JS Runtime (Boa ECMAScript Engine)                        │
+│  • Binary MessagePack & Progressive Subtree Chunk Receiver             │
+└───────────────▲────────────────────────────────────────▲───────────────┘
+                │ (ws://127.0.0.1:38451)                 │ (http://127.0.0.1:38451/sse)
+                │ (MessagePack / JSON IPC)               │
+      ┌─────────┴─────────┐                    ┌─────────┴─────────┐
+      │   Figma Desktop   │                    │ AI Assistant(s)   │
+      │ (Plugin Bridge)   │                    │ Google Antigravity│
+      │                   │                    │ Cursor / Windsurf │
+      │ • Canvas Tracker  │                    │ Claude Code / Zed │
+      │ • SVG/PNG Render  │                    └───────────────────┘
+      └───────────────────┘
 ```
 
 ---
@@ -43,34 +51,37 @@ Enables AI agents (Claude Code, Cursor, Windsurf, Antigravity, VS Code, Zed) to 
 
 ### 1. One-Line Launch with NPX (No Rust toolchain needed)
 
-You can launch `figma-rust-mcp` on any Mac, Linux, or Windows machine with zero setup:
+Launch `figma-rust-mcp` on macOS, Linux, or Windows with zero manual setup:
 
 ```bash
 npx figma-rust-mcp
 ```
 
-This automatically downloads the prebuilt native binary for your architecture and starts the server.
+This automatically downloads the prebuilt native binary for your OS and architecture and starts the server.
 
 ---
 
 ### 2. Auto-Start as Background Service (Recommended for SSE)
 
-If you use SSE transport across multiple AI IDEs (Antigravity, Claude, Cursor, Windsurf) and want `figma-rust-mcp` to **automatically start on OS login and keep running in the background**:
+To make `figma-rust-mcp` start automatically upon OS login and run in the background across all your AI IDEs:
 
 ```bash
 # Install and start auto-start background service (macOS LaunchAgent, Linux systemd, Windows Task Scheduler)
 npx figma-rust-mcp --install-service
 
-# Check background service status
+# Update/Upgrade to the latest version and hot-reload background service
+npx -y figma-rust-mcp@latest --install-service
+
+# Check service status
 npx figma-rust-mcp --service-status
 
-# Uninstall service
+# Uninstall background service
 npx figma-rust-mcp --uninstall-service
 ```
 
 ---
 
-### 3. Or Build from Source (Rust)
+### 3. Build from Source (Rust)
 
 Prerequisites: [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`).
 
@@ -87,9 +98,9 @@ cargo build --release
 
 1. Open **Figma Desktop**.
 2. Go to **Plugins** → **Development** → **Import plugin from manifest...**
-3. Select the file: `plugin/manifest.json` from this repository.
+3. Select `plugin/manifest.json` from this repository.
 4. Run the plugin (**Plugins** → **Development** → **Figma MCP Bridge**).
-5. The plugin UI will show a green dot (**Connected**).
+5. The plugin UI will display a green dot (**Connected**).
 
 ---
 
@@ -107,10 +118,9 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 }
 ```
 
-#### Claude Code / Cursor / Windsurf / VS Code
-You can connect via SSE or stdio:
+#### Claude Code / Cursor / Windsurf / VS Code / Zed
 
-**Option A: SSE Transport (Recommended)**
+**Option A: SSE Transport (Recommended for background service)**
 ```json
 {
   "mcpServers": {
@@ -137,46 +147,85 @@ You can connect via SSE or stdio:
 
 ## 🛠️ MCP Tools Reference
 
-`figma-mcp` exposes 7 first-class MCP tools:
+`figma-mcp` provides **12 first-class MCP tools**:
 
-### `figma_get_selection`
-Ultra-fast, token-compressed inspection of currently selected layers/frames on the Figma canvas. Returns compacted layout and typography hierarchy with 60-80% fewer tokens.
+### 1. `figma_status`
+Checks live bridge connection status, connected Figma tabs/files, in-memory index health, queue length, and latency statistics.
 
-### `figma_inspect_node`
-Inspects a specific node by ID or name, returning complete design context, CSS, auto-layout rules, and typography.
+### 2. `figma_inspect_node`
+Inspects a specific node by ID or name, returning CSS styles, flex layout rules, tokens, typography, and fills in a clean format (served in `< 1ms` via in-memory index or direct bridge).
 
-### `figma_export_asset`
+### 3. `figma_to_code`
+Compiles any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code.
+- **`framework`**: `"react-tailwind"` (default), `"react-native"`, `"vue-tailwind"`, `"html"`, `"swiftui"`.
+- **`outputPath`**: Directly saves the generated component to your codebase (e.g. `src/components/UserProfileCard.tsx`).
+- **`componentName`**: Custom component name override.
+
+### 4. `figma_get_tokens`
+Exports Figma Variables (Design Tokens), Color Styles, Typography Styles, and Elevation/Shadow Styles directly into frontend code.
+- **`format`**: `"tailwind"` (`tailwind.config.js` theme.extend), `"css"` (`:root` CSS custom properties with light/dark theme modes), `"typescript"` (`tokens.ts`), `"w3c"` (W3C DTCG Token Studio JSON), or `"json"`.
+- **`outputPath`**: Writes directly to disk (e.g. `src/styles/tokens.css` or `tailwind.config.js`).
+- **`collection`** / **`mode`** / **`prefix`**: Optional filters and naming prefixes.
+
+### 5. `figma_get_selection`
+Token-compressed inspection of currently selected layers/frames on the Figma canvas. Returns compacted layout and typography hierarchy with **60–80% fewer tokens**.
+- **`detail`**: `"compact"` (recommended), `"minimal"`, `"full"`.
+- **`depth`**: Tree depth limit or `"full"`.
+
+### 6. `figma_export_asset`
 Exports any Figma node/layer directly into PNG, JPG, or SVG.
-- `outputPath`: When specified (e.g. `src/assets/logo.png`), saves directly to disk and returns minimal JSON metadata instead of filling context window with large base64 strings!
+- **`outputPath`**: When specified (e.g. `src/assets/logo.png`), saves directly to disk and returns minimal JSON metadata instead of bloating context with large base64 strings.
+- **`format`**: `"png"` (default), `"jpg"`, `"svg"`.
+- **`scale`**: Scaling factor (default `2` for high-res).
 
-### `figma_status`
-Checks live bridge connection status, connected Figma tabs, active file name, and latency statistics.
+### 7. `figma_export_assets`
+Batch extracts all SVG icons and PNG images from a Figma frame/page directly into project directories.
+- **`iconDir`**: Directory path for SVG icons (e.g. `src/assets/icons`).
+- **`imageDir`**: Directory path for raster images (e.g. `public/images`).
+- **`createBarrel`**: Automatically creates an `index.ts` barrel export file in `iconDir`.
 
-### `figma_write`
+### 8. `figma_index`
+Instant `< 1ms` in-memory queries against pre-indexed Figma file structures.
+- **`operation`**:
+  - `"status"`: View index health and node counts.
+  - `"search_nodes"`: Search nodes by text name, query, and type (`FRAME`, `TEXT`, `COMPONENT`, `INSTANCE`).
+  - `"get_node"`: Instant node lookup by ID.
+  - `"search_components"`: Find component sets and variants.
+  - `"search_styles"`: Find paint, text, and effect styles.
+  - `"search_variables"`: Find design token variables by name or collection.
+  - `"refresh"`: Trigger full background re-indexing of the canvas.
+
+### 9. `figma_read`
+Universal reader for advanced queries:
+- **Design-to-code**: `get_design_context`, `get_css`, `get_component_map`, `get_unmapped_components`.
+- **Inspection & Hierarchy**: `get_selection`, `get_design`, `get_page_nodes`, `get_node_detail`, `scan_design`, `search_nodes`.
+- **Design Systems**: `get_styles`, `get_variables`, `get_local_components`, `get_tokens`.
+- **Visuals & Canvas**: `screenshot`, `export_svg`, `export_image`, `get_viewport`.
+
+### 10. `figma_write`
 Executes JavaScript draw commands inside the sandboxed VM to build or modify designs on the Figma canvas.
 - Supports Auto-layout (`layoutMode`, `itemSpacing`, `padding`), typography, fills, strokes, corner radius, drop shadows, and component creation.
 - Supports icon loading: `figma.loadIcon("ionicons", "heart", { size: 24, fill: "#ff4757" })`.
 - Supports image insertion: `figma.loadImage(url, { width: 300, height: 200 })`.
+- Supports Design Tokens: `createVariableCollection`, `createVariable`, `addVariableMode`, `applyVariable`.
+- Supports Prototyping & Reactions: `setReactions`, `getReactions`, `setScrollBehavior`.
 
-### `figma_read`
-Universal reader for advanced queries: `get_design`, `scan_design`, `screenshot`, `export_svg`, `get_variables`, `get_styles`, `search_nodes`. Supports `outputPath` for file exports.
+### 11. `figma_rules`
+Audits the current Figma document and generates a complete design system rule sheet (color tokens, typography styles, variables, component catalog) in `< 1ms` from cache.
 
-### `figma_docs`
+### 12. `figma_docs`
 Fetches built-in documentation, design rules, layout guidelines, and code examples for `figma_write`.
-- `section`: `"all"` | `"rules"` | `"layout"` | `"api"` | `"tokens"` | `"icons"`
-
-### `figma_rules`
-Audits the current Figma document and generates consistency rules and token definitions to guide AI generation.
+- **`section`**: `"rules"` | `"layout"` | `"api"` | `"tokens"` | `"icons"`
 
 ---
 
 ## 💻 Development & Testing
 
 ```bash
-# Run server directly in debug mode
+# Run server in debug mode
 cargo run
 
-# Build release binary
+# Build optimized release binary
 cargo build --release
 
 # Run automated MCP test suite

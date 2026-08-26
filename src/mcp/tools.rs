@@ -132,7 +132,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                         "type": "string",
                         "enum": [
                             "get_selection", "get_design", "get_page_nodes", "screenshot", "export_svg",
-                            "get_styles", "get_local_components", "get_viewport", "get_variables",
+                            "get_styles", "get_local_components", "get_viewport", "get_variables", "get_tokens",
                             "get_node_detail", "get_css", "get_design_context", "get_component_map",
                             "get_unmapped_components", "export_image", "search_nodes", "scan_design"
                         ],
@@ -226,6 +226,106 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["operation"]
+            }),
+        },
+        ToolDefinition {
+            name: "figma_get_tokens".to_string(),
+            description: "Export Figma Variables (Design Tokens), Color Styles, Typography Styles, and Elevation/Shadow Styles directly into clean, ready-to-use frontend code. Formats: 'tailwind' (tailwind.config.js theme.extend), 'css' (:root CSS custom properties with light/dark theme modes), 'typescript' (type-safe tokens.ts const object), 'w3c' (W3C DTCG Token Studio standard JSON), or 'json' (raw structured tokens). Supports 'outputPath' to write directly to a project file (e.g. 'src/styles/tokens.css' or 'tailwind.config.js').".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "format": {
+                        "type": "string",
+                        "enum": ["tailwind", "css", "typescript", "w3c", "json"],
+                        "description": "Output format: 'tailwind' (for tailwind.config.js), 'css' (for global.css with dark mode), 'typescript' (for tokens.ts), 'w3c' (Token Studio JSON), or 'json'. Default is 'css'."
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Filter by variable collection name (e.g. 'Tokens', 'Primitives', 'Semantic'). Omit for all collections."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "Target a specific mode (e.g. 'Light', 'Dark', 'Default'). Omit to export all modes."
+                    },
+                    "outputPath": {
+                        "type": "string",
+                        "description": "Optional file path to save the generated tokens file directly to disk (e.g. 'src/styles/tokens.css', 'tailwind.config.js', 'src/tokens.ts'). Parent directories are created automatically."
+                    },
+                    "prefix": {
+                        "type": "string",
+                        "description": "Optional variable prefix for CSS tokens (e.g. 'figma-' or '--color-')."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab when multiple are connected."
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "figma_to_code".to_string(),
+            description: "Compile any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code. Formats: 'react-tailwind' (default, React + Tailwind CSS with semantic HTML and flex layout), 'react-native' (React Native View/Text/TouchableOpacity), 'vue-tailwind' (Vue 3 SFC template + script setup), 'html' (plain HTML + Tailwind), 'swiftui' (SwiftUI VStack/HStack). Supports 'outputPath' to write directly to your codebase (e.g. 'src/components/UserProfileCard.tsx').".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "nodeId": {
+                        "type": "string",
+                        "description": "Target Figma node ID. Omit to use the current canvas selection."
+                    },
+                    "nodeName": {
+                        "type": "string",
+                        "description": "Target node name (alternative to nodeId)."
+                    },
+                    "framework": {
+                        "type": "string",
+                        "enum": ["react-tailwind", "react-native", "vue-tailwind", "html", "swiftui"],
+                        "description": "Target framework: 'react-tailwind' (default), 'react-native', 'vue-tailwind', 'html', or 'swiftui'."
+                    },
+                    "componentName": {
+                        "type": "string",
+                        "description": "Custom component name (e.g. 'Navbar', 'ProfileCard'). Inferred from node name if omitted."
+                    },
+                    "outputPath": {
+                        "type": "string",
+                        "description": "Optional file path to save the generated component file directly into your codebase (e.g. 'src/components/Navbar.tsx')."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab when multiple are connected."
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "figma_export_assets".to_string(),
+            description: "Batch extract all SVG icons and PNG images from a Figma frame/page directly into your project directories. Automatically sanitizes filenames and generates an index.ts barrel export file. Example: iconDir='src/assets/icons', imageDir='public/images'.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "nodeId": {
+                        "type": "string",
+                        "description": "Target node ID to scan for assets. Omit to scan current selection or active page."
+                    },
+                    "iconDir": {
+                        "type": "string",
+                        "description": "Directory path to save extracted SVG icons (e.g. 'src/assets/icons')."
+                    },
+                    "imageDir": {
+                        "type": "string",
+                        "description": "Directory path to save extracted raster images (e.g. 'public/images' or 'src/assets/images')."
+                    },
+                    "createBarrel": {
+                        "type": "boolean",
+                        "description": "Generate an 'index.ts' barrel file in iconDir (default: true)."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab when multiple are connected."
+                    }
+                },
+                "required": []
             }),
         },
     ]

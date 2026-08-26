@@ -416,6 +416,52 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 }
             }
 
+            if operation == "get_tokens" {
+                let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("css");
+                let collection = args.get("collection").and_then(|v| v.as_str());
+                let mode = args.get("mode").and_then(|v| v.as_str());
+                let prefix = args.get("prefix").and_then(|v| v.as_str());
+                let output_path = args.get("outputPath").and_then(|v| v.as_str());
+
+                let styles_fut = bridge.send_operation("get_styles", json!({}), session_id);
+                let vars_fut = bridge.send_operation("get_variables", json!({}), session_id);
+                let (styles_res, vars_res) = tokio::join!(styles_fut, vars_fut);
+
+                let styles_data = styles_res.unwrap_or(json!({}));
+                let vars_data = vars_res.unwrap_or(json!({}));
+
+                match crate::mcp::tokens::generate_tokens(&styles_data, &vars_data, format, collection, mode, prefix) {
+                    Ok(content) => {
+                        if let Some(out_path) = output_path {
+                            let path = std::path::Path::new(out_path);
+                            if let Some(parent) = path.parent() {
+                                if !parent.as_os_str().is_empty() {
+                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                }
+                            }
+                            match tokio::fs::write(path, content.as_bytes()).await {
+                                Ok(_) => {
+                                    let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                                    let out = json!({
+                                        "success": true,
+                                        "savedTo": abs_path.to_string_lossy(),
+                                        "relativePath": out_path,
+                                        "format": format,
+                                        "sizeBytes": content.len(),
+                                        "preview": content.lines().take(25).collect::<Vec<_>>().join("\n"),
+                                    });
+                                    return ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default());
+                                }
+                                Err(e) => return ToolResult::error(format!("Failed to write tokens to '{}': {}", out_path, e)),
+                            }
+                        } else {
+                            return ToolResult::text(content);
+                        }
+                    }
+                    Err(err) => return ToolResult::error(err),
+                }
+            }
+
             let output_path = args.get("outputPath").and_then(|v| v.as_str());
             match bridge.send_operation(operation, op_params, session_id).await {
                 Ok(data) => {
@@ -874,6 +920,247 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 }
 
                 _ => ToolResult::error(format!("Unknown figma_index operation: '{}'. Available: status, search_nodes, get_node, search_components, search_styles, search_variables, refresh", operation)),
+            }
+        }
+
+        "figma_get_tokens" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            if !bridge.is_plugin_connected(session_id).await {
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+
+            let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("css");
+            let collection = args.get("collection").and_then(|v| v.as_str());
+            let mode = args.get("mode").and_then(|v| v.as_str());
+            let prefix = args.get("prefix").and_then(|v| v.as_str());
+            let output_path = args.get("outputPath").and_then(|v| v.as_str());
+
+            // Fast-path: If index is cached in memory, use it directly!
+            let (styles_data, vars_data) = if let BridgeHandle::Direct(ref state) = bridge {
+                let sid = session_id.unwrap_or("_default");
+                let inner = state.inner.lock().await;
+                if let Some(session) = inner.sessions.get(sid) {
+                    if let Some(ref idx) = session.index {
+                        if idx.is_ready() {
+                            let styles_json = json!({
+                                "paintStyles": idx.styles.iter().filter(|s| s.style_type == "PAINT").collect::<Vec<_>>(),
+                                "textStyles": idx.styles.iter().filter(|s| s.style_type == "TEXT").collect::<Vec<_>>(),
+                                "effectStyles": idx.styles.iter().filter(|s| s.style_type == "EFFECT").collect::<Vec<_>>(),
+                            });
+                            let vars_json = json!({
+                                "variables": idx.variables,
+                            });
+                            (Some(styles_json), Some(vars_json))
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+            let (styles_val, vars_val) = match (styles_data, vars_data) {
+                (Some(s), Some(v)) => (s, v),
+                _ => {
+                    let styles_fut = bridge.send_operation("get_styles", json!({}), session_id);
+                    let vars_fut = bridge.send_operation("get_variables", json!({}), session_id);
+                    let (styles_res, vars_res) = tokio::join!(styles_fut, vars_fut);
+                    (styles_res.unwrap_or(json!({})), vars_res.unwrap_or(json!({})))
+                }
+            };
+
+            match crate::mcp::tokens::generate_tokens(&styles_val, &vars_val, format, collection, mode, prefix) {
+                Ok(content) => {
+                    if let Some(out_path) = output_path {
+                        let path = std::path::Path::new(out_path);
+                        if let Some(parent) = path.parent() {
+                            if !parent.as_os_str().is_empty() {
+                                let _ = tokio::fs::create_dir_all(parent).await;
+                            }
+                        }
+                        match tokio::fs::write(path, content.as_bytes()).await {
+                            Ok(_) => {
+                                let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                                let out = json!({
+                                    "success": true,
+                                    "savedTo": abs_path.to_string_lossy(),
+                                    "relativePath": out_path,
+                                    "format": format,
+                                    "sizeBytes": content.len(),
+                                    "preview": content.lines().take(30).collect::<Vec<_>>().join("\n"),
+                                });
+                                ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                            }
+                            Err(e) => ToolResult::error(format!("Failed to write tokens to '{}': {}", out_path, e)),
+                        }
+                    } else {
+                        ToolResult::text(content)
+                    }
+                }
+                Err(err) => ToolResult::error(err),
+            }
+        }
+
+        "figma_to_code" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            if !bridge.is_plugin_connected(session_id).await {
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+
+            let framework = args.get("framework").and_then(|v| v.as_str()).unwrap_or("react-tailwind");
+            let component_name = args.get("componentName").and_then(|v| v.as_str());
+            let output_path = args.get("outputPath").and_then(|v| v.as_str());
+
+            let mut op_params = json!({});
+            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
+            if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
+
+            match bridge.send_operation("get_design_context", op_params, session_id).await {
+                Ok(context) => {
+                    match crate::mcp::codegen::generate_code_from_context(&context, framework, component_name) {
+                        Ok(code) => {
+                            if let Some(out_path) = output_path {
+                                let path = std::path::Path::new(out_path);
+                                if let Some(parent) = path.parent() {
+                                    if !parent.as_os_str().is_empty() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                }
+                                match tokio::fs::write(path, code.as_bytes()).await {
+                                    Ok(_) => {
+                                        let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                                        let out = json!({
+                                            "success": true,
+                                            "savedTo": abs_path.to_string_lossy(),
+                                            "relativePath": out_path,
+                                            "framework": framework,
+                                            "sizeBytes": code.len(),
+                                            "preview": code.lines().take(40).collect::<Vec<_>>().join("\n"),
+                                        });
+                                        ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                                    }
+                                    Err(e) => ToolResult::error(format!("Failed to write component to '{}': {}", out_path, e)),
+                                }
+                            } else {
+                                ToolResult::text(code)
+                            }
+                        }
+                        Err(err) => ToolResult::error(err),
+                    }
+                }
+                Err(e) => ToolResult::error(e),
+            }
+        }
+
+        "figma_export_assets" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            if !bridge.is_plugin_connected(session_id).await {
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+
+            let icon_dir = args.get("iconDir").and_then(|v| v.as_str());
+            let image_dir = args.get("imageDir").and_then(|v| v.as_str());
+            let create_barrel = args.get("createBarrel").and_then(|v| v.as_bool()).unwrap_or(true);
+
+            let mut op_params = json!({});
+            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
+
+            match bridge.send_operation("export_assets", op_params, session_id).await {
+                Ok(data) => {
+                    let mut exported_icons = Vec::new();
+                    let mut exported_images = Vec::new();
+                    let mut barrel_lines = Vec::new();
+
+                    // Save SVG icons
+                    if let Some(icons) = data.get("icons").and_then(|v| v.as_array()) {
+                        let target_icon_dir = icon_dir.unwrap_or("src/assets/icons");
+                        let dir_path = std::path::Path::new(target_icon_dir);
+                        let _ = tokio::fs::create_dir_all(dir_path).await;
+
+                        for item in icons {
+                            let file_name = item.get("fileName").and_then(|v| v.as_str()).unwrap_or("icon.svg");
+                            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("icon");
+                            let svg = item.get("svg").and_then(|v| v.as_str()).unwrap_or("");
+
+                            let file_path = dir_path.join(file_name);
+                            if tokio::fs::write(&file_path, svg.as_bytes()).await.is_ok() {
+                                let abs = std::fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+                                exported_icons.push(json!({
+                                    "name": name,
+                                    "path": abs.to_string_lossy(),
+                                    "file": file_name,
+                                    "sizeBytes": svg.len(),
+                                }));
+
+                                let comp_name = name.split('-').map(|w| {
+                                    let mut c = w.chars();
+                                    match c.next() {
+                                        None => String::new(),
+                                        Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+                                    }
+                                }).collect::<String>() + "Icon";
+                                barrel_lines.push(format!("export {{ default as {} }} from './{}';", comp_name, file_name));
+                            }
+                        }
+
+                        if create_barrel && !barrel_lines.is_empty() {
+                            let barrel_path = dir_path.join("index.ts");
+                            let _ = tokio::fs::write(barrel_path, barrel_lines.join("\n").as_bytes()).await;
+                        }
+                    }
+
+                    // Save raster images
+                    if let Some(images) = data.get("images").and_then(|v| v.as_array()) {
+                        let target_img_dir = image_dir.unwrap_or("public/images");
+                        let dir_path = std::path::Path::new(target_img_dir);
+                        let _ = tokio::fs::create_dir_all(dir_path).await;
+
+                        for item in images {
+                            let file_name = item.get("fileName").and_then(|v| v.as_str()).unwrap_or("image.png");
+                            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("image");
+
+                            if let Some(data_url) = item.get("dataUrl").and_then(|v| v.as_str()) {
+                                let b64 = if let Some(idx) = data_url.find(',') {
+                                    &data_url[idx + 1..]
+                                } else {
+                                    data_url
+                                };
+
+                                if let Ok(bytes) = BASE64_STANDARD.decode(b64.trim()) {
+                                    let file_path = dir_path.join(file_name);
+                                    if tokio::fs::write(&file_path, &bytes).await.is_ok() {
+                                        let abs = std::fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+                                        exported_images.push(json!({
+                                            "name": name,
+                                            "path": abs.to_string_lossy(),
+                                            "file": file_name,
+                                            "sizeBytes": bytes.len(),
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let out = json!({
+                        "success": true,
+                        "sourceNode": data.get("sourceNodeName").unwrap_or(&json!("canvas")),
+                        "totalIconsExported": exported_icons.len(),
+                        "totalImagesExported": exported_images.len(),
+                        "iconDirectory": icon_dir.unwrap_or("src/assets/icons"),
+                        "imageDirectory": image_dir.unwrap_or("public/images"),
+                        "barrelGenerated": create_barrel,
+                        "icons": exported_icons,
+                        "images": exported_images,
+                    });
+                    ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                }
+                Err(e) => ToolResult::error(e),
             }
         }
 

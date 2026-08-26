@@ -736,9 +736,13 @@ handlers.index_scan = async function() {
   var variables = results[2];
   var components = results[3];
 
+  var resolvedSid = figma.fileKey || (function() {
+    try { return figma.root.getPluginData("mcp_session_id") || "_default"; } catch(e) { return "_default"; }
+  })();
+
   return {
     fileName: figma.root ? figma.root.name : "unknown",
-    sessionId: figma.root ? figma.root.id : "_default",
+    sessionId: resolvedSid,
     pageNodes: pageNodes,
     styles: styles,
     variables: variables,

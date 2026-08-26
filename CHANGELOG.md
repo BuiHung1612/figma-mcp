@@ -1,6 +1,15 @@
 # Changelog
 
-## [2.6.0] — 2026-08-26
+## [2.8.5] — 2026-08-26
+
+### Added — Production Code Generator, Design Token Exporter & In-Memory Index
+- **`figma_to_code`**: Added first-class code compiler generating production-ready components for React + Tailwind CSS, React Native, Vue 3 + Tailwind CSS, plain HTML, and SwiftUI. Supports direct codebase export via `outputPath`.
+- **`figma_get_tokens`**: Added design token exporter converting Figma Variables, Color Styles, Text Styles, and Elevation/Shadows into `tailwind.config.js` theme extensions, CSS custom properties (`:root` & dark mode), type-safe TypeScript const objects, and W3C DTCG Token Studio standard JSON.
+- **`figma_export_assets`**: Added batch asset extractor scanning frames/pages for SVG icons and raster images, automatically saving to project folders and generating TypeScript barrel export files (`index.ts`).
+- **`figma_index`**: Added sub-millisecond in-memory cache indexing for Figma file trees, components, styles, and variables, eliminating slow roundtrip bridge calls for repetitive queries.
+- **Hot-Reload Service Updates**: Documented `npx -y figma-rust-mcp@latest --install-service` for single-command binary updating and background daemon reload across macOS, Linux, and Windows.
+
+## [2.8.4] — 2026-08-26
 
 ### Fixed — read-path accuracy: figma.mixed and mainComponent
 
