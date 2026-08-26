@@ -41,14 +41,27 @@ figma.on("selectionchange", function() {
 
 // Broadcast document changes to invalidate index cache (debounced 1.5s)
 var docChangeTimer = null;
-figma.on("documentchange", function(event) {
+function onDocChange() {
   try {
     if (docChangeTimer) clearTimeout(docChangeTimer);
     docChangeTimer = setTimeout(function() {
       figma.ui.postMessage({ type: "document-change" });
     }, 1500);
   } catch (e) {}
-});
+}
+
+// In dynamic-page mode, Figma requires figma.loadAllPagesAsync() before registering documentchange
+if (typeof figma.loadAllPagesAsync === "function") {
+  figma.loadAllPagesAsync().then(function() {
+    try {
+      figma.on("documentchange", onDocChange);
+    } catch (e) {}
+  }).catch(function() {});
+} else {
+  try {
+    figma.on("documentchange", onDocChange);
+  } catch (e) {}
+}
 
 // Background initial scan after 1.2s startup delay (ensures UI WebSocket is connected)
 setTimeout(async function() {
