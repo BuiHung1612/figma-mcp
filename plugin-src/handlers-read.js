@@ -685,10 +685,26 @@ handlers.export_image = async function(params) {
 handlers.index_scan = async function() {
   var pageNodesPromise = (async function() {
     try {
-      if (handlers.get_page_nodes) {
-        var res = await handlers.get_page_nodes({ depth: 6, detail: "compact", maxNodes: 15000 });
-        return (res && res.nodes) ? res.nodes : (Array.isArray(res) ? res : []);
+      var page = figma.currentPage;
+      var topFrames = page.children || [];
+      var collected = [];
+      var CHUNK_SIZE = 10;
+
+      for (var i = 0; i < topFrames.length; i += CHUNK_SIZE) {
+        var chunk = topFrames.slice(i, i + CHUNK_SIZE);
+        var chunkData = chunk.map(function(n) {
+          return Object.assign(nodeToInfo(n), { childCount: "children" in n ? n.children.length : 0 });
+        });
+        collected = collected.concat(chunkData);
+
+        // Stream chunk progressively if there are multiple chunks
+        if (topFrames.length > CHUNK_SIZE && figma.ui) {
+          try {
+            figma.ui.postMessage({ type: "index-chunk", nodes: chunkData });
+          } catch(e3) {}
+        }
       }
+      return collected;
     } catch (e) {}
     return [];
   })();

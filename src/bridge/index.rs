@@ -170,6 +170,18 @@ impl FigmaIndex {
         idx
     }
 
+    pub fn merge_chunk(&mut self, nodes: &[Value]) {
+        for node in nodes {
+            let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if !id.is_empty() && !self.top_level_frames.contains(&id) {
+                self.top_level_frames.push(id.clone());
+            }
+            self.ingest_node(node, None);
+        }
+        self.stats.total_nodes = self.nodes.len();
+        self.dirty = false;
+    }
+
     fn ingest_node(&mut self, node: &Value, parent_id: Option<&str>) {
         let id = match node.get("id").and_then(|v| v.as_str()) {
             Some(s) if !s.is_empty() => s.to_string(),

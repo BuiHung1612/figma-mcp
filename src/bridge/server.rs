@@ -862,7 +862,68 @@ async fn handle_socket(
                             continue;
                         }
 
+                        // "index-chunk" = selective streaming of subtree chunks
+                        if val.get("type").and_then(|v| v.as_str()) == Some("index-chunk") {
+                            if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
+                                let mut inner = state_clone.inner.lock().await;
+                                if let Some(session) = inner.sessions.get_mut(&sid_clone) {
+                                    if let Some(ref mut idx) = session.index {
+                                        idx.merge_chunk(nodes);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                            let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                            let data = val.get("data").cloned();
+                            let error = val.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                            let mut inner = state_clone.inner.lock().await;
+                            if let Some(s_id) = inner.op_to_session.remove(id) {
+                                if let Some(session) = inner.sessions.get_mut(&s_id) {
+                                    if let Some(pending) = session.pending.remove(id) {
+                                        let latency = now_ms() - pending.start_ms;
+                                        session.stats.ops += 1;
+                                        session.stats.avg_latency_ms = (session.stats.avg_latency_ms * 9 + latency) / 10;
+                                        inner.global_stats.ops += 1;
+
+                                        if success {
+                                            let _ = pending.sender.send(Ok(data.unwrap_or(Value::Null)));
+                                        } else {
+                                            let _ = pending.sender.send(Err(error.unwrap_or_else(|| "Unknown error".to_string())));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Message::Binary(bin_bytes) => {
+                    // Fast Binary IPC (MessagePack)
+                    if let Ok(val) = rmp_serde::from_slice::<Value>(&bin_bytes) {
+                        if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
+                            if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
+                                let mut inner = state_clone.inner.lock().await;
+                                if let Some(session) = inner.sessions.get_mut(&sid_clone) {
+                                    if let Some(ref mut idx) = session.index {
+                                        for n in nodes {
+                                            idx.upsert_node(n);
+                                        }
+                                    }
+                                }
+                            }
+                        } else if val.get("type").and_then(|v| v.as_str()) == Some("index-chunk") {
+                            if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
+                                let mut inner = state_clone.inner.lock().await;
+                                if let Some(session) = inner.sessions.get_mut(&sid_clone) {
+                                    if let Some(ref mut idx) = session.index {
+                                        idx.merge_chunk(nodes);
+                                    }
+                                }
+                            }
+                        } else if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
                             let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
                             let data = val.get("data").cloned();
                             let error = val.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
