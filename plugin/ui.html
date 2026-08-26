@@ -577,15 +577,18 @@
     var activeAbortController = null;
     var isFirstPoll = true;
 
+    var retryTimer = null;
+
     async function initConnection() {
       if (wsConnected) return;
 
       // 1. Instant Health Check on localhost (< 2ms)
       try {
-        var res = await fetch("http://localhost:" + currentPort + "/health", { signal: AbortSignal.timeout(400) });
+        var res = await fetch("http://localhost:" + currentPort + "/health", { signal: AbortSignal.timeout(600) });
         if (res.ok) {
           BRIDGE = "http://localhost:" + currentPort;
           everConnected = true;
+          consecutiveErrors = 0;
           lastSuccessfulPollAt = Date.now();
           setStatus("green", "Connected", "ready");
           connectWs();
@@ -593,12 +596,11 @@
         }
       } catch(e) {}
 
-      // 2. Parallel port scan 38451-38455 — all probes fire simultaneously,
-      //    winner resolves in ~200ms instead of up to 200ms × 4 sequentially.
+      // 2. Parallel port scan 38451-38455 — all probes fire simultaneously
       var scanPorts = [38451, 38452, 38453, 38454, 38455].filter(function(p) { return p !== currentPort; });
       try {
         var winner = await Promise.any(scanPorts.map(function(p) {
-          return fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(300) })
+          return fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(500) })
             .then(function(r) { if (!r.ok) throw new Error("not ok"); return p; });
         }));
         currentPort = winner;
@@ -606,14 +608,21 @@
         var pDisp = document.getElementById("port-display");
         if (pDisp) pDisp.textContent = winner;
         everConnected = true;
+        consecutiveErrors = 0;
         lastSuccessfulPollAt = Date.now();
         setStatus("green", "Connected", "ready");
         connectWs();
         return;
-      } catch(_) { /* no port found, fall through to WS attempt */ }
+      } catch(_) { /* no server yet */ }
 
-      // 3. Attempt WebSocket on currentPort
-      connectWs();
+      // 3. If server is not yet running, schedule continuous auto-detection every 1.5s
+      setStatus("yellow", "Waiting for server…");
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(function() {
+        if (!wsConnected && polling) {
+          initConnection();
+        }
+      }, 1500);
     }
 
     function connectWs() {
@@ -642,6 +651,7 @@
         wsConnected = true;
         consecutiveErrors = 0;
         everConnected = true;
+        if (retryTimer) clearTimeout(retryTimer);
         lastSuccessfulPollAt = Date.now();
         setStatus("green", "Connected", "ready");
         log("⚡ Connected to Figma MCP · port " + currentPort, "ok");
@@ -661,9 +671,6 @@
           var req = JSON.parse(event.data);
           if (req && req.operation) {
             log("→ " + req.operation, READ_OPS.indexOf(req.operation) >= 0 ? "info" : "ok");
-            // Acknowledge before dispatching: the server re-queues anything it
-            // pushed into a socket that died before an ack, and must not
-            // re-queue an op the plugin is already running.
             try { ws.send(JSON.stringify({ type: "ack", id: req.id })); } catch(e) {}
             dispatchToMain(req);
           }
@@ -682,7 +689,12 @@
         if (pingTimer) clearInterval(pingTimer);
         wsConnected = false;
         if (polling) {
+          // Attempt long-poll fallback and schedule retry
           startLongPoll();
+          if (retryTimer) clearTimeout(retryTimer);
+          retryTimer = setTimeout(function() {
+            if (!wsConnected && polling) initConnection();
+          }, 2000);
         }
       };
     }

@@ -11,7 +11,7 @@ use std::io::IsTerminal;
 #[derive(Parser, Debug)]
 #[command(
     name = "figma-mcp",
-    version = "2.8.1",
+    version = "2.8.2",
     about = "High-performance Rust MCP bridge & server for Figma"
 )]
 struct Args {
