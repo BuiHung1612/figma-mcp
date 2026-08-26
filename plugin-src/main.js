@@ -39,6 +39,34 @@ figma.on("selectionchange", function() {
   } catch (e) {}
 });
 
+// Broadcast document changes to invalidate index cache (debounced 1.5s)
+var docChangeTimer = null;
+figma.on("documentchange", function(event) {
+  try {
+    if (docChangeTimer) clearTimeout(docChangeTimer);
+    docChangeTimer = setTimeout(function() {
+      figma.ui.postMessage({ type: "document-change" });
+    }, 1500);
+  } catch (e) {}
+});
+
+// Background initial scan after 1.2s startup delay (ensures UI WebSocket is connected)
+setTimeout(async function() {
+  try {
+    if (handlers.index_scan) {
+      var startMs = Date.now();
+      var scanResult = await handlers.index_scan();
+      figma.ui.postMessage({
+        type: "index-update",
+        data: scanResult,
+        fileName: figma.root ? figma.root.name : "unknown",
+        sessionId: figma.root ? figma.root.id : "_default",
+        startMs: startMs
+      });
+    }
+  } catch (e) {}
+}, 1200);
+
 // ─── DISPATCHER ───────────────────────────────────────────────────────────────
 
 // Serialize the handler result ONCE, here in the main thread, and ship the

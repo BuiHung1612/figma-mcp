@@ -254,6 +254,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             if !bridge.is_plugin_connected(session_id).await {
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
             }
+
             let mut op_params = json!({});
             if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
             if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
@@ -315,6 +316,42 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                         "nodeId" => { op_params["id"] = v.clone(); }
                         "nodeName" => { op_params["name"] = v.clone(); }
                         _ => { op_params[k] = v.clone(); }
+                    }
+                }
+            }
+
+            // Fast-path read from index cache if available for read-only catalog queries
+            if ["get_styles", "get_variables", "get_local_components"].contains(&operation) {
+                if let BridgeHandle::Direct(ref state) = bridge {
+                    let sid = session_id.unwrap_or("_default");
+                    let inner = state.inner.lock().await;
+                    if let Some(session) = inner.sessions.get(sid) {
+                        if let Some(ref idx) = session.index {
+                            if idx.is_ready() {
+                                if operation == "get_styles" {
+                                    let styles_json = json!({
+                                        "cached": true,
+                                        "styles": idx.styles,
+                                        "paintStyles": idx.styles.iter().filter(|s| s.style_type == "PAINT").collect::<Vec<_>>(),
+                                        "textStyles": idx.styles.iter().filter(|s| s.style_type == "TEXT").collect::<Vec<_>>(),
+                                        "effectStyles": idx.styles.iter().filter(|s| s.style_type == "EFFECT").collect::<Vec<_>>(),
+                                    });
+                                    return ToolResult::text(serde_json::to_string(&styles_json).unwrap_or_default());
+                                } else if operation == "get_variables" {
+                                    let vars_json = json!({
+                                        "cached": true,
+                                        "variables": idx.variables,
+                                    });
+                                    return ToolResult::text(serde_json::to_string(&vars_json).unwrap_or_default());
+                                } else if operation == "get_local_components" {
+                                    let comps_json = json!({
+                                        "cached": true,
+                                        "components": idx.components,
+                                    });
+                                    return ToolResult::text(serde_json::to_string(&comps_json).unwrap_or_default());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -391,6 +428,81 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+
+            // Fast-path: If index is cached and ready, build rules directly from memory (< 1ms!)
+            if let BridgeHandle::Direct(ref state) = bridge {
+                let sid = session_id.unwrap_or("_default");
+                let inner = state.inner.lock().await;
+                if let Some(session) = inner.sessions.get(sid) {
+                    if let Some(ref idx) = session.index {
+                        if idx.is_ready() {
+                            let mut lines = vec![
+                                "# Design System Rules (from fast-index)".to_string(),
+                                "".to_string(),
+                                "Use these tokens, styles, and components when writing code for this Figma file.".to_string(),
+                                "".to_string(),
+                            ];
+
+                            // Paint styles
+                            let paint_styles: Vec<_> = idx.styles.iter().filter(|s| s.style_type == "PAINT" && s.hex.is_some()).collect();
+                            if !paint_styles.is_empty() {
+                                lines.push("## Color Tokens (Paint Styles)".to_string());
+                                lines.push("```".to_string());
+                                for s in paint_styles {
+                                    lines.push(format!("--{}: {};  /* {} */", s.name.replace('/', "-"), s.hex.as_deref().unwrap_or(""), s.name));
+                                }
+                                lines.push("```".to_string());
+                                lines.push("".to_string());
+                            }
+
+                            // Variables / tokens
+                            if !idx.variables.is_empty() {
+                                lines.push("## Variables & Tokens".to_string());
+                                lines.push("```".to_string());
+                                for v in &idx.variables {
+                                    lines.push(format!("{}.{} ({})", v.collection_name, v.name, v.resolved_type));
+                                }
+                                lines.push("```".to_string());
+                                lines.push("".to_string());
+                            }
+
+                            // Text styles
+                            let text_styles: Vec<_> = idx.styles.iter().filter(|s| s.style_type == "TEXT").collect();
+                            if !text_styles.is_empty() {
+                                lines.push("## Typography Styles".to_string());
+                                lines.push("```".to_string());
+                                for s in text_styles {
+                                    let fam = s.font_family.as_deref().unwrap_or("Inter");
+                                    let weight = s.font_weight.as_deref().unwrap_or("Regular");
+                                    let size = s.font_size.unwrap_or(14.0);
+                                    lines.push(format!("{}: {} {} {}px", s.name, fam, weight, size));
+                                }
+                                lines.push("```".to_string());
+                                lines.push("".to_string());
+                            }
+
+                            // Components
+                            if !idx.components.is_empty() {
+                                lines.push("## Components".to_string());
+                                for c in idx.components.iter().take(50) {
+                                    let desc = c.description.as_deref().map_or("".to_string(), |d| format!(" — {}", d));
+                                    let w = c.width.unwrap_or(0.0);
+                                    let h = c.height.unwrap_or(0.0);
+                                    lines.push(format!("- **{}** ({}×{}){}", c.name, w, h, desc));
+                                }
+                                if idx.components.len() > 50 {
+                                    lines.push(format!("  …and {} more", idx.components.len() - 50));
+                                }
+                                lines.push("".to_string());
+                            }
+
+                            lines.push("---".to_string());
+                            lines.push("_Generated by figma-mcp figma_rules (in-memory cached)._".to_string());
+                            return ToolResult::text(lines.join("\n"));
+                        }
+                    }
+                }
             }
 
             let styles_fut = bridge.send_operation("get_styles", json!({}), session_id);
@@ -509,6 +621,200 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             lines.push("_Generated by figma-mcp figma_rules. Re-run when design system changes._".to_string());
 
             ToolResult::text(lines.join("\n"))
+        }
+
+        "figma_index" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            let operation = match args.get("operation").and_then(|v| v.as_str()) {
+                Some(op) => op,
+                None => return ToolResult::error("'operation' is required (status, search_nodes, get_node, search_components, search_styles, search_variables, refresh)"),
+            };
+
+            match operation {
+                "status" => {
+                    let stats = bridge.get_index_stats(session_id).await;
+                    let connected = bridge.is_plugin_connected(session_id).await;
+                    match stats {
+                        Some(st) => {
+                            let out = json!({
+                                "status": "ready",
+                                "pluginConnected": connected,
+                                "stats": st,
+                            });
+                            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                        }
+                        None => {
+                            let out = json!({
+                                "status": "not_indexed",
+                                "pluginConnected": connected,
+                                "hint": "File not yet indexed. Call with operation='refresh' to build index in background."
+                            });
+                            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                        }
+                    }
+                }
+
+                "get_node" => {
+                    let node_id = match args.get("nodeId").and_then(|v| v.as_str()) {
+                        Some(id) => id,
+                        None => return ToolResult::error("'nodeId' is required for get_node"),
+                    };
+
+                    match bridge.get_index_node(session_id, node_id).await {
+                        Some(node) => ToolResult::text(serde_json::to_string_pretty(&node).unwrap_or_default()),
+                        None => {
+                            // Fallback to direct bridge read if not indexed or node not in cache
+                            match bridge.send_operation("get_node_detail", json!({ "id": node_id }), session_id).await {
+                                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                                Err(e) => ToolResult::error(format!("Node not found in index or canvas: {}", e)),
+                            }
+                        }
+                    }
+                }
+
+                "search_nodes" => {
+                    let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                    let node_type = args.get("nodeType").and_then(|v| v.as_str());
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
+
+                    match bridge.search_index_nodes(session_id, query, node_type, limit).await {
+                        Some(results) => {
+                            let out = json!({
+                                "query": query,
+                                "nodeType": node_type,
+                                "count": results.len(),
+                                "cached": true,
+                                "results": results,
+                            });
+                            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                        }
+                        None => {
+                            // Fallback to bridge search_nodes
+                            let mut op_params = json!({ "query": query, "limit": limit });
+                            if let Some(t) = node_type { op_params["type"] = json!(t); }
+                            match bridge.send_operation("search_nodes", op_params, session_id).await {
+                                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                                Err(e) => ToolResult::error(e),
+                            }
+                        }
+                    }
+                }
+
+                "search_components" => {
+                    let name = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
+
+                    match bridge.search_index_components(session_id, name, limit).await {
+                        Some(results) => {
+                            let out = json!({
+                                "query": name,
+                                "count": results.len(),
+                                "cached": true,
+                                "components": results,
+                            });
+                            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                        }
+                        None => {
+                            match bridge.send_operation("get_local_components", json!({}), session_id).await {
+                                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                                Err(e) => ToolResult::error(e),
+                            }
+                        }
+                    }
+                }
+
+                "search_styles" => {
+                    let name = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                    let style_type = args.get("styleType").and_then(|v| v.as_str());
+
+                    match bridge.search_index_styles(session_id, name, style_type).await {
+                        Some(results) => {
+                            let out = json!({
+                                "query": name,
+                                "styleType": style_type,
+                                "count": results.len(),
+                                "cached": true,
+                                "styles": results,
+                            });
+                            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                        }
+                        None => {
+                            match bridge.send_operation("get_styles", json!({}), session_id).await {
+                                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                                Err(e) => ToolResult::error(e),
+                            }
+                        }
+                    }
+                }
+
+                "search_variables" => {
+                    let name = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                    let collection = args.get("collection").and_then(|v| v.as_str());
+
+                    match bridge.search_index_variables(session_id, name, collection).await {
+                        Some(results) => {
+                            let out = json!({
+                                "query": name,
+                                "collection": collection,
+                                "count": results.len(),
+                                "cached": true,
+                                "variables": results,
+                            });
+                            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                        }
+                        None => {
+                            match bridge.send_operation("get_variables", json!({}), session_id).await {
+                                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                                Err(e) => ToolResult::error(e),
+                            }
+                        }
+                    }
+                }
+
+                "refresh" => {
+                    if !bridge.is_plugin_connected(session_id).await {
+                        return ToolResult::error("Figma plugin not connected. Run the plugin in Figma first.");
+                    }
+
+                    // Trigger index_scan operation on the plugin
+                    let start_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                    match bridge.send_operation("index_scan", json!({}), session_id).await {
+                        Ok(data) => {
+                            let page_nodes = data.get("pageNodes").unwrap_or(&Value::Null);
+                            let styles = data.get("styles");
+                            let vars = data.get("variables");
+                            let comps = data.get("components");
+                            let file_name = data.get("fileName").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let sid = session_id.unwrap_or("_default");
+
+                            let idx = crate::bridge::index::FigmaIndex::from_raw(
+                                sid,
+                                file_name,
+                                page_nodes,
+                                styles,
+                                vars,
+                                comps,
+                                start_ms,
+                            );
+
+                            let stats = idx.stats.clone();
+                            if let BridgeHandle::Direct(ref state) = bridge {
+                                state.update_index(sid, idx).await;
+                            }
+
+                            let out = json!({
+                                "success": true,
+                                "stats": stats,
+                                "message": format!("Indexed {} nodes, {} components, {} styles, {} variables in {}ms", stats.total_nodes, stats.total_components, stats.total_styles, stats.total_variables, stats.duration_ms)
+                            });
+                            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                        }
+                        Err(e) => ToolResult::error(format!("Index refresh failed: {}", e)),
+                    }
+                }
+
+                _ => ToolResult::error(format!("Unknown figma_index operation: '{}'. Available: status, search_nodes, get_node, search_components, search_styles, search_variables, refresh", operation)),
+            }
         }
 
         _ => ToolResult::error(format!("Unknown tool: {}", call_params.name)),

@@ -680,3 +680,52 @@ handlers.export_image = async function(params) {
     sizeBytes: bytes.length,
   };
 };
+
+// index_scan — aggregate page nodes, styles, variables, and components in one call for pre-indexing (concurrently)
+handlers.index_scan = async function() {
+  var pageNodesPromise = (async function() {
+    try {
+      if (handlers.get_page_nodes) {
+        var res = await handlers.get_page_nodes({ depth: 6, detail: "compact", maxNodes: 15000 });
+        return (res && res.nodes) ? res.nodes : (Array.isArray(res) ? res : []);
+      }
+    } catch (e) {}
+    return [];
+  })();
+
+  var stylesPromise = (async function() {
+    try {
+      if (handlers.get_styles) return await handlers.get_styles({});
+    } catch (e) {}
+    return null;
+  })();
+
+  var varsPromise = (async function() {
+    try {
+      if (handlers.get_variables) return await handlers.get_variables({});
+    } catch (e) {}
+    return null;
+  })();
+
+  var compsPromise = (async function() {
+    try {
+      if (handlers.get_local_components) return await handlers.get_local_components({});
+    } catch (e) {}
+    return null;
+  })();
+
+  var results = await Promise.all([pageNodesPromise, stylesPromise, varsPromise, compsPromise]);
+  var pageNodes = results[0];
+  var styles = results[1];
+  var variables = results[2];
+  var components = results[3];
+
+  return {
+    fileName: figma.root ? figma.root.name : "unknown",
+    sessionId: figma.root ? figma.root.id : "_default",
+    pageNodes: pageNodes,
+    styles: styles,
+    variables: variables,
+    components: components,
+  };
+};

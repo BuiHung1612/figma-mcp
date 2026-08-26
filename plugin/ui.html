@@ -420,7 +420,8 @@
     var READ_OPS = [
       "get_selection","get_design","get_page_nodes","screenshot",
       "get_styles","get_local_components","get_viewport","get_variables",
-      "export_svg","get_node_detail","export_image","search_nodes","scan_design"
+      "export_svg","get_node_detail","export_image","search_nodes","scan_design",
+      "index_scan"
     ];
 
     function setStatus(state, text, mode) {
@@ -901,6 +902,29 @@
           } else {
             sessionDispEl.textContent = msg.count + " layers selected";
           }
+        }
+        return;
+      }
+
+      if (msg.type === "document-change") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "document-change" })); } catch(e) {}
+        }
+        return;
+      }
+
+      if (msg.type === "index-update") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: "index-update",
+              data: msg.data,
+              fileName: msg.fileName,
+              sessionId: msg.sessionId,
+              startMs: msg.startMs
+            }));
+            log("⚡ Pre-indexed file data", "info");
+          } catch(e) {}
         }
         return;
       }

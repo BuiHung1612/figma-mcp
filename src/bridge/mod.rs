@@ -1,3 +1,4 @@
+pub mod index;
 pub mod proxy;
 pub mod server;
 pub mod session;
@@ -77,6 +78,69 @@ impl BridgeHandle {
                 }))
             }
             BridgeHandle::Proxy(p) => p.check_health().await.stats,
+        }
+    }
+
+    pub async fn get_index_stats(&self, session_id: Option<&str>) -> Option<crate::bridge::index::IndexStats> {
+        match self {
+            BridgeHandle::Direct(b) => b.get_index_stats(session_id).await,
+            BridgeHandle::Proxy(_) => None,
+        }
+    }
+
+    pub async fn get_index_node(&self, session_id: Option<&str>, node_id: &str) -> Option<crate::bridge::index::IndexNode> {
+        match self {
+            BridgeHandle::Direct(b) => b.get_index_node(session_id, node_id).await,
+            BridgeHandle::Proxy(_) => None,
+        }
+    }
+
+    pub async fn search_index_nodes(
+        &self,
+        session_id: Option<&str>,
+        query: &str,
+        node_type: Option<&str>,
+        limit: usize,
+    ) -> Option<Vec<crate::bridge::index::IndexNode>> {
+        match self {
+            BridgeHandle::Direct(b) => b.search_index_nodes(session_id, query, node_type, limit).await,
+            BridgeHandle::Proxy(_) => None,
+        }
+    }
+
+    pub async fn search_index_components(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+        limit: usize,
+    ) -> Option<Vec<crate::bridge::index::IndexComponent>> {
+        match self {
+            BridgeHandle::Direct(b) => b.search_index_components(session_id, name, limit).await,
+            BridgeHandle::Proxy(_) => None,
+        }
+    }
+
+    pub async fn search_index_styles(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+        style_type: Option<&str>,
+    ) -> Option<Vec<crate::bridge::index::IndexStyle>> {
+        match self {
+            BridgeHandle::Direct(b) => b.search_index_styles(session_id, name, style_type).await,
+            BridgeHandle::Proxy(_) => None,
+        }
+    }
+
+    pub async fn search_index_variables(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+        collection: Option<&str>,
+    ) -> Option<Vec<crate::bridge::index::IndexVariable>> {
+        match self {
+            BridgeHandle::Direct(b) => b.search_index_variables(session_id, name, collection).await,
+            BridgeHandle::Proxy(_) => None,
         }
     }
 }

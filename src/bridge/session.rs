@@ -55,6 +55,7 @@ pub struct Session {
     pub long_poll: Option<oneshot::Sender<PollResponse>>,
     pub ws_tx: Option<tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>>,
     pub stats: SessionStats,
+    pub index: Option<crate::bridge::index::FigmaIndex>,
 }
 
 impl Session {
@@ -68,6 +69,7 @@ impl Session {
             long_poll: None,
             ws_tx: None,
             stats: SessionStats::default(),
+            index: None,
         }
     }
 

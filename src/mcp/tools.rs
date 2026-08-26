@@ -184,5 +184,49 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 "required": []
             }),
         },
+        ToolDefinition {
+            name: "figma_index".to_string(),
+            description: "Instant <1ms in-memory queries against the pre-indexed Figma file (nodes, components, design tokens, styles). Avoids slow roundtrips to the Figma canvas. Operations: 'status' (view index health and node counts), 'search_nodes' (instant text/type search across all nodes), 'get_node' (instant node lookup by id), 'search_components' (find component sets & variants), 'search_styles' (find paint & text styles), 'search_variables' (find design tokens), 'refresh' (trigger background re-index of canvas).".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["status", "search_nodes", "get_node", "search_components", "search_styles", "search_variables", "refresh"],
+                        "description": "Index operation to perform."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query text (for search_nodes, search_components, search_styles, search_variables)."
+                    },
+                    "nodeId": {
+                        "type": "string",
+                        "description": "Node ID to look up (for get_node)."
+                    },
+                    "nodeType": {
+                        "type": "string",
+                        "description": "Filter by node type (e.g. 'FRAME', 'TEXT', 'COMPONENT', 'INSTANCE') for search_nodes."
+                    },
+                    "styleType": {
+                        "type": "string",
+                        "enum": ["PAINT", "TEXT", "EFFECT"],
+                        "description": "Filter by style type for search_styles."
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Filter by variable collection name for search_variables."
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Max results to return (default 30)."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab. Omit to auto-select."
+                    }
+                },
+                "required": ["operation"]
+            }),
+        },
     ]
 }

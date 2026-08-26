@@ -267,6 +267,125 @@ impl BridgeState {
         }
     }
 
+    pub async fn update_index(&self, session_id: &str, index: crate::bridge::index::FigmaIndex) {
+        let mut inner = self.inner.lock().await;
+        if let Some(session) = inner.sessions.get_mut(session_id) {
+            session.index = Some(index);
+        }
+    }
+
+    pub async fn mark_index_dirty(&self, session_id: &str) {
+        let mut inner = self.inner.lock().await;
+        if let Some(session) = inner.sessions.get_mut(session_id) {
+            if let Some(ref mut idx) = session.index {
+                idx.mark_dirty();
+            }
+        }
+    }
+
+    pub async fn get_index_stats(&self, session_id: Option<&str>) -> Option<crate::bridge::index::IndexStats> {
+        let inner = self.inner.lock().await;
+        let sid = session_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+
+        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().map(|idx| idx.stats.clone()))
+    }
+
+    pub async fn get_index_node(&self, session_id: Option<&str>, node_id: &str) -> Option<crate::bridge::index::IndexNode> {
+        let inner = self.inner.lock().await;
+        let sid = session_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+
+        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().and_then(|idx| idx.get_node(node_id).cloned()))
+    }
+
+    pub async fn search_index_nodes(
+        &self,
+        session_id: Option<&str>,
+        query: &str,
+        node_type: Option<&str>,
+        limit: usize,
+    ) -> Option<Vec<crate::bridge::index::IndexNode>> {
+        let inner = self.inner.lock().await;
+        let sid = session_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+
+        inner.sessions.get(&sid).and_then(|s| {
+            s.index.as_ref().map(|idx| {
+                idx.search_nodes(query, node_type, limit)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+        })
+    }
+
+    pub async fn search_index_components(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+        limit: usize,
+    ) -> Option<Vec<crate::bridge::index::IndexComponent>> {
+        let inner = self.inner.lock().await;
+        let sid = session_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+
+        inner.sessions.get(&sid).and_then(|s| {
+            s.index.as_ref().map(|idx| {
+                idx.search_components(name, limit)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+        })
+    }
+
+    pub async fn search_index_styles(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+        style_type: Option<&str>,
+    ) -> Option<Vec<crate::bridge::index::IndexStyle>> {
+        let inner = self.inner.lock().await;
+        let sid = session_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+
+        inner.sessions.get(&sid).and_then(|s| {
+            s.index.as_ref().map(|idx| {
+                idx.search_styles(name, style_type)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+        })
+    }
+
+    pub async fn search_index_variables(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+        collection: Option<&str>,
+    ) -> Option<Vec<crate::bridge::index::IndexVariable>> {
+        let inner = self.inner.lock().await;
+        let sid = session_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::resolve_best_session_id(&inner));
+
+        inner.sessions.get(&sid).and_then(|s| {
+            s.index.as_ref().map(|idx| {
+                idx.search_variables(name, collection)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+        })
+    }
+
     fn resolve_best_session_id(inner: &BridgeInner) -> String {
         let mut best_lp: Option<(&Session, u64)> = None;
         let mut best_conn: Option<(&Session, u64)> = None;
@@ -646,6 +765,44 @@ async fn handle_socket(
                                         pending.acked = true;
                                     }
                                 }
+                            }
+                            continue;
+                        }
+
+                        // "document-change" = canvas modified in Figma, mark index dirty
+                        if val.get("type").and_then(|v| v.as_str()) == Some("document-change") {
+                            state_clone.mark_index_dirty(&sid_clone).await;
+                            continue;
+                        }
+
+                        // "index-update" = plugin sent pre-indexed data snapshot
+                        if val.get("type").and_then(|v| v.as_str()) == Some("index-update") {
+                            if let Some(data) = val.get("data") {
+                                let file_name = val.get("fileName").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                let page_nodes = data.get("pageNodes").unwrap_or(&Value::Null);
+                                let styles = data.get("styles");
+                                let variables = data.get("variables");
+                                let components = data.get("components");
+                                let start_ms = val.get("startMs").and_then(|v| v.as_u64()).unwrap_or_else(now_ms);
+
+                                let idx = crate::bridge::index::FigmaIndex::from_raw(
+                                    &sid_clone,
+                                    file_name,
+                                    page_nodes,
+                                    styles,
+                                    variables,
+                                    components,
+                                    start_ms,
+                                );
+                                eprintln!(
+                                    "[figma-mcp] ⚡ Pre-indexed {} nodes, {} components, {} styles, {} variables in {}ms",
+                                    idx.stats.total_nodes,
+                                    idx.stats.total_components,
+                                    idx.stats.total_styles,
+                                    idx.stats.total_variables,
+                                    idx.stats.duration_ms
+                                );
+                                state_clone.update_index(&sid_clone, idx).await;
                             }
                             continue;
                         }
