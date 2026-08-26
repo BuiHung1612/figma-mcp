@@ -274,29 +274,11 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                             };
 
                             if let Some(n) = matched_node {
-                                let context = json!({
-                                    "cached": true,
-                                    "source": "rust_memory_index",
-                                    "id": n.id,
-                                    "name": n.name,
-                                    "type": n.node_type,
-                                    "width": n.width,
-                                    "height": n.height,
-                                    "x": n.x,
-                                    "y": n.y,
-                                    "characters": n.characters,
-                                    "visible": n.visible,
-                                    "layoutMode": n.layout_mode,
-                                    "itemSpacing": n.item_spacing,
-                                    "padding": n.padding,
-                                    "fills": n.fills,
-                                    "strokes": n.strokes,
-                                    "borderRadius": n.border_radius,
-                                    "effects": n.effects,
-                                    "textStyle": n.text_style,
-                                    "children": n.children,
-                                    "full": n.full_data
-                                });
+                                let mut context = n.to_css_spec();
+                                if let Some(obj) = context.as_object_mut() {
+                                    obj.insert("cached".to_string(), json!(true));
+                                    obj.insert("source".to_string(), json!("rust_memory_index"));
+                                }
                                 return ToolResult::text(serde_json::to_string(&context).unwrap_or_default());
                             }
                         }
@@ -421,27 +403,10 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                                         None
                                     };
                                     if let Some(n) = matched {
-                                        let detail = json!({
-                                            "cached": true,
-                                            "id": n.id,
-                                            "name": n.name,
-                                            "type": n.node_type,
-                                            "x": n.x,
-                                            "y": n.y,
-                                            "width": n.width,
-                                            "height": n.height,
-                                            "fills": n.fills,
-                                            "strokes": n.strokes,
-                                            "borderRadius": n.border_radius,
-                                            "layoutMode": n.layout_mode,
-                                            "padding": n.padding,
-                                            "itemSpacing": n.item_spacing,
-                                            "effects": n.effects,
-                                            "textStyle": n.text_style,
-                                            "characters": n.characters,
-                                            "visible": n.visible,
-                                            "children": n.children
-                                        });
+                                        let mut detail = n.to_css_spec();
+                                        if let Some(obj) = detail.as_object_mut() {
+                                            obj.insert("cached".to_string(), json!(true));
+                                        }
                                         return ToolResult::text(serde_json::to_string(&detail).unwrap_or_default());
                                     }
                                 }

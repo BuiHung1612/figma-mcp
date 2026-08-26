@@ -367,3 +367,124 @@ impl FigmaIndex {
             .collect()
     }
 }
+
+impl IndexNode {
+    /// Generates a clean, token-efficient, complete CSS & Layout specification
+    pub fn to_css_spec(&self) -> serde_json::Value {
+        let mut css = HashMap::new();
+
+        // Dimensions
+        if let (Some(w), Some(h)) = (self.width, self.height) {
+            css.insert("width", format!("{}px", w.round()));
+            css.insert("height", format!("{}px", h.round()));
+        }
+
+        // Layout / Flexbox
+        if let Some(ref lm) = self.layout_mode {
+            if lm == "HORIZONTAL" || lm == "VERTICAL" {
+                css.insert("display", "flex".to_string());
+                css.insert(
+                    "flex-direction",
+                    if lm == "HORIZONTAL" { "row".to_string() } else { "column".to_string() },
+                );
+                if let Some(gap) = self.item_spacing {
+                    if gap > 0.0 {
+                        css.insert("gap", format!("{}px", gap.round()));
+                    }
+                }
+                if let Some(ref p) = self.padding {
+                    if let (Some(t), Some(r), Some(b), Some(l)) = (
+                        p.get("top").and_then(|v| v.as_f64()),
+                        p.get("right").and_then(|v| v.as_f64()),
+                        p.get("bottom").and_then(|v| v.as_f64()),
+                        p.get("left").and_then(|v| v.as_f64()),
+                    ) {
+                        if t > 0.0 || r > 0.0 || b > 0.0 || l > 0.0 {
+                            css.insert("padding", format!("{}px {}px {}px {}px", t.round(), r.round(), b.round(), l.round()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fills (Background / Color)
+        if let Some(ref fills) = self.fills {
+            if let Some(arr) = fills.as_array() {
+                for f in arr {
+                    if f.get("visible").and_then(|v| v.as_bool()).unwrap_or(true) {
+                        if let Some(c) = f.get("color").and_then(|v| v.as_str()) {
+                            let opacity = f.get("opacity").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                            if opacity < 1.0 {
+                                css.insert("background-color", format!("{} (opacity: {:.2})", c, opacity));
+                            } else {
+                                css.insert("background-color", c.to_string());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strokes (Border)
+        if let Some(ref strokes) = self.strokes {
+            if let Some(arr) = strokes.as_array() {
+                for s in arr {
+                    if let Some(c) = s.get("color").and_then(|v| v.as_str()) {
+                        let w = s.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                        css.insert("border", format!("{}px solid {}", w.round(), c));
+                        break;
+                    }
+                }
+            } else if let Some(c) = strokes.get("color").and_then(|v| v.as_str()) {
+                let w = strokes.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                css.insert("border", format!("{}px solid {}", w.round(), c));
+            }
+        }
+
+        // Border Radius
+        if let Some(ref br) = self.border_radius {
+            if let Some(num) = br.as_f64() {
+                if num > 0.0 {
+                    css.insert("border-radius", format!("{}px", num.round()));
+                }
+            } else if let Some(s) = br.as_str() {
+                if s != "0px" {
+                    css.insert("border-radius", s.to_string());
+                }
+            }
+        }
+
+        // Typography (Text)
+        let mut typography = HashMap::new();
+        if let Some(ref ts) = self.text_style {
+            if let Some(ff) = ts.get("fontFamily").and_then(|v| v.as_str()) {
+                typography.insert("fontFamily", ff.to_string());
+            }
+            if let Some(fs) = ts.get("fontSize").and_then(|v| v.as_f64()) {
+                typography.insert("fontSize", format!("{}px", fs.round()));
+            }
+            if let Some(fw) = ts.get("fontWeight").and_then(|v| v.as_str()) {
+                typography.insert("fontWeight", fw.to_string());
+            }
+            if let Some(lh) = ts.get("lineHeight").and_then(|v| v.as_str()) {
+                typography.insert("lineHeight", lh.to_string());
+            }
+            if let Some(c) = ts.get("color").and_then(|v| v.as_str()) {
+                typography.insert("color", c.to_string());
+            }
+        }
+
+        serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "type": self.node_type,
+            "visible": self.visible.unwrap_or(true),
+            "css": css,
+            "typography": if typography.is_empty() { None } else { Some(typography) },
+            "textContent": self.characters,
+            "childCount": self.children.len(),
+            "childrenIds": self.children
+        })
+    }
+}
