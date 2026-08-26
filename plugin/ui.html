@@ -968,6 +968,13 @@
         return;
       }
 
+      if (msg.type === "node-diff") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "node-diff", nodes: msg.nodes })); } catch(e) {}
+        }
+        return;
+      }
+
       if (msg.type === "document-change") {
         if (ws && ws.readyState === WebSocket.OPEN) {
           try { ws.send(JSON.stringify({ type: "document-change" })); } catch(e) {}

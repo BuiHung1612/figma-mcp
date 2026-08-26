@@ -232,6 +232,71 @@ impl FigmaIndex {
         }
     }
 
+    pub fn upsert_node(&mut self, node: &Value) {
+        let id = match node.get("id").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => return,
+        };
+
+        let children_ids: Vec<String> = node
+            .get("children")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|c| c.get("id").and_then(|v| v.as_str())).map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+
+        let parent_id = node.get("parent").and_then(|p| p.get("id")).and_then(|v| v.as_str()).map(|s| s.to_string())
+            .or_else(|| self.nodes.get(&id).and_then(|existing| existing.parent_id.clone()));
+
+        let entry = IndexNode {
+            id: id.clone(),
+            name: node.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            node_type: node.get("type").and_then(|v| v.as_str()).unwrap_or("UNKNOWN").to_string(),
+            parent_id,
+            width: node.get("width").and_then(|v| v.as_f64())
+                .or_else(|| node.get("absoluteBoundingBox").and_then(|b| b.get("width")).and_then(|v| v.as_f64())),
+            height: node.get("height").and_then(|v| v.as_f64())
+                .or_else(|| node.get("absoluteBoundingBox").and_then(|b| b.get("height")).and_then(|v| v.as_f64())),
+            x: node.get("x").and_then(|v| v.as_f64()),
+            y: node.get("y").and_then(|v| v.as_f64()),
+            characters: node.get("characters").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            visible: node.get("visible").and_then(|v| v.as_bool()),
+            layout_mode: node.get("layoutMode").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            item_spacing: node.get("itemSpacing").and_then(|v| v.as_f64()),
+            padding: node.get("padding").cloned()
+                .or_else(|| {
+                    let top = node.get("paddingTop").and_then(|v| v.as_f64());
+                    let right = node.get("paddingRight").and_then(|v| v.as_f64());
+                    let bottom = node.get("paddingBottom").and_then(|v| v.as_f64());
+                    let left = node.get("paddingLeft").and_then(|v| v.as_f64());
+                    if top.is_some() || right.is_some() || bottom.is_some() || left.is_some() {
+                        Some(serde_json::json!({
+                            "top": top.unwrap_or(0.0),
+                            "right": right.unwrap_or(0.0),
+                            "bottom": bottom.unwrap_or(0.0),
+                            "left": left.unwrap_or(0.0)
+                        }))
+                    } else {
+                        None
+                    }
+                }),
+            fills: node.get("fills").cloned(),
+            strokes: node.get("strokes").cloned(),
+            border_radius: node.get("borderRadius").cloned()
+                .or_else(|| node.get("cornerRadius").cloned()),
+            effects: node.get("effects").cloned(),
+            text_style: node.get("textStyle").cloned(),
+            full_data: Some(node.clone()),
+            children: if children_ids.is_empty() {
+                self.nodes.get(&id).map(|e| e.children.clone()).unwrap_or_default()
+            } else {
+                children_ids
+            },
+        };
+
+        self.nodes.insert(id, entry);
+        self.dirty = false;
+    }
+
     fn ingest_styles(&mut self, data: &Value) {
         let mut push = |arr: &[Value], style_type: &str| {
             for s in arr {

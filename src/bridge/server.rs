@@ -809,6 +809,21 @@ async fn handle_socket(
                             continue;
                         }
 
+                        // "node-diff" = incremental update of specific nodes
+                        if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
+                            if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
+                                let mut inner = state_clone.inner.lock().await;
+                                if let Some(session) = inner.sessions.get_mut(&sid_clone) {
+                                    if let Some(ref mut idx) = session.index {
+                                        for n in nodes {
+                                            idx.upsert_node(n);
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         // "document-change" = canvas modified in Figma, mark index dirty
                         if val.get("type").and_then(|v| v.as_str()) == Some("document-change") {
                             state_clone.mark_index_dirty(&sid_clone).await;
