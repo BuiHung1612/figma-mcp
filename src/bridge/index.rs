@@ -309,6 +309,45 @@ impl FigmaIndex {
         self.dirty = false;
     }
 
+    pub fn apply_delta(&mut self, node_id: &str, delta: &Value) {
+        if let Some(existing) = self.nodes.get_mut(node_id) {
+            if let Some(name) = delta.get("name").and_then(|v| v.as_str()) {
+                existing.name = name.to_string();
+            }
+            if let Some(characters) = delta.get("characters").and_then(|v| v.as_str()) {
+                existing.characters = Some(characters.to_string());
+            }
+            if let Some(visible) = delta.get("visible").and_then(|v| v.as_bool()) {
+                existing.visible = Some(visible);
+            }
+            if let Some(w) = delta.get("width").and_then(|v| v.as_f64()) {
+                existing.width = Some(w);
+            }
+            if let Some(h) = delta.get("height").and_then(|v| v.as_f64()) {
+                existing.height = Some(h);
+            }
+            if let Some(x) = delta.get("x").and_then(|v| v.as_f64()) {
+                existing.x = Some(x);
+            }
+            if let Some(y) = delta.get("y").and_then(|v| v.as_f64()) {
+                existing.y = Some(y);
+            }
+            if let Some(fills) = delta.get("fills") {
+                existing.fills = Some(fills.clone());
+            }
+            if let Some(strokes) = delta.get("strokes") {
+                existing.strokes = Some(strokes.clone());
+            }
+            if let Some(effects) = delta.get("effects") {
+                existing.effects = Some(effects.clone());
+            }
+            if let Some(radius) = delta.get("borderRadius").or_else(|| delta.get("cornerRadius")) {
+                existing.border_radius = Some(radius.clone());
+            }
+            self.dirty = false;
+        }
+    }
+
     fn ingest_styles(&mut self, data: &Value) {
         let mut push = |arr: &[Value], style_type: &str| {
             for s in arr {

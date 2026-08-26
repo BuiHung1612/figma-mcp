@@ -51,21 +51,21 @@ gantt
 ## ⚡ Phase 2: Realtime Engine & Memory Scaling (v2.9.5)
 *Target: Zero-latency developer experience for massive (>50,000 layers) design systems.*
 
-- [ ] **2.1. Realtime Selection Event Streaming**
+- [x] **2.1. Realtime Selection Event Streaming**
   - Figma plugin broadcasts `selectionchange` events directly via WebSocket to Rust memory.
   - Server caches `active_selection` in real time.
-  - Calling `figma_inspect_node` without arguments immediately returns the active node without canvas latency.
+  - Calling `figma_inspect_node` and `figma_get_selection` without arguments immediately returns the active node without canvas latency (< 0.05ms).
 
-- [ ] **2.2. Viewport-First Partial Indexing**
+- [x] **2.2. Viewport-First Partial Indexing**
   - Prioritize indexing visible frames inside the active designer viewport and Main Components.
   - Background lazy-loading for distant canvas sections and pages.
 
-- [ ] **2.3. Fine-Grained Delta Diff Engine**
+- [x] **2.3. Fine-Grained Delta Diff Engine**
   - Send lightweight delta updates `{ id: "123:45", diff: { fills: [...] } }` instead of full node trees upon canvas edits.
-  - Apply in-memory patch in `< 0.1ms`.
+  - Apply in-memory patch in `< 0.1ms` via `apply_delta`.
 
-- [ ] **2.4. Zero-Copy Local Asset Server**
-  - Expose a fast static asset route (`http://127.0.0.1:38451/assets/...`) for high-res images and SVGs.
+- [x] **2.4. Zero-Copy Local Asset Server**
+  - Expose a fast static asset route (`/assets/*path`) for high-res images and SVGs.
   - Eliminate base64 string bloat across the bridge.
 
 ---

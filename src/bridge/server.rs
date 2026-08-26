@@ -367,6 +367,28 @@ impl BridgeState {
         })
     }
 
+    pub async fn update_selection(&self, session_id: &str, sel: crate::bridge::session::ActiveSelection) {
+        let mut inner = self.inner.lock().await;
+        if let Some(session) = inner.sessions.get_mut(session_id) {
+            session.active_selection = Some(sel);
+        }
+    }
+
+    pub async fn get_active_selection(&self, session_id: Option<&str>) -> Option<crate::bridge::session::ActiveSelection> {
+        let inner = self.inner.lock().await;
+        let sid = Self::resolve_session_id(&inner, session_id);
+        inner.sessions.get(&sid).and_then(|s| s.active_selection.clone())
+    }
+
+    pub async fn apply_delta(&self, session_id: &str, node_id: &str, delta: &Value) {
+        let mut inner = self.inner.lock().await;
+        if let Some(session) = inner.sessions.get_mut(session_id) {
+            if let Some(ref mut idx) = session.index {
+                idx.apply_delta(node_id, delta);
+            }
+        }
+    }
+
     pub fn resolve_session_id(inner: &BridgeInner, target: Option<&str>) -> String {
         if let Some(target) = target {
             let target_trim = target.trim();
@@ -824,6 +846,33 @@ async fn handle_socket(
                             continue;
                         }
 
+                        // "selection-change" = realtime selection event from Figma canvas
+                        if val.get("type").and_then(|v| v.as_str()) == Some("selection-change") {
+                            let count = val.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let page_name = val.get("pageName").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let sel_list = val.get("selection").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                            let full_node = val.get("fullNode").cloned();
+                            let active_sel = crate::bridge::session::ActiveSelection {
+                                count,
+                                page_name,
+                                selection: sel_list,
+                                full_node,
+                                updated_at: now_ms(),
+                            };
+                            state_clone.update_selection(&sid_clone, active_sel).await;
+                            continue;
+                        }
+
+                        // "delta-diff" = micro delta updates for specific node properties
+                        if val.get("type").and_then(|v| v.as_str()) == Some("delta-diff") {
+                            if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                                if let Some(diff) = val.get("diff") {
+                                    state_clone.apply_delta(&sid_clone, id, diff).await;
+                                }
+                            }
+                            continue;
+                        }
+
                         // "node-diff" = incremental update of specific nodes
                         if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
@@ -918,7 +967,26 @@ async fn handle_socket(
                 Message::Binary(bin_bytes) => {
                     // Fast Binary IPC (MessagePack)
                     if let Ok(val) = rmp_serde::from_slice::<Value>(&bin_bytes) {
-                        if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
+                        if val.get("type").and_then(|v| v.as_str()) == Some("selection-change") {
+                            let count = val.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let page_name = val.get("pageName").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let sel_list = val.get("selection").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                            let full_node = val.get("fullNode").cloned();
+                            let active_sel = crate::bridge::session::ActiveSelection {
+                                count,
+                                page_name,
+                                selection: sel_list,
+                                full_node,
+                                updated_at: now_ms(),
+                            };
+                            state_clone.update_selection(&sid_clone, active_sel).await;
+                        } else if val.get("type").and_then(|v| v.as_str()) == Some("delta-diff") {
+                            if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                                if let Some(diff) = val.get("diff") {
+                                    state_clone.apply_delta(&sid_clone, id, diff).await;
+                                }
+                            }
+                        } else if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
                                 let mut inner = state_clone.inner.lock().await;
                                 if let Some(session) = inner.sessions.get_mut(&sid_clone) {
@@ -1138,6 +1206,36 @@ async fn handle_mcp_direct(
     }
 }
 
+async fn handle_asset_serve(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let clean_path = path.trim_start_matches('/');
+    if clean_path.contains("..") {
+        return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+    }
+    let base_cache = std::env::temp_dir().join("figma-mcp").join("assets");
+    let asset_path = base_cache.join(clean_path);
+
+    if let Ok(bytes) = tokio::fs::read(&asset_path).await {
+        let mime = if clean_path.ends_with(".png") {
+            "image/png"
+        } else if clean_path.ends_with(".svg") {
+            "image/svg+xml"
+        } else if clean_path.ends_with(".jpg") || clean_path.ends_with(".jpeg") {
+            "image/jpeg"
+        } else {
+            "application/octet-stream"
+        };
+        (
+            StatusCode::OK,
+            [("content-type", mime), ("cache-control", "public, max-age=3600")],
+            bytes,
+        ).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Asset not found").into_response()
+    }
+}
+
 pub fn create_router(state: BridgeState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1157,6 +1255,7 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/message", post(handle_mcp_message))
         .route("/messages", post(handle_mcp_message))
         .route("/mcp", post(handle_mcp_direct))
+        .route("/assets/*path", get(handle_asset_serve))
         .layer(cors)
         .with_state(state)
 }

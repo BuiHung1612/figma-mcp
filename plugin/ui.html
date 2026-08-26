@@ -1315,7 +1315,33 @@
 
       if (msg.type === "selection-change") {
         renderSelection(msg);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: "selection-change",
+              sessionId: sessionId,
+              count: msg.count,
+              pageName: msg.pageName,
+              selection: msg.selection,
+              fullNode: msg.fullNode
+            }));
+          } catch(e) {}
+        }
         sendActivePing();
+        return;
+      }
+
+      if (msg.type === "delta-diff") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: "delta-diff",
+              sessionId: sessionId,
+              id: msg.id,
+              diff: msg.diff
+            }));
+          } catch(e) {}
+        }
         return;
       }
 

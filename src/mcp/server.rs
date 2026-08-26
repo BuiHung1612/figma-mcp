@@ -235,6 +235,24 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             if !bridge.is_plugin_connected(session_id).await {
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
             }
+
+            // Fast-path: Check if realtime active_selection cache is available
+            if let BridgeHandle::Direct(ref state) = bridge {
+                if let Some(active_sel) = state.get_active_selection(session_id).await {
+                    if active_sel.count > 0 && args.get("depth").is_none() && args.get("maxNodes").is_none() {
+                        let out = json!({
+                            "count": active_sel.count,
+                            "pageName": active_sel.page_name,
+                            "selection": active_sel.selection,
+                            "fullNode": active_sel.full_node,
+                            "cached": true,
+                            "source": "realtime_selection_stream"
+                        });
+                        return ToolResult::text(serde_json::to_string(&out).unwrap_or_default());
+                    }
+                }
+            }
+
             let mut op_params = json!({});
             if let Some(depth) = args.get("depth") { op_params["depth"] = depth.clone(); }
             if let Some(mn) = args.get("maxNodes") { op_params["maxNodes"] = mn.clone(); }
@@ -255,8 +273,21 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
             }
 
-            let node_id = args.get("nodeId").and_then(|v| v.as_str());
+            let mut node_id = args.get("nodeId").and_then(|v| v.as_str()).map(|s| s.to_string());
             let node_name = args.get("nodeName").and_then(|v| v.as_str());
+
+            // If neither nodeId nor nodeName is passed, fallback to currently active selection ID
+            if node_id.is_none() && node_name.is_none() {
+                if let BridgeHandle::Direct(ref state) = bridge {
+                    if let Some(active_sel) = state.get_active_selection(session_id).await {
+                        if let Some(first_sel) = active_sel.selection.first() {
+                            if let Some(id) = first_sel.get("id").and_then(|v| v.as_str()) {
+                                node_id = Some(id.to_string());
+                            }
+                        }
+                    }
+                }
+            }
 
             // Fast-path: Check if node detail is available directly in Rust In-Memory Index
             if let BridgeHandle::Direct(ref state) = bridge {
@@ -265,7 +296,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 if let Some(session) = inner.sessions.get(sid) {
                     if let Some(ref idx) = session.index {
                         if idx.is_ready() {
-                            let matched_node = if let Some(id) = node_id {
+                            let matched_node = if let Some(ref id) = node_id {
                                 idx.get_node(id)
                             } else if let Some(name) = node_name {
                                 idx.get_node_by_name(name)

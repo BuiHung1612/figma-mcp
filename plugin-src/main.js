@@ -55,6 +55,7 @@ figma.on("selectionchange", function() {
   try {
     var sel = figma.currentPage.selection;
     var summary = [];
+    var fullNode = null;
     for (var i = 0; i < Math.min(sel.length, 5); i++) {
       var n = sel[i];
       summary.push({
@@ -65,11 +66,15 @@ figma.on("selectionchange", function() {
         height: typeof n.height === "number" ? Math.round(n.height) : undefined
       });
     }
+    if (sel.length === 1 && typeof nodeToInfo === "function") {
+      try { fullNode = nodeToInfo(sel[0]); } catch(e0) {}
+    }
     figma.ui.postMessage({
       type: "selection-change",
       count: sel.length,
       pageName: figma.currentPage ? figma.currentPage.name : undefined,
-      selection: summary
+      selection: summary,
+      fullNode: fullNode
     });
   } catch (e) {}
 });
@@ -91,6 +96,28 @@ function onDocChange(event) {
       var ids = Array.from(pendingChangedNodeIds);
       pendingChangedNodeIds.clear();
 
+      if (ids.length === 1) {
+        try {
+          var singleNode = await findNodeByIdAsync(ids[0]);
+          if (singleNode) {
+            figma.ui.postMessage({
+              type: "delta-diff",
+              id: singleNode.id,
+              diff: {
+                name: singleNode.name,
+                characters: "characters" in singleNode ? singleNode.characters : undefined,
+                visible: singleNode.visible,
+                width: singleNode.width,
+                height: singleNode.height,
+                x: singleNode.x,
+                y: singleNode.y
+              }
+            });
+            return;
+          }
+        } catch(e1) {}
+      }
+
       if (ids.length > 0 && ids.length <= 15) {
         // Incremental micro-diff update for fast real-time editing
         var diffNodes = [];
@@ -110,7 +137,7 @@ function onDocChange(event) {
 
       // Fallback for large batch changes: mark dirty or trigger background sync
       figma.ui.postMessage({ type: "document-change" });
-    }, 800);
+    }, 500);
   } catch (e) {}
 }
 

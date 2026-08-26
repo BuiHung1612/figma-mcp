@@ -46,6 +46,18 @@ pub struct PendingOp {
     pub acked: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveSelection {
+    pub count: usize,
+    #[serde(rename = "pageName")]
+    pub page_name: Option<String>,
+    pub selection: Vec<Value>,
+    #[serde(rename = "fullNode")]
+    pub full_node: Option<Value>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: u64,
+}
+
 pub struct Session {
     pub id: String,
     pub file_name: String,
@@ -56,6 +68,7 @@ pub struct Session {
     pub ws_tx: Option<tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>>,
     pub stats: SessionStats,
     pub index: Option<crate::bridge::index::FigmaIndex>,
+    pub active_selection: Option<ActiveSelection>,
 }
 
 impl Session {
@@ -70,6 +83,7 @@ impl Session {
             ws_tx: None,
             stats: SessionStats::default(),
             index: None,
+            active_selection: None,
         }
     }
 
