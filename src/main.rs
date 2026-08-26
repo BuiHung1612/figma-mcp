@@ -39,7 +39,7 @@ struct Args {
 fn print_banner(port: u16) {
     eprintln!();
     eprintln!("╔══════════════════════════════════════════════════════════════════╗");
-    eprintln!("║             🎨 Figma MCP Server & Bridge v2.8.5                ║");
+    eprintln!("║             🎨 Figma MCP Server & Bridge v2.9.5                ║");
     eprintln!("╠══════════════════════════════════════════════════════════════════╣");
     eprintln!("║  • Figma Bridge (WS/HTTP):  http://127.0.0.1:{:<5}               ║", port);
     eprintln!("║  • MCP SSE Transport:       http://127.0.0.1:{:<5}/sse           ║", port);

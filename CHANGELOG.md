@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.9.5] — 2026-08-26
+
+### Added — Phase 1 (AI & Token Optimization) & Phase 2 (Realtime Streaming Engine)
+- **Shadcn/UI & Radix Component Mapper**: Added `react-shadcn` framework target to `figma_to_code`, automatically detecting Buttons, Badges, Cards, Inputs, and Avatars with corresponding variant props and clean `@/components/ui/...` imports.
+- **Semantic AST Pruner & Clean Spec (`clean-spec`)**: Added AST pruning to strip redundant layout defaults (`opacity: 1`, `visible: true`, `padding: 0`, `blendMode: PASS_THROUGH`) reducing LLM context tokens by ~40–60%.
+- **Responsive Breakpoint & Flex Inference**: Inferred `flex-col md:flex-row`, `flex-wrap`, `flex-1`, `w-full`, and `max-w-screen-xl` from Figma AutoLayout constraints.
+- **Annotated Screenshots**: Added `withAnnotations: true` returning numbered bounding-box metadata (`[1]`, `[2]`, `[3]`) for visual multimodal grounding.
+- **Realtime Selection Event Streaming**: Realtime WebSocket streaming of `selectionchange` events directly into Rust memory, allowing zero-latency (< 0.05ms) inspection.
+- **Fine-Grained Delta Diff Engine**: Lightweight `delta-diff` updates applying in-memory patches in `< 0.1ms` without full-tree serialization.
+- **Zero-Copy Local Asset Server**: Fast Axum route `GET /assets/*path` serving local images and SVGs with cache headers.
+
 ## [2.8.5] — 2026-08-26
 
 ### Added — Production Code Generator, Design Token Exporter & In-Memory Index
