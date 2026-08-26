@@ -95,7 +95,7 @@ pub async fn execute_code(
                     let size = opts.get("size").and_then(|v| v.as_f64()).unwrap_or(24.0);
                     let fill = opts.get("fill").and_then(|v| v.as_str()).unwrap_or("#1E3150").to_string();
 
-                    let res = match fetch_svg_icon(&http_client, &name, size, &fill).await {
+                    let res = match fetch_svg_icon(http_client, &name, size, &fill).await {
                         Ok(svg) => {
                             let mut create_params = json!({
                                 "type": "SVG",
