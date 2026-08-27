@@ -1342,8 +1342,115 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
         }
 
+        "figma_prepare_design" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            let node_id = args.get("nodeId").and_then(|v| v.as_str());
+            let icon_dir = args.get("iconDir").and_then(|v| v.as_str()).unwrap_or("src/assets/icons");
+            let project_dir = args.get("projectDir").and_then(|v| v.as_str()).unwrap_or(".");
+
+            if !bridge.is_plugin_connected(session_id).await {
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+            }
+
+            // 1. Fetch deep design context
+            let mut op_params = json!({});
+            if let Some(id) = node_id {
+                op_params["id"] = json!(id);
+            }
+            let design_context = match bridge.send_operation("get_design_context", op_params, session_id).await {
+                Ok(data) => data,
+                Err(e) => return ToolResult::error(format!("Failed to retrieve design context: {}", e)),
+            };
+
+            let resolved_id = design_context.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let resolved_name = design_context.get("name").and_then(|v| v.as_str()).unwrap_or("Screen").to_string();
+
+            // 2. Extract 100% of visible text elements
+            let all_texts = crate::mcp::design_pack::extract_all_text_elements(&design_context);
+
+            // 3. Batch export all vector icons to local project assets folder
+            let mut export_params = json!({});
+            if !resolved_id.is_empty() {
+                export_params["nodeId"] = json!(resolved_id);
+            }
+            let raw_assets = bridge.send_operation("export_assets", export_params, session_id).await.unwrap_or(json!({}));
+            
+            let mut exported_icons = Vec::new();
+            if let Some(icons_arr) = raw_assets.get("icons").and_then(|v| v.as_array()) {
+                let dir_path = std::path::Path::new(icon_dir);
+                let _ = tokio::fs::create_dir_all(dir_path).await;
+
+                for item in icons_arr {
+                    let file_name = item.get("fileName").and_then(|v| v.as_str()).unwrap_or("icon.svg");
+                    if let Some(svg_content) = item.get("svg").and_then(|v| v.as_str()) {
+                        let file_path = dir_path.join(file_name);
+                        let _ = tokio::fs::write(&file_path, svg_content).await;
+                    }
+                }
+
+                exported_icons = crate::mcp::design_pack::generate_icon_specs(icons_arr, icon_dir);
+            }
+
+            // 4. Capture Canvas Visual Screenshot
+            let mut snap_params = json!({ "format": "PNG", "scale": 1.5 });
+            if !resolved_id.is_empty() {
+                snap_params["id"] = json!(resolved_id);
+            }
+            let screenshot_res = bridge.send_operation("screenshot", snap_params, session_id).await.ok();
+            let screenshot_data_url = screenshot_res.as_ref().and_then(|v| v.get("dataUrl")).and_then(|v| v.as_str());
+            
+            let mut local_screenshot_path = None;
+            if let Some(data_url) = screenshot_data_url {
+                let b64 = if let Some(idx) = data_url.find(',') {
+                    &data_url[idx + 1..]
+                } else {
+                    data_url
+                };
+                if let Ok(bytes) = BASE64_STANDARD.decode(b64.trim()) {
+                    let temp_path = std::env::temp_dir().join(format!("figma_preview_{}.png", resolved_id.replace([':', ';', '/'], "_")));
+                    if tokio::fs::write(&temp_path, &bytes).await.is_ok() {
+                        local_screenshot_path = Some(temp_path.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // 5. Scan codebase for component reuse
+            let scan_result = crate::mcp::component_matcher::scan_project_components(project_dir).await;
+            let mut matched_components = std::collections::HashMap::new();
+            for comp in scan_result.components.values() {
+                matched_components.insert(comp.name.clone(), comp.import_path.clone());
+            }
+
+            // 6. Build Implementation Checklist for AI
+            let mut checklist = Vec::new();
+            checklist.push(format!("Build layout container for '{}' (dimensions & padding)", resolved_name));
+            if !exported_icons.is_empty() {
+                checklist.push(format!("Import and render {} extracted SVG icons from '{}'", exported_icons.len(), icon_dir));
+            }
+            if !all_texts.is_empty() {
+                checklist.push(format!("Verify all {} visible text elements match Figma typography exactly", all_texts.len()));
+            }
+
+            let result_pack = json!({
+                "success": true,
+                "nodeId": resolved_id,
+                "nodeName": resolved_name,
+                "screenshotPreviewPath": local_screenshot_path,
+                "totalVisibleTexts": all_texts.len(),
+                "allVisibleTexts": all_texts,
+                "totalExportedIcons": exported_icons.len(),
+                "exportedIcons": exported_icons,
+                "discoveredCodebaseComponents": matched_components,
+                "implementationChecklist": checklist,
+                "instructionForAI": "DO NOT guess or invent icons. Use the exact exported SVG components listed in 'exportedIcons'. Ensure every text in 'allVisibleTexts' is accounted for."
+            });
+
+            ToolResult::text(serde_json::to_string_pretty(&result_pack).unwrap_or_default())
+        }
+
         _ => ToolResult::error(format!("Unknown tool: {}", call_params.name)),
     }
 }
+
 
 

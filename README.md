@@ -147,7 +147,7 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 
 ## 🛠️ MCP Tools Reference
 
-`figma-mcp` provides **14 first-class MCP tools**:
+`figma-mcp` provides **15 first-class MCP tools**:
 
 ### 1. `figma_status`
 Checks live bridge connection status, connected Figma tabs/files, in-memory index health, queue length, and latency statistics.
@@ -229,6 +229,17 @@ Validates and compares actual rendered HTML/React UI styles and layout against F
 Scans your local codebase directories (`src/components`, `components/ui`) to discover existing React/Vue components and matches them directly against Figma design layers, preventing duplicate component creation and ensuring reuse of existing design systems.
 - **`projectDir`**: Base directory of your project (default: current directory `"."`).
 - **`nodeId`**: Optional Figma node ID to check specific match against local components.
+
+### 15. `figma_prepare_design`
+**All-In-One Multimodal Grounding Pack for AI**: The ultimate single-call tool for code generation that eliminates missing UI elements and icon guesswork.
+- Simultaneously extracts **100% of visible text elements** (greeting, badges, timestamps, labels).
+- Automatically **exports all SVG vector icons** into your local project directory (`iconDir`) and provides exact TypeScript import statements.
+- Captures high-res **visual canvas screenshots** saved locally for immediate multimodal LLM inspection.
+- Discovers existing components in your codebase for direct reuse.
+- Generates an actionable **Implementation Checklist** ensuring complete design fidelity in 1 single shot.
+- **`nodeId`**: Target Figma screen/frame ID.
+- **`iconDir`**: Target directory for SVG icons (e.g. `src/assets/icons` or `assets/images`).
+- **`projectDir`**: Base directory for component discovery.
 
 ---
 

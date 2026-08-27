@@ -385,7 +385,34 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 "required": []
             }),
         },
+        ToolDefinition {
+            name: "figma_prepare_design".to_string(),
+            description: "All-In-One Multimodal Grounding Pack for AI: Simultaneously captures visual screenshots, auto-exports all SVG icons to your project assets folder with generated import statements, extracts 100% of visible text elements, and maps codebase components — giving AI complete design context in 1 single call to eliminate missing UI elements or icon guesswork.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "nodeId": {
+                        "type": "string",
+                        "description": "Target Figma frame / screen node ID (omit to use active selection)."
+                    },
+                    "iconDir": {
+                        "type": "string",
+                        "description": "Project directory where SVG icons should be exported (e.g. 'src/assets/icons' or 'assets/images'). Default: 'src/assets/icons'."
+                    },
+                    "projectDir": {
+                        "type": "string",
+                        "description": "Base directory of your project for component discovery (default: '.')."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab."
+                    }
+                },
+                "required": []
+            }),
+        },
     ]
 }
+
 
 
