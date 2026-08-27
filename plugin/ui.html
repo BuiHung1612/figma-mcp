@@ -98,7 +98,67 @@
       padding: 6px 8px;
       flex-shrink: 0;
       box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+      position: relative;
     }
+
+    /* ── INDEXING PROGRESS BAR (Embedded in Header) ── */
+    .index-progress-wrap {
+      display: none;
+      flex-direction: column;
+      gap: 3px;
+      padding: 4px 8px 6px;
+      background: rgba(147, 129, 255, 0.08);
+      border: 1px solid rgba(147, 129, 255, 0.28);
+      border-radius: var(--radius-sm);
+      margin-top: 1px;
+      animation: fadeIn 0.2s ease-out;
+    }
+    .index-progress-wrap.active {
+      display: flex;
+    }
+    .index-progress-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--ghost-lavender);
+      font-family: var(--font-mono);
+    }
+    .index-progress-label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 220px;
+    }
+    .index-progress-label svg {
+      animation: spin 1s linear infinite;
+      flex-shrink: 0;
+    }
+    .index-progress-pct {
+      color: var(--text-primary);
+      flex-shrink: 0;
+    }
+    .index-progress-track {
+      width: 100%;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 9999px;
+      overflow: hidden;
+    }
+    .index-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #7c3aed, #9381ff, #34d399);
+      border-radius: 9999px;
+      transition: width 0.2s ease-out;
+      box-shadow: 0 0 8px rgba(147, 129, 255, 0.6);
+    }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 
     .brand { display: flex; align-items: center; gap: 7px; min-width: 0; }
 
@@ -517,19 +577,82 @@
       pointer-events: auto;
     }
 
-    /* RESIZE GRIP */
-    .resize-grip {
-      position: fixed; right: 0; bottom: 0;
-      width: 18px; height: 18px;
-      cursor: nwse-resize; opacity: 0.35;
-      color: var(--text-secondary);
-      transition: opacity var(--transition), color var(--transition);
-      z-index: 1000;
-      display: flex; align-items: flex-end; justify-content: flex-end;
-      padding: 3px;
-      touch-action: none;
+    /* ── CUSTOM IN-PLUGIN MODAL DIALOG (No window.prompt dependency) ── */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(8, 9, 13, 0.75);
+      backdrop-filter: blur(5px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--transition);
     }
-    .resize-grip:hover { opacity: 1; color: var(--ghost-mint); }
+    .modal-overlay.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .modal-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      box-shadow: 0 16px 36px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08) inset;
+      width: 100%;
+      max-width: 290px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transform: scale(0.95);
+      transition: transform var(--transition);
+    }
+    .modal-overlay.show .modal-card {
+      transform: scale(1);
+    }
+    .modal-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .modal-desc {
+      font-size: 9.5px;
+      color: var(--text-secondary);
+      line-height: 1.35;
+    }
+    .modal-input {
+      width: 100%;
+      background: var(--surface-base);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-xs);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      padding: 6px 8px;
+      outline: none;
+      transition: border-color var(--transition);
+    }
+    .modal-input:focus {
+      border-color: var(--ghost-lavender);
+      box-shadow: 0 0 0 2px var(--ghost-glow);
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-top: 2px;
+    }
   </style>
 </head>
 <body>
@@ -548,7 +671,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma MCP</span>
-            <span class="brand-ver">v2.8</span>
+            <span class="brand-ver">v2.9.6</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -571,6 +694,14 @@
           </svg>
         </button>
 
+        <!-- Copy File / Session Link -->
+        <button class="header-icon-btn" id="file-link-btn" onclick="copyFileLink(event)" title="🔗 Set / Copy Figma File Link">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+        </button>
+
         <!-- Connection Status Pill -->
         <div class="status-pill" id="status-pill" onclick="handleStatusClick()" title="Connection Status (Click for details)">
           <div class="dot yellow" id="dot"></div>
@@ -578,6 +709,22 @@
         </div>
       </div>
     </header>
+
+    <!-- ── INDEXING PROGRESS HUD ── -->
+    <div class="index-progress-wrap" id="index-progress-wrap">
+      <div class="index-progress-header">
+        <span class="index-progress-label" id="index-progress-label">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          <span id="index-progress-text">Indexing canvas layers…</span>
+        </span>
+        <span class="index-progress-pct" id="index-progress-pct">0%</span>
+      </div>
+      <div class="index-progress-track">
+        <div class="index-progress-fill" id="index-progress-fill"></div>
+      </div>
+    </div>
 
     <!-- ── SELECTION INSPECTOR HERO CARD ── -->
     <div class="selection-card" id="selection-card">
@@ -602,6 +749,14 @@
           </svg>
         </button>
 
+        <!-- Copy Link to Selection Frame button -->
+        <button class="act-btn icon-only" id="link-btn" onclick="copySelectionLink(event)" title="🔗 Copy link to selection frame">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+        </button>
+
         <!-- Focus / Center on Canvas button -->
         <button class="act-btn icon-only" onclick="focusSelection()" title="🎯 Center view on canvas">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -613,7 +768,15 @@
           </svg>
         </button>
 
-        <!-- Copy Node ID badge -->
+        <!-- Copy Node ID button -->
+        <button class="act-btn icon-only" id="copy-id-btn" onclick="copySelectionId(event)" title="📋 Copy Figma Node ID">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+
+        <!-- Node Type Badge button (also clickable to copy ID) -->
         <button class="act-btn badge-btn" id="selection-badge" onclick="copySelectionId(event)" title="📋 Click to copy Figma Node ID">
           FRAME
         </button>
@@ -667,6 +830,29 @@
 
   </div>
 
+  <!-- File Key Input Modal Dialog -->
+  <div class="modal-overlay" id="key-modal-overlay">
+    <div class="modal-card">
+      <div class="modal-title-row">
+        <div class="modal-title">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--ghost-lavender)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+          Set Figma File Link
+        </div>
+      </div>
+      <div class="modal-desc">
+        Paste full Figma file URL or File Key to generate real browser links for your layers:
+      </div>
+      <input type="text" class="modal-input" id="file-key-input" placeholder="https://www.figma.com/design/..." spellcheck="false" autocomplete="off" />
+      <div class="modal-actions">
+        <button class="btn" onclick="closeKeyModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveFileKeyFromModal()">Save & Copy</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Floating Toast Component -->
   <div class="toast" id="toast">
     <span id="toast-icon">✓</span>
@@ -691,6 +877,7 @@
     var lastSuccessfulPollAt = Date.now();
     var sessionId = null;
     var fileName = null;
+    var fileKey = null;
 
     var writeCount = 0, readCount = 0, errCount = 0;
     var totalLogEvents = 0;
@@ -708,6 +895,10 @@
     var ramEl             = document.getElementById("ram-display");
     var reindexBtn        = document.getElementById("reindex-btn");
     var reindexBtnLabel   = document.getElementById("reindex-btn-label");
+    var indexProgressWrap = document.getElementById("index-progress-wrap");
+    var indexProgressText = document.getElementById("index-progress-text");
+    var indexProgressPct  = document.getElementById("index-progress-pct");
+    var indexProgressFill = document.getElementById("index-progress-fill");
 
     var selCardEl         = document.getElementById("selection-card");
     var selIconEl         = document.getElementById("selection-icon");
@@ -722,6 +913,7 @@
 
     var currentSelectionCount = 0;
     var currentSelectionId = null;
+    var currentSelectionMainId = null;
     var currentSelectionName = "";
 
     function showToast(msg, icon) {
@@ -791,15 +983,149 @@
       parent.postMessage({ pluginMessage: { type: "export-selection-image", scale: 2 } }, "*");
     }
 
-    function copySelectionId(event) {
-      if (event) event.stopPropagation();
+    function copyTextFallback(text) {
+      try {
+        var textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        textarea.style.top = "-9999px";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        var successful = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return successful;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    function openKeyModal(onSuccess) {
+      var modal = document.getElementById("key-modal-overlay");
+      var input = document.getElementById("file-key-input");
+      if (modal && input) {
+        input.value = fileKey ? ("https://www.figma.com/design/" + fileKey) : "";
+        modal.classList.add("show");
+        window.__onKeySaved = onSuccess;
+        setTimeout(function() { input.focus(); input.select(); }, 50);
+      }
+    }
+
+    function closeKeyModal() {
+      var modal = document.getElementById("key-modal-overlay");
+      if (modal) modal.classList.remove("show");
+      window.__onKeySaved = null;
+    }
+
+    function saveFileKeyFromModal() {
+      var input = document.getElementById("file-key-input");
+      var val = input ? input.value.trim() : "";
+      if (val) {
+        var match = val.match(/(?:file|design)\/([a-zA-Z0-9]+)/);
+        var parsedKey = match ? match[1] : val;
+        fileKey = parsedKey;
+        parent.postMessage({ pluginMessage: { type: "set-file-key", fileKey: parsedKey } }, "*");
+        showToast("File Key saved!", "🔗");
+      }
+      var cb = window.__onKeySaved;
+      closeKeyModal();
+      if (typeof cb === "function") {
+        cb(fileKey);
+      }
+    }
+
+    function copyFileLink(event) {
+      if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+      openKeyModal(function(savedKey) {
+        if (savedKey) {
+          showToast("File link updated", "🔗");
+        }
+      });
+    }
+
+    function copySelectionLink(event) {
+      if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+      if (!currentSelectionId) {
+        showToast("No selection active", "⚠️");
+        try { parent.postMessage({ pluginMessage: { type: "notify", message: "⚠️ No frame selected to copy link", error: true } }, "*"); } catch(e) {}
+        return;
+      }
+
+      if (!fileKey) {
+        openKeyModal(function(savedKey) {
+          executeCopyLink(savedKey);
+        });
+        return;
+      }
+
+      executeCopyLink(fileKey);
+    }
+
+    function executeCopyLink(effectiveKey) {
       if (!currentSelectionId) return;
-      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      
+      var targetId = currentSelectionMainId || currentSelectionId;
+      var figmaNodeId = targetId.replace(/:/g, "-");
+      
+      // Figma web link uses a sanitized slug of the file name (or untitled)
+      var cleanSlug = (fileName || "file")
+        .replace(/[\[\]\(\)\{\}]/g, "")
+        .trim()
+        .replace(/\s+/g, "-");
+      var encodedSlug = encodeURIComponent(cleanSlug);
+      
+      var link = "";
+      if (effectiveKey) {
+        link = "https://www.figma.com/design/" + effectiveKey + "/" + encodedSlug + "?node-id=" + figmaNodeId;
+      } else {
+        link = "https://www.figma.com/design/draft/" + encodedSlug + "?node-id=" + figmaNodeId;
+      }
+      
+      var copied = copyTextFallback(link);
+      if (!copied && navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).catch(function() {});
+      }
+      
+      showToast("Link: " + figmaNodeId, "🔗");
+      try {
+        parent.postMessage({
+          pluginMessage: {
+            type: "notify",
+            message: "🔗 Link copied to clipboard! (" + figmaNodeId + ")"
+          }
+        }, "*");
+      } catch(e) {}
+    }
+
+    function copySelectionId(event) {
+      if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+      if (!currentSelectionId) return;
+      var copied = copyTextFallback(currentSelectionId);
+      if (!copied && navigator && navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(currentSelectionId).then(function() {
           showToast("Node ID: " + currentSelectionId + " copied", "📋");
+          try {
+            parent.postMessage({ pluginMessage: { type: "notify", message: "📋 Node ID: " + currentSelectionId + " copied" } }, "*");
+          } catch(e) {}
         }).catch(function() {
           prompt("Copy Node ID:", currentSelectionId);
         });
+      } else if (copied) {
+        showToast("Node ID: " + currentSelectionId + " copied", "📋");
+        try {
+          parent.postMessage({ pluginMessage: { type: "notify", message: "📋 Node ID: " + currentSelectionId + " copied" } }, "*");
+        } catch(e) {}
       } else {
         prompt("Copy Node ID:", currentSelectionId);
       }
@@ -1259,6 +1585,7 @@
       var list = msg.selection || [];
       currentSelectionCount = count;
       currentSelectionId = (count === 1 && list[0]) ? list[0].id : null;
+      currentSelectionMainId = (count === 1 && list[0]) ? (list[0].mainId || list[0].id) : null;
       currentSelectionName = (count === 1 && list[0]) ? (list[0].name || "Layer") : "";
 
       if (count === 0) {
@@ -1302,6 +1629,7 @@
         var prevSid = sessionId;
         sessionId = msg.sessionId || null;
         fileName = msg.fileName || null;
+        fileKey = msg.fileKey || null;
         if (fileName && docDispEl) {
           docDispEl.textContent = fileName;
           docDispEl.title = fileName + " (" + (sessionId || "active session") + ")";
@@ -1373,6 +1701,15 @@
         return;
       }
 
+      if (msg.type === "index-progress") {
+        if (reindexBtn) reindexBtn.classList.add("indexing");
+        if (indexProgressWrap) indexProgressWrap.classList.add("active");
+        if (indexProgressText && msg.label) indexProgressText.textContent = msg.label;
+        if (indexProgressPct && msg.percent !== undefined) indexProgressPct.textContent = msg.percent + "%";
+        if (indexProgressFill && msg.percent !== undefined) indexProgressFill.style.width = Math.min(100, Math.max(0, msg.percent)) + "%";
+        return;
+      }
+
       if (msg.type === "index-chunk") {
         if (ws && ws.readyState === WebSocket.OPEN) {
           try { ws.send(JSON.stringify({ type: "index-chunk", nodes: msg.nodes })); } catch(e) {}
@@ -1389,6 +1726,13 @@
 
       if (msg.type === "index-update") {
         if (reindexBtn) reindexBtn.classList.remove("indexing");
+        if (indexProgressPct) indexProgressPct.textContent = "100%";
+        if (indexProgressFill) indexProgressFill.style.width = "100%";
+        if (indexProgressText) indexProgressText.textContent = "Index ready";
+        setTimeout(function() {
+          if (indexProgressWrap) indexProgressWrap.classList.remove("active");
+        }, 1200);
+
         var elapsed = msg.startMs ? (Date.now() - msg.startMs) : 0;
         showToast("Indexed in " + elapsed + "ms", "✓");
         if (ws && ws.readyState === WebSocket.OPEN) {

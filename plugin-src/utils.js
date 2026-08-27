@@ -321,3 +321,10 @@ function nodeToInfo(node) {
   if ("height" in node) info.height = Math.round(node.height);
   return info;
 }
+
+// Yield execution back to Figma main thread loop so UI never freezes/blocks
+function yieldToUI(delayMs) {
+  return new Promise(function(resolve) {
+    setTimeout(resolve, delayMs !== undefined ? delayMs : 0);
+  });
+}

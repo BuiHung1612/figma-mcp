@@ -674,46 +674,66 @@ handlers.get_styles = async function() {
 
 // get_local_components — enhanced component listing with descriptions and properties
 handlers.get_local_components = async function() {
-  await figma.loadAllPagesAsync();
+  if (typeof figma.loadAllPagesAsync === "function") {
+    try { await figma.loadAllPagesAsync(); } catch (e) {}
+  }
   var comps = figma.root.findAllWithCriteria({ types: ["COMPONENT"] });
+  if (typeof yieldToUI === "function") await yieldToUI(0);
   var sets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET"] });
+  if (typeof yieldToUI === "function") await yieldToUI(0);
+
+  var componentList = [];
+  var COMP_BATCH_SIZE = 50;
+  for (var ci = 0; ci < comps.length; ci++) {
+    var c = comps[ci];
+    var info = {
+      id: c.id, name: c.name, key: c.key || null,
+      description: c.description || "",
+      setName: (c.parent && c.parent.type === "COMPONENT_SET") ? c.parent.name : null,
+      width: Math.round(c.width), height: Math.round(c.height),
+      page: c.parent ? (function findPage(n) {
+        while (n && n.type !== "PAGE") n = n.parent;
+        return n ? n.name : null;
+      })(c) : null,
+    };
+    // Component properties (variant props)
+    try {
+      if (c.componentPropertyDefinitions) {
+        var defs = c.componentPropertyDefinitions;
+        var props = {};
+        for (var key in defs) {
+          if (Object.prototype.hasOwnProperty.call(defs, key)) {
+            props[key] = { type: defs[key].type, defaultValue: defs[key].defaultValue };
+            if (defs[key].variantOptions) props[key].options = defs[key].variantOptions;
+          }
+        }
+        info.properties = props;
+      }
+    } catch(e) { /* skip properties */ }
+    componentList.push(info);
+
+    if (ci > 0 && ci % COMP_BATCH_SIZE === 0 && typeof yieldToUI === "function") {
+      await yieldToUI(0);
+    }
+  }
+
+  var componentSets = [];
+  for (var si = 0; si < sets.length; si++) {
+    var s = sets[si];
+    componentSets.push({
+      id: s.id, name: s.name, key: s.key || null,
+      description: s.description || "",
+      variantCount: s.children ? s.children.length : 0,
+    });
+    if (si > 0 && si % COMP_BATCH_SIZE === 0 && typeof yieldToUI === "function") {
+      await yieldToUI(0);
+    }
+  }
 
   return {
-    components: comps.map(function(c) {
-      var info = {
-        id: c.id, name: c.name, key: c.key || null,
-        description: c.description || "",
-        setName: (c.parent && c.parent.type === "COMPONENT_SET") ? c.parent.name : null,
-        width: Math.round(c.width), height: Math.round(c.height),
-        page: c.parent ? (function findPage(n) {
-          while (n && n.type !== "PAGE") n = n.parent;
-          return n ? n.name : null;
-        })(c) : null,
-      };
-      // Component properties (variant props)
-      try {
-        if (c.componentPropertyDefinitions) {
-          var defs = c.componentPropertyDefinitions;
-          var props = {};
-          for (var key in defs) {
-            if (Object.prototype.hasOwnProperty.call(defs, key)) {
-              props[key] = { type: defs[key].type, defaultValue: defs[key].defaultValue };
-              if (defs[key].variantOptions) props[key].options = defs[key].variantOptions;
-            }
-          }
-          info.properties = props;
-        }
-      } catch(e) { /* skip properties */ }
-      return info;
-    }),
-    componentSets: sets.map(function(s) {
-      return {
-        id: s.id, name: s.name, key: s.key || null,
-        description: s.description || "",
-        variantCount: s.children ? s.children.length : 0,
-      };
-    }),
-    total: comps.length + sets.length,
+    components: componentList,
+    componentSets: componentSets,
+    total: componentList.length + componentSets.length,
   };
 };
 
@@ -796,12 +816,17 @@ handlers.get_variables = async function() {
           values: values,
           description: v.description || "",
         });
+
+        if (vi > 0 && vi % 50 === 0 && typeof yieldToUI === "function") {
+          await yieldToUI(0);
+        }
       }
       collections.push({
         id: col.id, name: col.name,
         modes: col.modes.map(function(m) { return { id: m.modeId, name: m.name }; }),
         variables: variables,
       });
+      if (typeof yieldToUI === "function") await yieldToUI(0);
     }
   } catch(e) {
     return { error: "Variables API not available: " + e.message, collections: [] };

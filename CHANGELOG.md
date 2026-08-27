@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.6] — 2026-08-27
+
+### Fixed & Enhanced — Non-blocking Indexing & Real-time Progress HUD
+- **Non-blocking Cooperative Multitasking (`yieldToUI`)**: Replaced synchronous long-running operations in `handlers.index_scan`, `get_local_components`, and `get_variables` with batch processing and non-blocking event-loop yielding, preventing UI freezes and canvas unresponsiveness on large Figma files.
+- **Initial Scan & Page Loading Stagger**: Delayed initial indexing and `loadAllPagesAsync` during startup so the plugin UI immediately mounts and connects without stalling the Figma workspace.
+- **Visual Index Progress HUD**: Added a real-time progress bar HUD below the header in `ui.html`, detailing step-by-step progress (% and counts for page layers, styles, variables, and components) with spinner animation and graceful auto-hide.
+
 ## [2.9.5] — 2026-08-26
 
 ### Added — Phase 1 (AI & Token Optimization) & Phase 2 (Realtime Streaming Engine)

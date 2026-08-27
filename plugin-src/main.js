@@ -18,9 +18,19 @@ figma.clientStorage.getAsync("mcp_window_size").then(function(saved) {
 // In Figma, figma.root.id is always "0:0" across all files. To support running
 // multiple plugins concurrently across multiple tabs/files, generate and persist
 // a unique document session ID in document pluginData.
+function getSavedFileKey() {
+  if (figma.fileKey) return figma.fileKey;
+  try {
+    var saved = figma.root.getPluginData("figma_file_key");
+    if (saved && saved.length > 0) return saved;
+  } catch(e) {}
+  return null;
+}
+
 function getOrCreateSessionId() {
-  if (figma.fileKey) {
-    return figma.fileKey;
+  var fk = getSavedFileKey();
+  if (fk) {
+    return fk;
   }
   try {
     var stored = figma.root.getPluginData("mcp_session_id");
@@ -40,13 +50,15 @@ function getOrCreateSessionId() {
 
 var currentSessionId = getOrCreateSessionId();
 var currentFileName = figma.root ? figma.root.name : "Untitled";
+var currentFileKey = getSavedFileKey();
 
 // Broadcast active file / session metadata on startup
 try {
   figma.ui.postMessage({
     type: "session-info",
     sessionId: currentSessionId,
-    fileName: currentFileName
+    fileName: currentFileName,
+    fileKey: currentFileKey
   });
 } catch (e) {}
 
@@ -58,8 +70,15 @@ figma.on("selectionchange", function() {
     var fullNode = null;
     for (var i = 0; i < Math.min(sel.length, 5); i++) {
       var n = sel[i];
+      // If node is an internal instance sub-layer (starts with I...), find its main component instance or top frame
+      var mainId = n.id;
+      if (mainId.startsWith("I") && mainId.indexOf(";") !== -1) {
+        var parts = mainId.split(";");
+        mainId = parts[parts.length - 1]; // Use real canonical node id
+      }
       summary.push({
         id: n.id,
+        mainId: mainId,
         name: n.name,
         type: n.type,
         width: typeof n.width === "number" ? Math.round(n.width) : undefined,
@@ -141,20 +160,23 @@ function onDocChange(event) {
   } catch (e) {}
 }
 
-// In dynamic-page mode, Figma requires figma.loadAllPagesAsync() before registering documentchange
-if (typeof figma.loadAllPagesAsync === "function") {
-  figma.loadAllPagesAsync().then(function() {
+// In dynamic-page mode, Figma requires figma.loadAllPagesAsync() before registering documentchange.
+// Delay loading all pages slightly so plugin UI opens and paints immediately without UI freeze.
+setTimeout(function() {
+  if (typeof figma.loadAllPagesAsync === "function") {
+    figma.loadAllPagesAsync().then(function() {
+      try {
+        figma.on("documentchange", onDocChange);
+      } catch (e) {}
+    }).catch(function() {});
+  } else {
     try {
       figma.on("documentchange", onDocChange);
     } catch (e) {}
-  }).catch(function() {});
-} else {
-  try {
-    figma.on("documentchange", onDocChange);
-  } catch (e) {}
-}
+  }
+}, 800);
 
-// Background initial scan after 1.2s startup delay (ensures UI WebSocket is connected)
+// Background initial scan after 1.8s startup delay (ensures UI is fully rendered and WebSocket connected)
 setTimeout(async function() {
   try {
     if (handlers.index_scan) {
@@ -169,7 +191,7 @@ setTimeout(async function() {
       });
     }
   } catch (e) {}
-}, 1200);
+}, 1800);
 
 // ─── DISPATCHER ───────────────────────────────────────────────────────────────
 
@@ -212,6 +234,35 @@ figma.ui.onmessage = async (request) => {
     var sh = Math.max(200, Math.min(1200, Math.round(request.height)));
     try {
       figma.clientStorage.setAsync("mcp_window_size", { width: sw, height: sh }).catch(function() {});
+    } catch(e) {}
+    return;
+  }
+
+  // Set and persist Figma File Key
+  if (request.type === "set-file-key") {
+    try {
+      var newFileKey = (request.fileKey || "").trim();
+      if (newFileKey) {
+        figma.root.setPluginData("figma_file_key", newFileKey);
+        currentFileKey = newFileKey;
+        figma.ui.postMessage({
+          type: "session-info",
+          sessionId: currentSessionId,
+          fileName: currentFileName,
+          fileKey: newFileKey
+        });
+        figma.notify("Figma File Key saved!", { timeout: 1500 });
+      }
+    } catch(e) {}
+    return;
+  }
+
+  // Toast notification from UI
+  if (request.type === "notify") {
+    try {
+      if (request.message) {
+        figma.notify(request.message, { timeout: request.timeout || 1500, error: request.error || false });
+      }
     } catch(e) {}
     return;
   }

@@ -710,60 +710,98 @@ handlers.export_image = async function(params) {
   };
 };
 
-// index_scan — aggregate page nodes, styles, variables, and components in one call for pre-indexing (concurrently)
+// index_scan — aggregate page nodes, styles, variables, and components in one call for pre-indexing
 handlers.index_scan = async function() {
-  var pageNodesPromise = (async function() {
+  if (figma.ui) {
     try {
-      var page = figma.currentPage;
-      var topFrames = page.children || [];
-      var collected = [];
-      var CHUNK_SIZE = 10;
+      figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 5, label: "Scanning canvas layers…" });
+    } catch(e) {}
+  }
 
-      for (var i = 0; i < topFrames.length; i += CHUNK_SIZE) {
-        var chunk = topFrames.slice(i, i + CHUNK_SIZE);
-        var chunkData = chunk.map(function(n) {
-          return Object.assign(nodeToInfo(n), { childCount: "children" in n ? n.children.length : 0 });
-        });
-        collected = collected.concat(chunkData);
+  var pageNodes = [];
+  try {
+    var page = figma.currentPage;
+    var topFrames = page.children || [];
+    var CHUNK_SIZE = 10;
+    var totalFrames = topFrames.length;
 
-        // Stream chunk progressively if there are multiple chunks
-        if (topFrames.length > CHUNK_SIZE && figma.ui) {
-          try {
-            figma.ui.postMessage({ type: "index-chunk", nodes: chunkData });
-          } catch(e3) {}
-        }
+    for (var i = 0; i < topFrames.length; i += CHUNK_SIZE) {
+      var chunk = topFrames.slice(i, i + CHUNK_SIZE);
+      var chunkData = chunk.map(function(n) {
+        return Object.assign(nodeToInfo(n), { childCount: "children" in n ? n.children.length : 0 });
+      });
+      pageNodes = pageNodes.concat(chunkData);
+
+      var nodePct = totalFrames > 0 ? Math.min(40, Math.round(5 + (pageNodes.length / totalFrames) * 35)) : 35;
+      if (figma.ui) {
+        try {
+          figma.ui.postMessage({
+            type: "index-progress",
+            stage: "nodes",
+            percent: nodePct,
+            label: "Layers: " + pageNodes.length + (totalFrames ? "/" + totalFrames : "")
+          });
+        } catch(e) {}
       }
-      return collected;
-    } catch (e) {}
-    return [];
-  })();
 
-  var stylesPromise = (async function() {
+      // Stream chunk progressively if there are multiple chunks
+      if (topFrames.length > CHUNK_SIZE && figma.ui) {
+        try {
+          figma.ui.postMessage({ type: "index-chunk", nodes: chunkData });
+        } catch(e3) {}
+      }
+
+      // Yield after every chunk so canvas/UI remains completely smooth
+      if (typeof yieldToUI === "function") {
+        await yieldToUI(0);
+      }
+    }
+  } catch (e) {}
+
+  if (typeof yieldToUI === "function") await yieldToUI(0);
+
+  if (figma.ui) {
     try {
-      if (handlers.get_styles) return await handlers.get_styles({});
-    } catch (e) {}
-    return null;
-  })();
+      figma.ui.postMessage({ type: "index-progress", stage: "styles", percent: 45, label: "Indexing color & text styles…" });
+    } catch(e) {}
+  }
 
-  var varsPromise = (async function() {
+  var styles = null;
+  try {
+    if (handlers.get_styles) styles = await handlers.get_styles({});
+  } catch (e) {}
+
+  if (typeof yieldToUI === "function") await yieldToUI(0);
+
+  if (figma.ui) {
     try {
-      if (handlers.get_variables) return await handlers.get_variables({});
-    } catch (e) {}
-    return null;
-  })();
+      figma.ui.postMessage({ type: "index-progress", stage: "variables", percent: 65, label: "Indexing variables & tokens…" });
+    } catch(e) {}
+  }
 
-  var compsPromise = (async function() {
+  var variables = null;
+  try {
+    if (handlers.get_variables) variables = await handlers.get_variables({});
+  } catch (e) {}
+
+  if (typeof yieldToUI === "function") await yieldToUI(0);
+
+  if (figma.ui) {
     try {
-      if (handlers.get_local_components) return await handlers.get_local_components({});
-    } catch (e) {}
-    return null;
-  })();
+      figma.ui.postMessage({ type: "index-progress", stage: "components", percent: 85, label: "Indexing components & sets…" });
+    } catch(e) {}
+  }
 
-  var results = await Promise.all([pageNodesPromise, stylesPromise, varsPromise, compsPromise]);
-  var pageNodes = results[0];
-  var styles = results[1];
-  var variables = results[2];
-  var components = results[3];
+  var components = null;
+  try {
+    if (handlers.get_local_components) components = await handlers.get_local_components({});
+  } catch (e) {}
+
+  if (figma.ui) {
+    try {
+      figma.ui.postMessage({ type: "index-progress", stage: "done", percent: 100, label: "Index ready" });
+    } catch(e) {}
+  }
 
   var resolvedSid = figma.fileKey || (function() {
     try { return figma.root.getPluginData("mcp_session_id") || "_default"; } catch(e) { return "_default"; }
