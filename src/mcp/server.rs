@@ -1216,7 +1216,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                         if idx.is_ready() {
                             let matched = if let Some(ref id) = resolved_node_id {
                                 idx.get_node(id)
-                            } else if let Some(ref name) = node_name {
+                            } else if let Some(name) = node_name {
                                 idx.get_node_by_name(name)
                             } else if let Some(ref active) = session.active_selection {
                                 if let Some(first) = active.selection.first() {

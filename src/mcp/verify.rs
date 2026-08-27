@@ -56,7 +56,7 @@ pub fn compare_design_metrics(
     if let Some(w) = figma_spec.get("width").and_then(|v| v.as_f64()) {
         total_checks += 1;
         let actual_w = computed_styles.get("width").cloned();
-        let is_match = actual_w.as_ref().map_or(false, |val| {
+        let is_match = actual_w.as_ref().is_some_and(|val| {
             let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
             (px - w).abs() <= 2.0 // Tolerant 2px
         });
@@ -77,7 +77,7 @@ pub fn compare_design_metrics(
     if let Some(h) = figma_spec.get("height").and_then(|v| v.as_f64()) {
         total_checks += 1;
         let actual_h = computed_styles.get("height").cloned();
-        let is_match = actual_h.as_ref().map_or(false, |val| {
+        let is_match = actual_h.as_ref().is_some_and(|val| {
             let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
             (px - h).abs() <= 2.0
         });
@@ -107,7 +107,7 @@ pub fn compare_design_metrics(
             padding.to_string()
         };
 
-        let is_match = actual_pad.as_ref().map_or(false, |act| act == &expected_pad);
+        let is_match = actual_pad.as_ref() == Some(&expected_pad);
         if is_match { matched_checks += 1; } else {
             fixes.push(format!("Adjust padding to `{}`", expected_pad));
             layout_metrics.push(LayoutMetric {
@@ -124,7 +124,7 @@ pub fn compare_design_metrics(
     if let Some(gap) = figma_spec.get("itemSpacing").and_then(|v| v.as_f64()) {
         total_checks += 1;
         let actual_gap = computed_styles.get("gap").cloned();
-        let is_match = actual_gap.as_ref().map_or(false, |val| {
+        let is_match = actual_gap.as_ref().is_some_and(|val| {
             let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
             (px - gap).abs() <= 1.0
         });
@@ -145,7 +145,7 @@ pub fn compare_design_metrics(
     if let Some(radius) = figma_spec.get("cornerRadius").and_then(|v| v.as_f64()) {
         total_checks += 1;
         let actual_r = computed_styles.get("border-radius").or_else(|| computed_styles.get("borderRadius")).cloned();
-        let is_match = actual_r.as_ref().map_or(false, |val| {
+        let is_match = actual_r.as_ref().is_some_and(|val| {
             let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
             (px - radius).abs() <= 1.0
         });
@@ -166,7 +166,7 @@ pub fn compare_design_metrics(
     if let Some(font_size) = figma_spec.get("fontSize").and_then(|v| v.as_f64()) {
         total_checks += 1;
         let actual_fs = computed_styles.get("font-size").or_else(|| computed_styles.get("fontSize")).cloned();
-        let is_match = actual_fs.as_ref().map_or(false, |val| {
+        let is_match = actual_fs.as_ref().is_some_and(|val| {
             let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
             (px - font_size).abs() <= 1.0
         });
@@ -188,7 +188,7 @@ pub fn compare_design_metrics(
         total_checks += 1;
         let actual_bg = computed_styles.get("background-color").or_else(|| computed_styles.get("backgroundColor")).cloned();
         let target_hex = hex.trim_start_matches('#').to_lowercase();
-        let is_match = actual_bg.as_ref().map_or(false, |act| {
+        let is_match = actual_bg.as_ref().is_some_and(|act| {
             let act_lower = act.to_lowercase();
             if act_lower.contains(&target_hex) {
                 return true;

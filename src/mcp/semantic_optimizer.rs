@@ -49,8 +49,8 @@ fn is_redundant_wrapper(node: &Value) -> bool {
 
     let has_fill = node.get("fill").is_some();
     let has_stroke = node.get("stroke").is_some();
-    let has_effects = node.get("effects").and_then(|v| v.as_array()).map_or(false, |a| !a.is_empty());
-    let has_radius = node.get("borderRadius").and_then(|v| v.as_str()).map_or(false, |r| r != "0px");
+    let has_effects = node.get("effects").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty());
+    let has_radius = node.get("borderRadius").and_then(|v| v.as_str()).is_some_and(|r| r != "0px");
 
     if has_fill || has_stroke || has_effects || has_radius {
         return false;

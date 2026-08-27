@@ -81,7 +81,7 @@ pub async fn scan_project_components(base_dir: &str) -> ComponentScanResult {
 
 /// Normalize file name (e.g. `button` or `user-card` -> `Button` or `UserCard`)
 fn normalize_component_name(stem: &str) -> String {
-    let parts: Vec<&str> = stem.split(|c| c == '-' || c == '_').collect();
+    let parts: Vec<&str> = stem.split(['-', '_']).collect();
     if parts.len() > 1 {
         parts
             .into_iter()
