@@ -387,7 +387,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_prepare_design".to_string(),
-            description: "All-In-One Multimodal Grounding Pack for AI: Simultaneously captures visual screenshots, auto-exports all SVG icons to your project assets folder with generated import statements, extracts 100% of visible text elements, and maps codebase components — giving AI complete design context in 1 single call to eliminate missing UI elements or icon guesswork.".to_string(),
+            description: "⭐ PRIMARY & MANDATORY FIRST STEP when user gives a Figma link or asks to build/update frontend code from Figma. Single-call All-In-One Grounding Pack: (1) Captures high-res visual screenshot, (2) Auto-exports all SVG icons directly into your project assets folder with generated import statements, (3) Extracts 100% of visible text elements without missing headers/badges/dates, and (4) Maps existing codebase components. Call THIS tool first instead of raw figma_read to eliminate icon guessing and missing UI elements.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
