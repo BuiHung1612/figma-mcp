@@ -1195,6 +1195,155 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             }
         }
 
+        "figma_verify_ui" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            let node_id = args.get("nodeId").and_then(|v| v.as_str());
+            let node_name = args.get("nodeName").and_then(|v| v.as_str());
+            let target_url = args.get("url").and_then(|v| v.as_str());
+            let target_selector = args.get("selector").and_then(|v| v.as_str());
+
+            // 1. Resolve target Figma design spec
+            let mut figma_spec: Option<Value> = None;
+            let mut resolved_node_id = node_id.map(String::from);
+            let mut resolved_node_name = node_name.map(String::from).unwrap_or_else(|| "Unknown".to_string());
+
+            // Try resolving from In-Memory Index first
+            if let BridgeHandle::Direct(ref state) = bridge {
+                let sid = session_id.unwrap_or("_default");
+                let inner = state.inner.lock().await;
+                if let Some(session) = inner.sessions.get(sid) {
+                    if let Some(ref idx) = session.index {
+                        if idx.is_ready() {
+                            let matched = if let Some(ref id) = resolved_node_id {
+                                idx.get_node(id)
+                            } else if let Some(ref name) = node_name {
+                                idx.get_node_by_name(name)
+                            } else if let Some(ref active) = session.active_selection {
+                                if let Some(first) = active.selection.first() {
+                                    resolved_node_id = first.get("id").and_then(|v| v.as_str()).map(String::from);
+                                    if let Some(ref id) = resolved_node_id {
+                                        idx.get_node(id)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            if let Some(node) = matched {
+                                resolved_node_id = Some(node.id.clone());
+                                resolved_node_name = node.name.clone();
+                                figma_spec = Some(node.to_css_spec());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback to Live Plugin Query if not found in index
+            if figma_spec.is_none() {
+                if !bridge.is_plugin_connected(session_id).await {
+                    return ToolResult::error("Figma plugin not connected and node not found in memory index. Please connect the plugin or provide a valid indexed nodeId.");
+                }
+
+                let mut op_params = json!({});
+                if let Some(ref id) = resolved_node_id { op_params["id"] = json!(id); }
+                if let Some(name) = node_name { op_params["name"] = json!(name); }
+
+                match bridge.send_operation("get_design_context", op_params, session_id).await {
+                    Ok(data) => {
+                        resolved_node_name = data.get("name").and_then(|v| v.as_str()).unwrap_or(&resolved_node_name).to_string();
+                        if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
+                            resolved_node_id = Some(id.to_string());
+                        }
+                        figma_spec = Some(data);
+                    }
+                    Err(e) => return ToolResult::error(format!("Failed to retrieve Figma design spec: {}", e)),
+                }
+            }
+
+            let spec = match figma_spec {
+                Some(s) => s,
+                None => return ToolResult::error("Could not resolve target Figma node spec for verification."),
+            };
+
+            // 2. Parse computed styles
+            let mut computed_map = std::collections::HashMap::new();
+            if let Some(comp_val) = args.get("computedStyles").and_then(|v| v.as_object()) {
+                for (k, v) in comp_val {
+                    if let Some(str_val) = v.as_str() {
+                        computed_map.insert(k.clone(), str_val.to_string());
+                    } else {
+                        computed_map.insert(k.clone(), v.to_string());
+                    }
+                }
+            }
+
+            // 3. Perform comparison metrics
+            let (layout_diffs, style_diffs, fixes, percentage) = crate::mcp::verify::compare_design_metrics(&spec, &computed_map);
+
+            let mut report = crate::mcp::verify::VerificationReport::new(
+                resolved_node_id.as_deref().unwrap_or("unknown"),
+                &resolved_node_name,
+            );
+            report.target_url = target_url.map(String::from);
+            report.target_selector = target_selector.map(String::from);
+            report.match_percentage = (percentage * 10.0).round() / 10.0;
+            report.layout_discrepancies = layout_diffs;
+            report.style_discrepancies = style_diffs;
+            report.actionable_fixes = fixes;
+            report.visual_summary = format!(
+                "UI Verification: {:.1}% match with Figma node '{}' ({})",
+                report.match_percentage, report.node_name, report.node_id
+            );
+
+            ToolResult::text(serde_json::to_string_pretty(&report).unwrap_or_default())
+        }
+
+        "figma_match_components" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            let base_dir = args.get("projectDir").and_then(|v| v.as_str()).unwrap_or(".");
+            let node_id = args.get("nodeId").and_then(|v| v.as_str());
+
+            // 1. Scan codebase for UI components
+            let scan_result = crate::mcp::component_matcher::scan_project_components(base_dir).await;
+
+            // 2. If a specific nodeId is provided, check match for it
+            let specific_match = if let Some(nid) = node_id {
+                let mut matched_comp = None;
+                if let BridgeHandle::Direct(ref state) = bridge {
+                    let sid = session_id.unwrap_or("_default");
+                    let inner = state.inner.lock().await;
+                    if let Some(session) = inner.sessions.get(sid) {
+                        if let Some(ref idx) = session.index {
+                            if let Some(node) = idx.get_node(nid) {
+                                matched_comp = crate::mcp::component_matcher::match_figma_to_codebase_component(&node.name, &scan_result).cloned();
+                            }
+                        }
+                    }
+                }
+                matched_comp
+            } else {
+                None
+            };
+
+            let out = json!({
+                "success": true,
+                "projectDirectory": base_dir,
+                "scannedDirectories": scan_result.scanned_directories,
+                "totalComponentsDiscovered": scan_result.total_components,
+                "components": scan_result.components,
+                "targetedMatch": specific_match,
+            });
+
+            ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+        }
+
         _ => ToolResult::error(format!("Unknown tool: {}", call_params.name)),
     }
 }
+
+

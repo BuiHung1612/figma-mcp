@@ -281,12 +281,34 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
 // ── React + Tailwind Generator ───────────────────────────────────────────────
 
 fn generate_react_tailwind(context: &Value, component_name: &str) -> String {
+    // 1. Optimize tree by flattening redundant single-child wrapper frames
+    let optimized_context = crate::mcp::semantic_optimizer::optimize_semantic_tree(context);
+
+    // 2. Infer dynamic interactive states, repeaters, and typescript props interface
+    let logic = crate::mcp::state_engine::infer_component_logic(&optimized_context, component_name);
+
     let mut jsx_buffer = String::new();
-    render_jsx_node(context, &mut jsx_buffer, 2);
+    render_jsx_node(&optimized_context, &mut jsx_buffer, 2);
+
+    let mut state_decls = String::new();
+    for st in &logic.states {
+        state_decls.push_str(&format!(
+            "  const [{}, {}] = React.useState<{}>(Boolean({}));\n",
+            st.state_name, st.setter_name, st.state_type, st.default_value
+        ));
+    }
+
+    let state_block = if state_decls.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}\n", state_decls)
+    };
 
     format!(
-        "import React from 'react';\n\ninterface {name}Props {{\n  className?: string;\n}}\n\nexport const {name}: React.FC<{name}Props> = ({{\n  className = '',\n}}) => {{\n  return (\n{jsx}\n  );\n}};\n\nexport default {name};\n",
+        "import React from 'react';\n\n{interface}\n\nexport const {name}: React.FC<{name}Props> = ({{\n  className = '',\n}}) => {{{state_block}  return (\n{jsx}\n  );\n}};\n\nexport default {name};\n",
+        interface = logic.props_interface,
         name = component_name,
+        state_block = state_block,
         jsx = jsx_buffer
     )
 }

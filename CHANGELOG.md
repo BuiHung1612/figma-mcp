@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.0] — 2026-08-27
+
+### Added — Developer Precision Suite & Intelligence Engine
+- **Visual & Layout Verification Engine (`figma_verify_ui`)**: Compare actual rendered HTML/React computed styles and dimensions directly against Figma design specifications (dimensions, padding, gap, border-radius, background-color, font-size/weight), calculating match percentages and outputting actionable CSS/Tailwind fixes.
+- **Codebase-Aware Component Matcher (`figma_match_components`)**: Automatically scan local project directories (`src/components`, `components/ui`, `app/components`) for existing UI components and match them directly against Figma design layers, preventing duplicate component generation and ensuring reuse of existing design systems.
+- **AST Flattener & Semantic Token Optimizer**: Automatically flatten redundant single-child wrapper frames (`Group 123`, `Wrapper_Frame`) and strip default attributes (`opacity: 1`, `visible: true`, `borderRadius: 0px`), cutting LLM context token usage by up to ~70%.
+- **Interactive State & Repeater Logic Engine**: Automatically infer reactive React hooks (`useState(false)` for dropdowns/modals/tabs/switches), extract repeater lists with realistic mock data (`items.map(...)`), and generate TypeScript Props interfaces.
+
 ## [2.9.6] — 2026-08-27
 
 ### Fixed & Enhanced — Non-blocking Indexing & Real-time Progress HUD

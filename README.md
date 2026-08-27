@@ -147,7 +147,7 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 
 ## 🛠️ MCP Tools Reference
 
-`figma-mcp` provides **12 first-class MCP tools**:
+`figma-mcp` provides **14 first-class MCP tools**:
 
 ### 1. `figma_status`
 Checks live bridge connection status, connected Figma tabs/files, in-memory index health, queue length, and latency statistics.
@@ -216,6 +216,19 @@ Audits the current Figma document and generates a complete design system rule sh
 ### 12. `figma_docs`
 Fetches built-in documentation, design rules, layout guidelines, and code examples for `figma_write`.
 - **`section`**: `"rules"` | `"layout"` | `"api"` | `"tokens"` | `"icons"`
+
+### 13. `figma_verify_ui`
+Validates and compares actual rendered HTML/React UI styles and layout against Figma design specifications.
+- Checks dimensions, padding, flex gap, colors, border-radius, and typography.
+- Returns an exact match percentage (`match_percentage`), discrepancy breakdown, and actionable CSS/Tailwind fixes.
+- **`nodeId`** / **`nodeName`**: Target Figma node spec.
+- **`computedStyles`**: Key-value pairs of computed CSS properties from browser/component inspection.
+- **`url`** / **`selector`**: Contextual target URL or CSS selector inspected.
+
+### 14. `figma_match_components`
+Scans your local codebase directories (`src/components`, `components/ui`) to discover existing React/Vue components and matches them directly against Figma design layers, preventing duplicate component creation and ensuring reuse of existing design systems.
+- **`projectDir`**: Base directory of your project (default: current directory `"."`).
+- **`nodeId`**: Optional Figma node ID to check specific match against local components.
 
 ---
 

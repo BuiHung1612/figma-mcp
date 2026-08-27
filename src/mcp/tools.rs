@@ -329,5 +329,63 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 "required": []
             }),
         },
+        ToolDefinition {
+            name: "figma_verify_ui".to_string(),
+            description: "Validate and compare actual rendered HTML/React UI styles and layout against Figma design specifications. Checks dimensions, padding, flex gap, colors, border-radius, and typography, returning an exact match percentage, specific discrepancies, and actionable CSS/Tailwind fixes.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "nodeId": {
+                        "type": "string",
+                        "description": "Figma node ID to compare against (omit to use active selection)."
+                    },
+                    "nodeName": {
+                        "type": "string",
+                        "description": "Figma node name (alternative to nodeId)."
+                    },
+                    "computedStyles": {
+                        "type": "object",
+                        "description": "Computed CSS key-value pairs from the browser (e.g. width, height, padding, gap, borderRadius, fontSize, backgroundColor)."
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Target localhost dev URL to inspect (optional context)."
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Target DOM selector inspected (optional context)."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab."
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "figma_match_components".to_string(),
+            description: "Scan your local codebase directories (e.g. 'src/components', 'components/ui') to discover existing React/Vue components and match them directly against Figma design layers, preventing duplicate component generation.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "projectDir": {
+                        "type": "string",
+                        "description": "Base directory of your project (default: current working directory '.')."
+                    },
+                    "nodeId": {
+                        "type": "string",
+                        "description": "Optional Figma node ID to check specific component match against local files."
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "description": "Target a specific Figma file/tab."
+                    }
+                },
+                "required": []
+            }),
+        },
     ]
 }
+
+
