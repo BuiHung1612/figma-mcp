@@ -70,13 +70,15 @@ handlers.createPage = async (params) => {
 };
 
 handlers.query = async (params) => {
-  var type = params.type, name = params.name, id = params.id;
+  params = params || {};
+  var type = params.type;
+  var name = params.name || params.nodeName || params.query || params.q;
+  var id = params.id || params.nodeId;
   var parentId = params.parentId, limit = params.limit || 500;
   if (id) {
     const n = await findNodeByIdAsync(id);
     return n ? [nodeToInfo(n)] : [];
   }
-  if (!type && !name) throw new Error("query requires at least one of: type, name, id");
   // BUG-03: parentId filter scopes search to a subtree; default cap raised 100 → 500.
   var scope = figma.currentPage;
   if (parentId) {
@@ -85,10 +87,14 @@ handlers.query = async (params) => {
     if (typeof parent.findAll !== "function") return [];
     scope = parent;
   }
+  if (!type && !name) {
+    var allChildren = scope.children || [];
+    return allChildren.slice(0, limit).map(nodeToInfo);
+  }
   const results = scope.findAll(n => {
-    if (type && name) return n.type === type && n.name === name;
+    if (type && name) return n.type === type && (n.name === name || (typeof name === "string" && n.name.toLowerCase().includes(name.toLowerCase())));
     if (type) return n.type === type;
-    return n.name === name;
+    return n.name === name || (typeof name === "string" && n.name.toLowerCase().includes(name.toLowerCase()));
   });
   return results.slice(0, limit).map(nodeToInfo);
 };

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.4] — 2026-08-29
+
+### Added & Fixed — UI Error Log Filtering, Copy Console & Handler Resilience
+- **UI Error Tab & Copy Button**: Added dedicated `Errors` tab in the plugin stream console with live error counter badge and a clipboard button to copy filtered logs. Added click-to-copy on individual log lines.
+- **Handler Alias Fixes**: Fixed `get_variable_tokens` alias mapping to `get_variables`.
+- **Flexible Query & Export**: Added parameter aliases (`nodeId`, `nodeName`, `q`, `query`) and resilient fallback mechanisms for `query`, `export_image`, and `export_svg`.
+
 ## [3.0.3] — 2026-08-29
 
 ### Fixed — Plugin Page Switching & Parameter Resilience

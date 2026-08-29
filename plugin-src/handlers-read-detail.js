@@ -909,8 +909,9 @@ handlers.get_variables = async function() {
   return { collections: collections, resolvedTokens: resolvedTokensMap };
 };
 
-handlers.get_tokens = handlers.get_variable_tokens;
-handlers.tokens = handlers.get_variable_tokens;
+handlers.get_variable_tokens = handlers.get_variables;
+handlers.get_tokens = handlers.get_variables;
+handlers.tokens = handlers.get_variables;
 
 // ─── EXPORT ASSETS (Batch Icon & Image Extractor) ────────────────────────────
 handlers.export_assets = async function(params) {

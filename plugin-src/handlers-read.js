@@ -659,23 +659,26 @@ async function exportNodeSvg(node) {
 
 // export_svg — export node as SVG string
 handlers.export_svg = async function(params) {
-  var id = params ? params.id : null;
-  var nodeName = params ? params.name : null;
+  var id = params ? (params.id || params.nodeId) : null;
+  var nodeName = params ? (params.name || params.nodeName) : null;
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
   if (!node && nodeName) {
     node = findNodeByName(nodeName);
   }
+  if (!node && figma.currentPage.selection.length > 0) {
+    node = figma.currentPage.selection[0];
+  }
   if (!node) node = figma.currentPage;
-  if (!node) throw new Error("Node not found");
+  if (!node) throw new Error("Node not found for export");
   var svg = await exportNodeSvg(node);
   return { svg: svg, nodeId: node.id, width: Math.round(node.width), height: Math.round(node.height) };
 };
 
 // export_image — export node as base64 PNG/JPG (for saving to disk, not for inline display)
 handlers.export_image = async function(params) {
-  var id = params ? params.id : null;
-  var nodeName = params ? params.name : null;
+  var id = params ? (params.id || params.nodeId) : null;
+  var nodeName = params ? (params.name || params.nodeName) : null;
   var format = (params && params.format) ? params.format.toUpperCase() : "PNG";
   var scale = (params && params.scale) ? params.scale : 2;
 
@@ -685,6 +688,16 @@ handlers.export_image = async function(params) {
   if (id) node = await findNodeByIdAsync(id);
   if (!node && nodeName) {
     node = findNodeByName(nodeName);
+  }
+  if (!node && figma.currentPage.selection.length > 0) {
+    node = figma.currentPage.selection[0];
+  }
+  if (!node) {
+    var children = figma.currentPage.children || [];
+    var exportableTypes = ["FRAME", "COMPONENT", "COMPONENT_SET", "SECTION", "INSTANCE", "GROUP"];
+    for (var i = 0; i < children.length; i++) {
+      if (exportableTypes.indexOf(children[i].type) !== -1) { node = children[i]; break; }
+    }
   }
   if (!node) throw new Error("Node not found for export");
 

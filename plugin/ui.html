@@ -457,6 +457,18 @@
     }
     .t-tab:hover { color: var(--text-secondary); background: rgba(255,255,255,0.04); }
     .t-tab.active { color: var(--text-primary); background: var(--surface-card); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+    .t-tab.tab-err.active { color: var(--ghost-rose); }
+    .tab-badge-err {
+      font-size: 7.5px;
+      font-weight: 700;
+      color: var(--ghost-rose);
+      background: rgba(251, 113, 133, 0.18);
+      border-radius: var(--radius-full);
+      padding: 0 4px;
+      margin-left: 2px;
+      line-height: 1.3;
+      display: inline-block;
+    }
 
     .terminal-meta { display: flex; align-items: center; gap: 6px; }
 
@@ -810,9 +822,16 @@
           <button class="t-tab active" onclick="setLogFilter('all', this)">All</button>
           <button class="t-tab" onclick="setLogFilter('writes', this)">Writes</button>
           <button class="t-tab" onclick="setLogFilter('reads', this)">Reads</button>
+          <button class="t-tab tab-err" id="tab-errors" onclick="setLogFilter('errors', this)">Errors <span class="tab-badge-err" id="tab-err-badge" style="display:none">0</span></button>
         </div>
         <div class="terminal-meta">
           <span class="event-badge" id="log-count">0 ev</span>
+          <button class="act-btn icon-only" onclick="copyLogs()" title="Copy console logs (respects active tab)" style="height:18px;width:18px;border-radius:3px;">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
           <button class="act-btn icon-only" onclick="clearLog()" title="Clear stream console" style="height:18px;width:18px;border-radius:3px;">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
@@ -933,15 +952,35 @@
       if (el) el.classList.add("active");
 
       var lines = logEl.querySelectorAll(".log-line");
+      var visibleCount = 0;
       lines.forEach(function(line) {
+        var match = false;
         if (filter === 'all') {
-          line.style.display = "flex";
+          match = true;
         } else if (filter === 'writes') {
-          line.style.display = line.dataset.type === 'write' ? "flex" : "none";
+          match = line.dataset.type === 'write';
         } else if (filter === 'reads') {
-          line.style.display = line.dataset.type === 'read' ? "flex" : "none";
+          match = line.dataset.type === 'read';
+        } else if (filter === 'errors') {
+          match = line.dataset.cls === 'err';
         }
+        line.style.display = match ? "flex" : "none";
+        if (match) visibleCount++;
       });
+
+      if (logEmptyEl) {
+        if (visibleCount === 0 && totalLogEvents > 0) {
+          logEmptyEl.style.display = "flex";
+          var emptyText = logEmptyEl.querySelector(".terminal-empty-text");
+          if (emptyText) emptyText.textContent = filter === 'errors' ? "No errors logged" : "No matching logs";
+        } else if (totalLogEvents === 0) {
+          logEmptyEl.style.display = "flex";
+          var emptyText = logEmptyEl.querySelector(".terminal-empty-text");
+          if (emptyText) emptyText.textContent = "Listening on MCP bridge…";
+        } else {
+          logEmptyEl.style.display = "none";
+        }
+      }
     }
 
     async function fetchServerStats() {
@@ -1224,8 +1263,76 @@
       }, 500);
     }
 
+    var totalErrors = 0;
+
+    function updateErrorBadge() {
+      var badge = document.getElementById("tab-err-badge");
+      if (!badge) return;
+      if (totalErrors > 0) {
+        badge.textContent = totalErrors;
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
+    }
+
+    function copyTextToClipboard(text, successMsg) {
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+          showToast(successMsg || "Copied!", "✓");
+        }).catch(function() {
+          fallbackCopy(text, successMsg);
+        });
+      } else {
+        fallbackCopy(text, successMsg);
+      }
+    }
+
+    function fallbackCopy(text, successMsg) {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        showToast(successMsg || "Copied!", "✓");
+      } catch(e) {
+        showToast("Copy failed", "✗");
+      }
+    }
+
+    function copyLogs() {
+      var lines = logEl.querySelectorAll(".log-line");
+      var visibleTexts = [];
+      lines.forEach(function(line) {
+        if (line.style.display !== "none") {
+          var ts = line.querySelector(".log-ts");
+          var msg = line.querySelector(".log-msg");
+          var text = (ts ? ts.textContent + " " : "") + (msg ? msg.textContent : line.textContent);
+          visibleTexts.push(text.trim());
+        }
+      });
+
+      if (visibleTexts.length === 0) {
+        showToast(activeLogFilter === 'errors' ? "No errors to copy" : "No logs to copy", "ℹ");
+        return;
+      }
+
+      var fullText = visibleTexts.join("\n");
+      var label = activeLogFilter === 'errors' ? "Errors copied (" + visibleTexts.length + ")!" : "Logs copied (" + visibleTexts.length + ")!";
+      copyTextToClipboard(fullText, label);
+    }
+
     function log(msg, cls, opType) {
       totalLogEvents++;
+      if (cls === 'err') {
+        totalErrors++;
+        updateErrorBadge();
+      }
       if (logCountEl) logCountEl.textContent = totalLogEvents + " ev";
 
       if (logEmptyEl) logEmptyEl.style.display = "none";
@@ -1235,6 +1342,9 @@
       var line = document.createElement("div");
       line.className = "log-line";
       if (opType) line.dataset.type = opType;
+      if (cls) line.dataset.cls = cls;
+      line.title = "Click to copy";
+      line.style.cursor = "pointer";
 
       var ts = document.createElement("span");
       ts.className = "log-ts";
@@ -1252,9 +1362,16 @@
       line.appendChild(prompt);
       line.appendChild(content);
 
+      line.addEventListener("click", function() {
+        var text = (ts ? ts.textContent + " " : "") + (content ? content.textContent : line.textContent);
+        copyTextToClipboard(text.trim(), "Copied line!");
+      });
+
       if (activeLogFilter === 'writes' && opType !== 'write') {
         line.style.display = "none";
       } else if (activeLogFilter === 'reads' && opType !== 'read') {
+        line.style.display = "none";
+      } else if (activeLogFilter === 'errors' && cls !== 'err') {
         line.style.display = "none";
       }
 
@@ -1273,6 +1390,8 @@
     function clearLog() {
       logEl.innerHTML = "";
       totalLogEvents = 0;
+      totalErrors = 0;
+      updateErrorBadge();
       if (logCountEl) logCountEl.textContent = "0 ev";
       var empty = document.createElement("div");
       empty.id = "log-empty";
