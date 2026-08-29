@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.3] — 2026-08-29
+
+### Fixed — Plugin Page Switching & Parameter Resilience
+- **Direct String & Index Support (`setPage` / `createPage`)**: Enhanced handlers to gracefully parse direct string names (e.g. `figma.setPage("Design System")`), numeric indices, and object shapes without throwing `Page not found: "undefined"`.
+- **Case-Insensitive & Whitespace Matching**: Added trimming and case-insensitive fallback resolution when searching for page names.
+- **Dynamic Page Mode Readiness**: Automatically invokes `loadAllPagesAsync()` in `setPage` and `createPage` to ensure complete page resolution under Figma dynamic-page mode.
+
 ## [3.0.0] — 2026-08-27
 
 ### Added — Developer Precision Suite & Intelligence Engine
