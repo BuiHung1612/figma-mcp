@@ -1421,7 +1421,26 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 matched_components.insert(comp.name.clone(), comp.import_path.clone());
             }
 
-            // 6. Build Implementation Checklist for AI
+            // 6. Fetch resolved design tokens & color palette
+            let mut resolved_color_tokens = std::collections::HashMap::new();
+            let mut color_palette = Vec::new();
+            if let Ok(token_data) = bridge.send_operation("get_variable_tokens", json!({}), session_id).await {
+                if let Some(res_map) = token_data.get("resolvedTokens").and_then(|v| v.as_object()) {
+                    for (k, v) in res_map {
+                        if let Some(val_str) = v.as_str() {
+                            resolved_color_tokens.insert(k.clone(), val_str.to_string());
+                            if val_str.starts_with('#') {
+                                color_palette.push(json!({
+                                    "token": k,
+                                    "hex": val_str
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 7. Build Implementation Checklist for AI
             let mut checklist = Vec::new();
             checklist.push(format!("Build layout container for '{}' (dimensions & padding)", resolved_name));
             if !exported_icons.is_empty() {
@@ -1429,6 +1448,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             }
             if !all_texts.is_empty() {
                 checklist.push(format!("Verify all {} visible text elements match Figma typography exactly", all_texts.len()));
+            }
+            if !color_palette.is_empty() {
+                checklist.push(format!("Use {} exact resolved design token colors (no guessing)", color_palette.len()));
             }
 
             let result_pack = json!({
@@ -1440,9 +1462,11 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 "allVisibleTexts": all_texts,
                 "totalExportedIcons": exported_icons.len(),
                 "exportedIcons": exported_icons,
+                "resolvedColorTokens": resolved_color_tokens,
+                "colorPalette": color_palette,
                 "discoveredCodebaseComponents": matched_components,
                 "implementationChecklist": checklist,
-                "instructionForAI": "DO NOT guess or invent icons. Use the exact exported SVG components listed in 'exportedIcons'. Ensure every text in 'allVisibleTexts' is accounted for."
+                "instructionForAI": "DO NOT guess or invent icons or colors. Use the exact exported SVG components listed in 'exportedIcons'. Refer to 'resolvedColorTokens' for exact semantic-to-hex mappings. Ensure every text in 'allVisibleTexts' is accounted for."
             });
 
             ToolResult::text(serde_json::to_string_pretty(&result_pack).unwrap_or_default())

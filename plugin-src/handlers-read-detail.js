@@ -45,6 +45,26 @@ handlers.get_node_detail = async function(params) {
         } else if (f.type === "IMAGE") {
           fd.scaleMode = f.scaleMode || "FILL";
         }
+
+        // Link bound variable token if present
+        try {
+          if (node.boundVariables && node.boundVariables.fills) {
+            var fBindings = Array.isArray(node.boundVariables.fills) ? node.boundVariables.fills : [node.boundVariables.fills];
+            if (fBindings[fi] && fBindings[fi].id) {
+              var boundVar = await resolveVariableValueAsync(fBindings[fi].id, node, 0);
+              if (boundVar) {
+                fd.boundToken = {
+                  id: fBindings[fi].id,
+                  name: boundVar.name,
+                  primitive: boundVar.primitiveName,
+                  resolvedHex: boundVar.hex || boundVar.resolvedValue,
+                };
+                if (boundVar.hex) fd.color = boundVar.hex;
+              }
+            }
+          }
+        } catch(e3) {}
+
         detail.fills.push(fd);
       }
     }
@@ -54,14 +74,46 @@ handlers.get_node_detail = async function(params) {
   try {
     if (node.strokes && node.strokes.length) {
       var dStrokes = node.strokes;
+      var strokeBindings = (node.boundVariables && node.boundVariables.strokes) ? (Array.isArray(node.boundVariables.strokes) ? node.boundVariables.strokes : [node.boundVariables.strokes]) : [];
+
       if (dStrokes.length === 1 && dStrokes[0].type === "SOLID") {
         detail.stroke = rgbToHex(dStrokes[0].color);
+        try {
+          if (strokeBindings[0] && strokeBindings[0].id) {
+            var boundStrokeVar = await resolveVariableValueAsync(strokeBindings[0].id, node, 0);
+            if (boundStrokeVar) {
+              detail.strokeBoundToken = {
+                id: strokeBindings[0].id,
+                name: boundStrokeVar.name,
+                primitive: boundStrokeVar.primitiveName,
+                resolvedHex: boundStrokeVar.hex || boundStrokeVar.resolvedValue,
+              };
+              if (boundStrokeVar.hex) detail.stroke = boundStrokeVar.hex;
+            }
+          }
+        } catch(e4) {}
       } else {
-        detail.strokes = dStrokes.map(function(s) {
+        detail.strokes = [];
+        for (var si = 0; si < dStrokes.length; si++) {
+          var s = dStrokes[si];
           var sd = { type: s.type };
           if (s.type === "SOLID") sd.color = rgbToHex(s.color);
-          return sd;
-        });
+          try {
+            if (strokeBindings[si] && strokeBindings[si].id) {
+              var bsv = await resolveVariableValueAsync(strokeBindings[si].id, node, 0);
+              if (bsv) {
+                sd.boundToken = {
+                  id: strokeBindings[si].id,
+                  name: bsv.name,
+                  primitive: bsv.primitiveName,
+                  resolvedHex: bsv.hex || bsv.resolvedValue,
+                };
+                if (bsv.hex) sd.color = bsv.hex;
+              }
+            }
+          } catch(e5) {}
+          detail.strokes.push(sd);
+        }
       }
       detail.strokeWeight = node.strokeWeight;
       detail.strokeAlign = node.strokeAlign;
@@ -149,7 +201,7 @@ handlers.get_node_detail = async function(params) {
     try { detail.textAlign = node.textAlignHorizontal ? node.textAlignHorizontal.toLowerCase() : null; } catch(e) {}
   }
 
-  // P1: Resolve bound variables → name + resolvedType + value (not just IDs)
+  // P1: Resolve bound variables → name + resolvedType + value (deep recursive resolution)
   try {
     if (node.boundVariables) {
       var bv = {};
@@ -165,16 +217,18 @@ handlers.get_node_detail = async function(params) {
           if (!alias || !alias.id) continue;
           var entry = { id: alias.id };
           try {
-            var variable = await figma.variables.getVariableByIdAsync(alias.id);
+            var variable = await getVariableSafeAsync(alias.id);
             if (variable) {
               entry.name = variable.name;
               entry.resolvedType = variable.resolvedType;
-              // Get first mode value as preview
-              var modeIds = Object.keys(variable.valuesByMode);
-              if (modeIds.length > 0) {
-                var val = variable.valuesByMode[modeIds[0]];
-                if (val && typeof val === "object" && "r" in val) entry.value = rgbToHex(val);
-                else entry.value = val;
+              var resolvedToken = await resolveVariableValueAsync(variable, node, 0);
+              if (resolvedToken) {
+                entry.value = resolvedToken.resolvedValue !== undefined ? resolvedToken.resolvedValue : (resolvedToken.hex || resolvedToken.value);
+                if (resolvedToken.type === "ALIAS") {
+                  entry.aliasTarget = resolvedToken.targetName;
+                  entry.primitiveName = resolvedToken.primitiveName;
+                  entry.resolvedValue = resolvedToken.resolvedValue;
+                }
               }
             }
           } catch(e2) {}
@@ -791,22 +845,37 @@ handlers.get_variables = async function() {
       }
     } catch(e) { /* fall back to per-id lookups */ }
 
+    var resolvedTokensMap = {};
+
     for (var ci = 0; ci < localCollections.length; ci++) {
       var col = localCollections[ci];
       var variables = [];
       for (var vi = 0; vi < col.variableIds.length; vi++) {
         var vid = col.variableIds[vi];
-        var v = bulkLoaded ? varsById[vid] : await figma.variables.getVariableByIdAsync(vid);
+        var v = bulkLoaded ? varsById[vid] : await getVariableSafeAsync(vid);
         if (!v) continue;
         var values = {};
         for (var modeId in v.valuesByMode) {
           if (Object.prototype.hasOwnProperty.call(v.valuesByMode, modeId)) {
             var val = v.valuesByMode[modeId];
-            // Convert color values to hex
             if (val && typeof val === "object" && "r" in val && "g" in val && "b" in val) {
-              values[modeId] = rgbToHex(val);
+              var hexVal = rgbToHex(val);
+              values[modeId] = hexVal;
+              resolvedTokensMap[v.name] = hexVal;
+            } else if (val && typeof val === "object" && val.type === "VARIABLE_ALIAS" && val.id) {
+              var resolvedAlias = await resolveVariableValueAsync(val.id, modeId, 1);
+              var finalHexOrVal = resolvedAlias ? (resolvedAlias.resolvedValue || resolvedAlias.hex || resolvedAlias.value) : null;
+              values[modeId] = {
+                type: "VARIABLE_ALIAS",
+                aliasId: val.id,
+                aliasName: resolvedAlias ? resolvedAlias.name : null,
+                primitiveName: resolvedAlias ? resolvedAlias.primitiveName : null,
+                resolvedValue: finalHexOrVal,
+              };
+              if (finalHexOrVal) resolvedTokensMap[v.name] = finalHexOrVal;
             } else {
               values[modeId] = val;
+              if (val !== undefined && val !== null) resolvedTokensMap[v.name] = val;
             }
           }
         }
@@ -831,7 +900,7 @@ handlers.get_variables = async function() {
   } catch(e) {
     return { error: "Variables API not available: " + e.message, collections: [] };
   }
-  return { collections: collections };
+  return { collections: collections, resolvedTokens: resolvedTokensMap };
 };
 
 // ─── EXPORT ASSETS (Batch Icon & Image Extractor) ────────────────────────────

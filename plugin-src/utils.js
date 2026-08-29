@@ -107,6 +107,109 @@ function solidStroke(hex, strokeOpacity) {
   return [stroke];
 }
 
+// ── Variable & Token Deep Resolver ───────────────────────────────────────────
+var variableCache = new Map();
+
+async function getVariableSafeAsync(id) {
+  if (!id) return null;
+  if (variableCache.has(id)) return variableCache.get(id);
+  try {
+    if (figma.variables && typeof figma.variables.getVariableByIdAsync === "function") {
+      var v = await figma.variables.getVariableByIdAsync(id);
+      if (v) variableCache.set(id, v);
+      return v;
+    }
+  } catch(e) {}
+  return null;
+}
+
+// Recursively resolves a variable (and its VARIABLE_ALIAS chains) to concrete primitive value & hex
+async function resolveVariableValueAsync(variableOrId, contextNodeOrModeMap, depth, visited) {
+  if (!variableOrId) return null;
+  depth = depth || 0;
+  visited = visited || {};
+  if (depth > 6) return null;
+
+  var variable = null;
+  if (typeof variableOrId === "string") {
+    if (visited[variableOrId]) return null;
+    visited[variableOrId] = true;
+    variable = await getVariableSafeAsync(variableOrId);
+  } else {
+    variable = variableOrId;
+    if (variable && variable.id) {
+      if (visited[variable.id]) return null;
+      visited[variable.id] = true;
+    }
+  }
+
+  if (!variable || !variable.valuesByMode) return null;
+
+  // Determine active mode
+  var modeId = null;
+  var colId = variable.variableCollectionId;
+  if (contextNodeOrModeMap) {
+    if (typeof contextNodeOrModeMap === "object" && contextNodeOrModeMap.resolvedVariableModes) {
+      modeId = contextNodeOrModeMap.resolvedVariableModes[colId];
+    } else if (typeof contextNodeOrModeMap === "object" && contextNodeOrModeMap[colId]) {
+      modeId = contextNodeOrModeMap[colId];
+    } else if (typeof contextNodeOrModeMap === "string") {
+      modeId = contextNodeOrModeMap;
+    }
+  }
+  var availableModes = Object.keys(variable.valuesByMode);
+  if (!modeId || variable.valuesByMode[modeId] === undefined) {
+    modeId = availableModes.length > 0 ? availableModes[0] : null;
+  }
+  if (!modeId) return null;
+
+  var rawVal = variable.valuesByMode[modeId];
+  if (rawVal === undefined || rawVal === null) return null;
+
+  // If alias, follow recursively down to primitive token
+  if (typeof rawVal === "object" && rawVal.type === "VARIABLE_ALIAS" && rawVal.id) {
+    var targetResult = await resolveVariableValueAsync(rawVal.id, contextNodeOrModeMap, depth + 1, visited);
+    return {
+      type: "ALIAS",
+      name: variable.name,
+      variableId: variable.id,
+      resolvedType: variable.resolvedType,
+      targetId: rawVal.id,
+      targetName: targetResult ? (targetResult.primitiveName || targetResult.name) : null,
+      primitiveName: targetResult ? (targetResult.primitiveName || targetResult.name) : variable.name,
+      resolvedValue: targetResult ? targetResult.resolvedValue : null,
+      hex: targetResult ? targetResult.hex : null,
+      raw: rawVal,
+    };
+  }
+
+  // If RGBA color
+  if (typeof rawVal === "object" && "r" in rawVal && "g" in rawVal && "b" in rawVal) {
+    var hex = rgbToHex(rawVal);
+    var alpha = rawVal.a !== undefined ? Math.round(rawVal.a * 100) / 100 : 1;
+    return {
+      type: "COLOR",
+      name: variable.name,
+      variableId: variable.id,
+      resolvedType: "COLOR",
+      resolvedValue: hex,
+      hex: hex,
+      alpha: alpha,
+      primitiveName: variable.name,
+    };
+  }
+
+  // Primitive value
+  return {
+    type: variable.resolvedType || typeof rawVal,
+    name: variable.name,
+    variableId: variable.id,
+    resolvedType: variable.resolvedType || typeof rawVal,
+    resolvedValue: rawVal,
+    primitiveName: variable.name,
+  };
+}
+
 // Paint/effect helpers (buildFillArray, buildGradientPaint, buildEffect,
 // applyEffects, applyCornerRadii) live in paint-and-effects.js.
 

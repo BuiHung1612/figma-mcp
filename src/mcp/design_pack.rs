@@ -40,6 +40,13 @@ pub struct LayoutSectionSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColorTokenSpec {
+    pub name: String,
+    pub hex: String,
+    pub primitive: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultimodalDesignPack {
     pub node_id: String,
     pub node_name: String,
@@ -47,6 +54,8 @@ pub struct MultimodalDesignPack {
     pub all_visible_texts: Vec<TextElement>,
     pub extracted_icons: Vec<ExportedIconSpec>,
     pub layout_sections: Vec<LayoutSectionSpec>,
+    pub color_palette: Vec<ColorTokenSpec>,
+    pub resolved_tokens: HashMap<String, String>,
     pub matched_codebase_components: HashMap<String, String>,
     pub implementation_checklist: Vec<String>,
 }
