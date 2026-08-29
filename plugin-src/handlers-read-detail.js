@@ -595,6 +595,12 @@ handlers.get_design_context = async function(params) {
   };
 };
 
+// Aliases for developer convenience & MCP tool naming compatibility
+handlers.inspect_node = handlers.get_design_context;
+handlers.inspect = handlers.get_design_context;
+handlers.get_node_info = handlers.get_node_detail;
+handlers.node_detail = handlers.get_node_detail;
+
 // get_component_map — list every component instance in a frame with variant properties
 // Use this to map Figma components to their code equivalents
 handlers.get_component_map = async function(params) {
@@ -902,6 +908,9 @@ handlers.get_variables = async function() {
   }
   return { collections: collections, resolvedTokens: resolvedTokensMap };
 };
+
+handlers.get_tokens = handlers.get_variable_tokens;
+handlers.tokens = handlers.get_variable_tokens;
 
 // ─── EXPORT ASSETS (Batch Icon & Image Extractor) ────────────────────────────
 handlers.export_assets = async function(params) {

@@ -356,9 +356,17 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
         }
 
         "figma_read" => {
-            let operation = match args.get("operation").and_then(|v| v.as_str()) {
+            let raw_operation = match args.get("operation").and_then(|v| v.as_str()) {
                 Some(op) => op,
                 None => return ToolResult::error("'operation' is required"),
+            };
+
+            let operation = match raw_operation {
+                "inspect_node" | "inspect" => "get_design_context",
+                "get_node_info" | "node_detail" => "get_node_detail",
+                "get_tokens" | "tokens" => "get_variable_tokens",
+                "export_icons" => "export_assets",
+                other => other,
             };
 
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
