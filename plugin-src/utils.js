@@ -341,53 +341,129 @@ function cacheNode(node) {
   return node;
 }
 
+function normalizeNodeId(id) {
+  if (!id || typeof id !== "string") return id;
+  var clean = id.trim().replace(/^['"]|['"]$/g, "");
+  try { clean = decodeURIComponent(clean); } catch(e) {}
+  // Convert URL hyphenated IDs (e.g. 2715-40862) to colon notation (2715:40862)
+  clean = clean.replace(/(\d+)-(\d+)/g, "$1:$2");
+  return clean;
+}
+
+var allPagesLoaded = false;
+async function ensureAllPagesLoaded() {
+  if (allPagesLoaded) return;
+  if (typeof figma.loadAllPagesAsync === "function") {
+    try {
+      await figma.loadAllPagesAsync();
+      allPagesLoaded = true;
+    } catch(e) {}
+  }
+}
+
+function getNodeNotFoundContext(id, name) {
+  var currentPageName = figma.currentPage ? figma.currentPage.name : "unknown";
+  var availablePages = figma.root && figma.root.children ? figma.root.children.map(function(p) { return p.name; }).join(", ") : "none";
+  var selInfo = figma.currentPage && figma.currentPage.selection && figma.currentPage.selection.length > 0
+    ? figma.currentPage.selection.map(function(s) { return s.id + " (" + s.name + ")"; }).join(", ")
+    : "none";
+  var target = id || name || "no id/name given";
+  return "Node not found: " + target + ". [Active Page: \"" + currentPageName + "\", Available Pages: [" + availablePages + "], Current Selection: [" + selInfo + "]]. Use figma_read get_page_nodes to list nodes or set_page to switch pages.";
+}
+
 function findNodeById(id) {
   if (!id) return null;
-  if (figma.currentPage.id === id) return figma.currentPage;
-  if (figma.root.id === id) return figma.root;
-  if (nodeCache.has(id)) {
-    var cached = nodeCache.get(id);
+  var cleanId = normalizeNodeId(id);
+  if (figma.currentPage.id === cleanId || figma.currentPage.id === id) return figma.currentPage;
+  if (figma.root.id === cleanId || figma.root.id === id) return figma.root;
+  if (nodeCache.has(cleanId)) {
+    var cached = nodeCache.get(cleanId);
     if (!cached.removed) return cached;
+    nodeCache.delete(cleanId);
+  }
+  if (nodeCache.has(id)) {
+    var cached2 = nodeCache.get(id);
+    if (!cached2.removed) return cached2;
     nodeCache.delete(id);
   }
   try {
     if (typeof figma.getNodeById === "function") {
-      var node = figma.getNodeById(id);
+      var node = figma.getNodeById(cleanId) || (cleanId !== id ? figma.getNodeById(id) : null);
       if (node && !node.removed) return cacheNode(node);
     }
   } catch(e) {}
   // Check selection
   for (var i = 0; i < figma.currentPage.selection.length; i++) {
-    if (figma.currentPage.selection[i].id === id) return cacheNode(figma.currentPage.selection[i]);
+    var sel = figma.currentPage.selection[i];
+    if (sel.id === cleanId || sel.id === id) return cacheNode(sel);
   }
   return null;
 }
 
 async function findNodeByIdAsync(id) {
   if (!id) return null;
-  if (figma.currentPage.id === id) return figma.currentPage;
-  if (figma.root.id === id) return figma.root;
-  if (nodeCache.has(id)) {
-    var cached = nodeCache.get(id);
+  var cleanId = normalizeNodeId(id);
+  if (figma.currentPage.id === cleanId || figma.currentPage.id === id) return figma.currentPage;
+  if (figma.root.id === cleanId || figma.root.id === id) return figma.root;
+  if (nodeCache.has(cleanId)) {
+    var cached = nodeCache.get(cleanId);
     if (!cached.removed) return cached;
+    nodeCache.delete(cleanId);
+  }
+  if (nodeCache.has(id)) {
+    var cached2 = nodeCache.get(id);
+    if (!cached2.removed) return cached2;
     nodeCache.delete(id);
   }
-  // Try synchronous lookup first (0ms)
+
+  // 1. Try synchronous lookup first (0ms)
   try {
     if (typeof figma.getNodeById === "function") {
-      var syncNode = figma.getNodeById(id);
+      var syncNode = figma.getNodeById(cleanId) || (cleanId !== id ? figma.getNodeById(id) : null);
       if (syncNode && !syncNode.removed) return cacheNode(syncNode);
     }
   } catch(e) {}
-  // Fallback to async
+
+  // 2. Try async lookup
   try {
-    var node = await figma.getNodeByIdAsync(id);
+    var node = await figma.getNodeByIdAsync(cleanId);
+    if (!node && cleanId !== id) node = await figma.getNodeByIdAsync(id);
     if (node && !node.removed) return cacheNode(node);
   } catch(e) {}
+
+  // 3. Check selection
+  for (var i = 0; i < figma.currentPage.selection.length; i++) {
+    var s = figma.currentPage.selection[i];
+    if (s.id === cleanId || s.id === id) return cacheNode(s);
+  }
+
+  // 4. Fallback: If not found and pages are lazily loaded, load all pages and retry
+  if (!allPagesLoaded && typeof figma.loadAllPagesAsync === "function") {
+    await ensureAllPagesLoaded();
+    try {
+      var retryNode = await figma.getNodeByIdAsync(cleanId);
+      if (!retryNode && cleanId !== id) retryNode = await figma.getNodeByIdAsync(id);
+      if (retryNode && !retryNode.removed) return cacheNode(retryNode);
+    } catch(e) {}
+  }
+
+  // 5. Fallback for instance sub-layer IDs (e.g. "I2715:40862;123:456")
+  if (cleanId.indexOf(";") !== -1) {
+    var parts = cleanId.split(";");
+    for (var p = 0; p < parts.length; p++) {
+      var partId = parts[p].replace(/^I/, "");
+      try {
+        var subNode = await figma.getNodeByIdAsync(partId);
+        if (subNode && !subNode.removed) return cacheNode(subNode);
+      } catch(e) {}
+    }
+  }
+
   return null;
 }
 
 function findNodeByName(name) {
+  if (!name) return null;
   if (figma.currentPage.name === name) return figma.currentPage;
   // Search in selection first, then shallow children, then findOne as fallback
   for (var i = 0; i < figma.currentPage.selection.length; i++) {
@@ -396,19 +472,33 @@ function findNodeByName(name) {
   for (var j = 0; j < figma.currentPage.children.length; j++) {
     if (figma.currentPage.children[j].name === name) return cacheNode(figma.currentPage.children[j]);
   }
-  var found = figma.currentPage.findOne(n => n.name === name);
-  if (found) cacheNode(found);
-  return found;
+  var found = figma.currentPage.findOne(function(n) { return n.name === name; });
+  if (found) return cacheNode(found);
+
+  // Cross-page fallback
+  if (figma.root && figma.root.children) {
+    for (var p = 0; p < figma.root.children.length; p++) {
+      var page = figma.root.children[p];
+      if (page === figma.currentPage) continue;
+      if (page.name === name) return page;
+      var pageFound = page.findOne ? page.findOne(function(n) { return n.name === name; }) : null;
+      if (pageFound) return cacheNode(pageFound);
+    }
+  }
+
+  return null;
 }
 
 async function resolveNode(params) {
-  var id   = params.id || params.nodeId || params.targetId;
-  var name = params.name || params.nodeName;
+  if (!params) return null;
+  var id   = params.id || params.nodeId || params.node_id || params.targetId || params.target_id;
+  var name = params.name || params.nodeName || params.node_name;
   var node = null;
   if (id)   node = await findNodeByIdAsync(id);
   if (!node && name) node = findNodeByName(name);
   return node;
 }
+
 
 function nodeToInfo(node) {
   if (!node) return null;
@@ -430,4 +520,69 @@ function yieldToUI(delayMs) {
   return new Promise(function(resolve) {
     setTimeout(resolve, delayMs !== undefined ? delayMs : 0);
   });
+}
+
+// Flexible operation handler resolver with camelCase/snake_case and alias support
+function resolveOperationHandler(operation) {
+  if (!operation || typeof operation !== "string") return null;
+  if (typeof handlers !== "object" || !handlers) return null;
+  if (handlers[operation]) return handlers[operation];
+
+  // 1. Convert snake_case -> camelCase (e.g. create_variable -> createVariable, list_pages -> listPages)
+  var camel = operation.replace(/_([a-z0-9])/gi, function(_, c) { return c.toUpperCase(); });
+  if (handlers[camel]) return handlers[camel];
+
+  // 2. Convert camelCase -> snake_case (e.g. getPageNodes -> get_page_nodes, getNodeDetail -> get_node_detail)
+  var snake = operation.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  if (handlers[snake]) return handlers[snake];
+
+  // 3. Common semantic synonyms & aliases
+  var normalized = operation.toLowerCase().replace(/[-_\s]+/g, "");
+  var aliasMap = {
+    "getnode": handlers.get_node_detail,
+    "getnodedetail": handlers.get_node_detail,
+    "getnodeinfo": handlers.get_node_detail,
+    "nodedetail": handlers.get_node_detail,
+    "nodeinfo": handlers.get_node_detail,
+    "inspectnode": handlers.get_design_context,
+    "inspect": handlers.get_design_context,
+    "getdesigncontext": handlers.get_design_context,
+    "designcontext": handlers.get_design_context,
+    "getdesign": handlers.get_design,
+    "getselection": handlers.get_selection,
+    "selection": handlers.get_selection,
+    "getpagenodes": handlers.get_page_nodes,
+    "pagenodes": handlers.get_page_nodes,
+    "getstyles": handlers.get_styles,
+    "styles": handlers.get_styles,
+    "getvariables": handlers.get_variables,
+    "gettokens": handlers.get_variables,
+    "tokens": handlers.get_variables,
+    "variables": handlers.get_variables,
+    "getvariabletokens": handlers.get_variables,
+    "getlocalcomponents": handlers.get_local_components,
+    "localcomponents": handlers.get_local_components,
+    "listcomponents": handlers.listComponents,
+    "components": handlers.get_local_components,
+    "getcomponentmap": handlers.get_component_map,
+    "getunmappedcomponents": handlers.get_unmapped_components,
+    "scandesign": handlers.scan_design,
+    "searchnodes": handlers.search_nodes,
+    "getviewport": handlers.get_viewport,
+    "setviewport": handlers.set_viewport,
+    "exportsvg": handlers.export_svg,
+    "exportimage": handlers.export_image,
+    "exportassets": handlers.export_assets,
+    "listpages": handlers.listPages,
+    "setpage": handlers.setPage,
+    "createpage": handlers.createPage,
+    "loadallpages": handlers.loadAllPagesAsync,
+    "loadallpagesasync": handlers.loadAllPagesAsync,
+    "update": handlers.modify,
+    "remove": handlers["delete"]
+  };
+
+  if (aliasMap[normalized]) return aliasMap[normalized];
+
+  return null;
 }

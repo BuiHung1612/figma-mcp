@@ -997,3 +997,18 @@ handlers.swapComponent = async function(params) {
     newMainComponentName: target.name,
   };
 };
+
+// ─── ALIASES FOR WRITE HANDLERS ──────────────────────────────────────────────
+handlers.list_pages = handlers.listPages;
+handlers.set_page = handlers.setPage;
+handlers.create_page = handlers.createPage;
+handlers.list_components = handlers.listComponents;
+handlers.load_all_pages_async = handlers.loadAllPagesAsync;
+handlers.loadAllPages = handlers.loadAllPagesAsync;
+handlers.load_all_pages = handlers.loadAllPagesAsync;
+handlers.set_component_properties = handlers.setComponentProperties;
+handlers.get_component_properties = handlers.getComponentProperties;
+handlers.swap_component = handlers.swapComponent;
+handlers.update = handlers.modify;
+handlers.remove = handlers["delete"];
+

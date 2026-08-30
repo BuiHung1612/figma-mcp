@@ -6,10 +6,16 @@
 // `absolute: true` forces absoluteBoundingBox on every node.
 var DEFAULT_NODE_BUDGET = 3000;
 
-function makeWalkState(params) {
+async function makeWalkStateAsync(params) {
   var p = params || {};
   var budget = (p.maxNodes !== undefined && Number(p.maxNodes) > 0) ? Number(p.maxNodes) : DEFAULT_NODE_BUDGET;
-  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true };
+  var varMap = null;
+  try {
+    if (typeof buildVariableResolverMapAsync === "function") {
+      varMap = await buildVariableResolverMapAsync();
+    }
+  } catch(e) {}
+  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true, variableMap: varMap };
 }
 
 function walkStateMeta(walkState) {
@@ -42,7 +48,7 @@ handlers.get_selection = async function(params) {
   var filterInvisible = !(params && params.includeHidden === true);
   var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
   var instanceCollector = (detailLevel !== "minimal") ? [] : null;
-  var walkState = makeWalkState(params);
+  var walkState = await makeWalkStateAsync(params);
   var trees = nodes.map(function(n) { return extractDesignTree(n, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); });
   // mainComponent is async-only under documentAccess: dynamic-page — resolve
   // every collected INSTANCE after the (synchronous) tree walk.
@@ -83,7 +89,7 @@ handlers.get_design = async function(params) {
   try {
     var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
     var instanceCollector = (detailLevel !== "minimal") ? [] : null;
-    var walkState = makeWalkState(p);
+    var walkState = await makeWalkStateAsync(p);
     var tree = extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState);
     var instanceInfo = await resolveInstanceComponents(instanceCollector);
 
@@ -829,3 +835,18 @@ handlers.index_scan = async function() {
     components: components,
   };
 };
+
+// ─── ALIASES FOR READ HANDLERS ────────────────────────────────────────────────
+handlers.getSelection = handlers.get_selection;
+handlers.selection = handlers.get_selection;
+handlers.getDesign = handlers.get_design;
+handlers.scanDesign = handlers.scan_design;
+handlers.searchNodes = handlers.search_nodes;
+handlers.getPageNodes = handlers.get_page_nodes;
+handlers.pageNodes = handlers.get_page_nodes;
+handlers.capture = handlers.screenshot;
+handlers.takeScreenshot = handlers.screenshot;
+handlers.exportSvg = handlers.export_svg;
+handlers.exportImage = handlers.export_image;
+handlers.indexScan = handlers.index_scan;
+

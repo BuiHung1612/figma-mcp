@@ -323,7 +323,9 @@ figma.ui.onmessage = async (request) => {
   }
 
   const { id, operation, params } = request;
-  const handler = handlers[operation];
+  const handler = typeof resolveOperationHandler === "function"
+    ? resolveOperationHandler(operation)
+    : handlers[operation];
 
   if (!handler) {
     figma.ui.postMessage({

@@ -125,3 +125,8 @@ handlers.get_library_tokens = async function() {
 
   return { libraryId: lib.id, colors: colors, textStyles: textStyles };
 };
+
+// ─── ALIASES FOR LIBRARY HANDLERS ─────────────────────────────────────────────
+handlers.ensureLibrary = handlers.ensure_library;
+handlers.getLibraryTokens = handlers.get_library_tokens;
+

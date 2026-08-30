@@ -1118,3 +1118,26 @@ handlers.removeComponentProperty = async function(params) {
     removedProperty: resolved,
   };
 };
+
+// ─── ALIASES FOR TOKEN & COMPONENT PROPERTY HANDLERS ─────────────────────────
+handlers.create_variable_collection = handlers.createVariableCollection;
+handlers.create_variable = handlers.createVariable;
+handlers.add_variable_mode = handlers.addVariableMode;
+handlers.rename_variable_mode = handlers.renameVariableMode;
+handlers.remove_variable_mode = handlers.removeVariableMode;
+handlers.set_variable_value = handlers.setVariableValue;
+handlers.set_frame_variable_mode = handlers.setFrameVariableMode;
+handlers.clear_frame_variable_mode = handlers.clearFrameVariableMode;
+handlers.apply_variable = handlers.applyVariable;
+handlers.create_paint_style = handlers.createPaintStyle;
+handlers.create_text_style = handlers.createTextStyle;
+handlers.create_component = handlers.createComponent;
+handlers.modify_variable = handlers.modifyVariable;
+handlers.setup_design_tokens = handlers.setupDesignTokens;
+handlers.apply_text_style = handlers.applyTextStyle;
+handlers.add_component_property = handlers.addComponentProperty;
+handlers.bind_component_property_to_text = handlers.bindComponentPropertyToText;
+handlers.bind_component_property = handlers.bindComponentProperty;
+handlers.unbind_component_property = handlers.unbindComponentProperty;
+handlers.remove_component_property = handlers.removeComponentProperty;
+

@@ -273,8 +273,17 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
             }
 
-            let mut node_id = args.get("nodeId").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let node_name = args.get("nodeName").and_then(|v| v.as_str());
+            let mut node_id = args.get("nodeId")
+                .or_else(|| args.get("id"))
+                .or_else(|| args.get("node_id"))
+                .or_else(|| args.get("targetId"))
+                .or_else(|| args.get("target_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let node_name = args.get("nodeName")
+                .or_else(|| args.get("name"))
+                .or_else(|| args.get("node_name"))
+                .and_then(|v| v.as_str());
 
             // If neither nodeId nor nodeName is passed, fallback to currently active selection ID
             if node_id.is_none() && node_name.is_none() {
@@ -318,8 +327,8 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             }
 
             let mut op_params = json!({});
-            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
-            if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
+            if let Some(ref nid) = node_id { op_params["id"] = json!(nid); }
+            if let Some(nname) = node_name { op_params["name"] = json!(nname); }
 
             match bridge.send_operation("get_design_context", op_params, session_id).await {
                 Ok(data) => ToolResult::text(serde_json::to_string(&data).unwrap_or_default()),
@@ -334,8 +343,17 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             }
             let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("png").to_lowercase();
             let mut op_params = json!({});
-            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
-            if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
+            let node_id = args.get("nodeId")
+                .or_else(|| args.get("id"))
+                .or_else(|| args.get("node_id"))
+                .or_else(|| args.get("targetId"))
+                .or_else(|| args.get("target_id"));
+            let node_name = args.get("nodeName")
+                .or_else(|| args.get("name"))
+                .or_else(|| args.get("node_name"));
+
+            if let Some(nid) = node_id { op_params["id"] = nid.clone(); }
+            if let Some(nname) = node_name { op_params["name"] = nname.clone(); }
             if let Some(scale) = args.get("scale") { op_params["scale"] = scale.clone(); }
             op_params["format"] = json!(format);
 
@@ -356,7 +374,11 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
         }
 
         "figma_read" => {
-            let raw_operation = match args.get("operation").and_then(|v| v.as_str()) {
+            let raw_operation = match args.get("operation")
+                .or_else(|| args.get("op"))
+                .or_else(|| args.get("action"))
+                .or_else(|| args.get("command"))
+                .and_then(|v| v.as_str()) {
                 Some(op) => op,
                 None => return ToolResult::error("'operation' is required"),
             };
@@ -382,9 +404,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             if let Some(obj) = args.as_object() {
                 for (k, v) in obj {
                     match k.as_str() {
-                        "operation" | "outputPath" | "sessionId" => {}
-                        "nodeId" => { op_params["id"] = v.clone(); }
-                        "nodeName" => { op_params["name"] = v.clone(); }
+                        "operation" | "op" | "action" | "command" | "outputPath" | "sessionId" => {}
+                        "nodeId" | "node_id" | "targetId" | "target_id" => { op_params["id"] = v.clone(); }
+                        "nodeName" | "node_name" => { op_params["name"] = v.clone(); }
                         _ => { op_params[k] = v.clone(); }
                     }
                 }
@@ -545,7 +567,10 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
             }
 
-            let code = match args.get("code").and_then(|v| v.as_str()) {
+            let code = match args.get("code")
+                .or_else(|| args.get("script"))
+                .or_else(|| args.get("js"))
+                .and_then(|v| v.as_str()) {
                 Some(c) => c,
                 None => return ToolResult::error("'code' is required"),
             };
@@ -1056,8 +1081,16 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             let output_path = args.get("outputPath").and_then(|v| v.as_str());
 
             let mut op_params = json!({});
-            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
-            if let Some(nname) = args.get("nodeName") { op_params["name"] = nname.clone(); }
+            let node_id = args.get("nodeId")
+                .or_else(|| args.get("id"))
+                .or_else(|| args.get("node_id"))
+                .or_else(|| args.get("targetId"))
+                .or_else(|| args.get("target_id"));
+            let node_name = args.get("nodeName")
+                .or_else(|| args.get("name"))
+                .or_else(|| args.get("node_name"));
+            if let Some(nid) = node_id { op_params["id"] = nid.clone(); }
+            if let Some(nname) = node_name { op_params["name"] = nname.clone(); }
 
             match bridge.send_operation("get_design_context", op_params, session_id).await {
                 Ok(context) => {
@@ -1107,7 +1140,12 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             let create_barrel = args.get("createBarrel").and_then(|v| v.as_bool()).unwrap_or(true);
 
             let mut op_params = json!({});
-            if let Some(nid) = args.get("nodeId") { op_params["id"] = nid.clone(); }
+            let node_id = args.get("nodeId")
+                .or_else(|| args.get("id"))
+                .or_else(|| args.get("node_id"))
+                .or_else(|| args.get("targetId"))
+                .or_else(|| args.get("target_id"));
+            if let Some(nid) = node_id { op_params["id"] = nid.clone(); }
 
             match bridge.send_operation("export_assets", op_params, session_id).await {
                 Ok(data) => {

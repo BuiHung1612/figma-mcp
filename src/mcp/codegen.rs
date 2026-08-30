@@ -370,6 +370,8 @@ struct ShadcnImports {
     input: bool,
     avatar: bool,
     switch: bool,
+    checkbox: bool,
+    separator: bool,
 }
 
 fn generate_shadcn_react(context: &Value, component_name: &str) -> String {
@@ -396,6 +398,12 @@ fn generate_shadcn_react(context: &Value, component_name: &str) -> String {
     if imports.switch {
         import_lines.push("import { Switch } from '@/components/ui/switch';".to_string());
     }
+    if imports.checkbox {
+        import_lines.push("import { Checkbox } from '@/components/ui/checkbox';".to_string());
+    }
+    if imports.separator {
+        import_lines.push("import { Separator } from '@/components/ui/separator';".to_string());
+    }
 
     format!(
         "{imports}\n\ninterface {name}Props {{\n  className?: string;\n}}\n\nexport const {name}: React.FC<{name}Props> = ({{\n  className = '',\n}}) => {{\n  return (\n{jsx}\n  );\n}};\n\nexport default {name};\n",
@@ -405,28 +413,75 @@ fn generate_shadcn_react(context: &Value, component_name: &str) -> String {
     )
 }
 
+fn extract_variant_string(node: &Value) -> Option<String> {
+    if let Some(v) = node.get("variant") {
+        if let Some(s) = v.as_str() {
+            return Some(s.to_lowercase());
+        }
+        if let Some(map) = v.as_object() {
+            for (_, val) in map {
+                if let Some(s) = val.as_str() {
+                    let s_low = s.to_lowercase();
+                    if s_low.contains("destructive") || s_low.contains("secondary") || s_low.contains("outline") || s_low.contains("ghost") || s_low.contains("link") || s_low.contains("primary") {
+                        return Some(s_low);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(lbl) = node.get("variantLabel").and_then(|v| v.as_str()) {
+        return Some(lbl.to_lowercase());
+    }
+    if let Some(tok) = node.get("fillToken").and_then(|v| v.as_str()) {
+        return Some(tok.to_lowercase());
+    }
+    None
+}
+
+fn extract_prop_string(node: &Value, prop_name: &str) -> Option<String> {
+    if let Some(props) = node.get("props").and_then(|p| p.as_object()) {
+        for (k, v) in props {
+            if k.to_lowercase() == prop_name.to_lowercase() {
+                if let Some(s) = v.as_str() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn render_shadcn_node(node: &Value, out: &mut String, indent_level: usize, imports: &mut ShadcnImports) {
     let indent = "  ".repeat(indent_level);
     let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("FRAME");
     let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-    let text = node.get("characters").and_then(|v| v.as_str());
+    let text = node.get("characters").and_then(|v| v.as_str()).or_else(|| node.get("content").and_then(|v| v.as_str()));
+    let role = node.get("role").and_then(|v| v.as_str()).unwrap_or("");
 
     // 1. Detect Button
-    if name.contains("button") || name.contains("btn") {
+    if role == "button" || name.contains("button") || name.contains("btn") {
         imports.button = true;
         let mut variant = "default";
+        let variant_hint = extract_variant_string(node).unwrap_or_default();
         let fill = node.get("fill").and_then(|v| v.as_str()).unwrap_or("");
-        if fill.contains("red") || fill.contains("#ef4444") || fill.contains("#dc2626") {
+
+        if variant_hint.contains("destructive") || variant_hint.contains("danger") || fill.contains("red") || fill.contains("#ef4444") || fill.contains("#dc2626") {
             variant = "destructive";
-        } else if node.get("stroke").is_some() {
+        } else if variant_hint.contains("outline") || node.get("stroke").is_some() {
             variant = "outline";
-        } else if fill.contains("secondary") || fill.contains("#f1f5f9") {
+        } else if variant_hint.contains("secondary") || fill.contains("secondary") || fill.contains("#f1f5f9") {
             variant = "secondary";
-        } else if fill.is_empty() || fill == "#ffffff" || fill == "transparent" {
+        } else if variant_hint.contains("ghost") || fill.is_empty() || fill == "#ffffff" || fill == "transparent" {
             variant = "ghost";
+        } else if variant_hint.contains("link") {
+            variant = "link";
         }
 
-        let label = find_child_text(node).unwrap_or_else(|| "Button".to_string());
+        let label = extract_prop_string(node, "label")
+            .or_else(|| extract_prop_string(node, "text"))
+            .or_else(|| find_child_text(node))
+            .unwrap_or_else(|| "Button".to_string());
+
         if variant == "default" {
             out.push_str(&format!("{}<Button>{}</Button>\n", indent, label));
         } else {
@@ -436,30 +491,69 @@ fn render_shadcn_node(node: &Value, out: &mut String, indent_level: usize, impor
     }
 
     // 2. Detect Badge
-    if name.contains("badge") || name.contains("tag") || name.contains("pill") {
+    if role == "badge" || name.contains("badge") || name.contains("tag") || name.contains("pill") {
         imports.badge = true;
-        let label = find_child_text(node).unwrap_or_else(|| "Badge".to_string());
-        out.push_str(&format!("{}<Badge>{}</Badge>\n", indent, label));
+        let label = extract_prop_string(node, "label")
+            .or_else(|| extract_prop_string(node, "text"))
+            .or_else(|| find_child_text(node))
+            .unwrap_or_else(|| "Badge".to_string());
+        let variant_hint = extract_variant_string(node).unwrap_or_default();
+        if variant_hint.contains("secondary") {
+            out.push_str(&format!("{}<Badge variant=\"secondary\">{}</Badge>\n", indent, label));
+        } else if variant_hint.contains("destructive") || variant_hint.contains("danger") {
+            out.push_str(&format!("{}<Badge variant=\"destructive\">{}</Badge>\n", indent, label));
+        } else if variant_hint.contains("outline") {
+            out.push_str(&format!("{}<Badge variant=\"outline\">{}</Badge>\n", indent, label));
+        } else {
+            out.push_str(&format!("{}<Badge>{}</Badge>\n", indent, label));
+        }
         return;
     }
 
     // 3. Detect Avatar
-    if name.contains("avatar") || name.contains("userpic") || name.contains("profile-pic") {
+    if role == "avatar" || name.contains("avatar") || name.contains("userpic") || name.contains("profile-pic") {
         imports.avatar = true;
-        out.push_str(&format!("{}<Avatar>\n{}  <AvatarImage src=\"https://github.com/shadcn.png\" alt=\"User\" />\n{}  <AvatarFallback>CN</AvatarFallback>\n{}</Avatar>\n", indent, indent, indent, indent));
+        let fallback = extract_prop_string(node, "initials")
+            .or_else(|| find_child_text(node))
+            .unwrap_or_else(|| "CN".to_string());
+        out.push_str(&format!("{}<Avatar>\n{}  <AvatarImage src=\"https://github.com/shadcn.png\" alt=\"User\" />\n{}  <AvatarFallback>{}</AvatarFallback>\n{}</Avatar>\n", indent, indent, indent, fallback, indent));
         return;
     }
 
-    // 4. Detect Input
-    if name.contains("input") || name.contains("textfield") || name.contains("searchbar") {
+    // 4. Detect Switch
+    if role == "switch" || name.contains("switch") || name.contains("toggle") {
+        imports.switch = true;
+        out.push_str(&format!("{}<Switch />\n", indent));
+        return;
+    }
+
+    // 5. Detect Checkbox
+    if role == "checkbox" || name.contains("checkbox") {
+        imports.checkbox = true;
+        out.push_str(&format!("{}<Checkbox />\n", indent));
+        return;
+    }
+
+    // 6. Detect Divider / Separator
+    if role == "divider" || name.contains("divider") || name.contains("separator") {
+        imports.separator = true;
+        out.push_str(&format!("{}<Separator />\n", indent));
+        return;
+    }
+
+    // 7. Detect Input
+    if role == "input" || name.contains("input") || name.contains("textfield") || name.contains("searchbar") {
         imports.input = true;
-        let placeholder = find_child_text(node).unwrap_or_else(|| "Type here...".to_string());
+        let placeholder = extract_prop_string(node, "placeholder")
+            .or_else(|| extract_prop_string(node, "label"))
+            .or_else(|| find_child_text(node))
+            .unwrap_or_else(|| "Type here...".to_string());
         out.push_str(&format!("{}<Input placeholder=\"{}\" />\n", indent, placeholder));
         return;
     }
 
-    // 5. Detect Card
-    if name.contains("card") && node_type == "FRAME" {
+    // 8. Detect Card
+    if (role == "card" || name.contains("card")) && (node_type == "FRAME" || node_type == "INSTANCE") {
         imports.card = true;
         let classes = node_to_tailwind_classes(node);
         let class_attr = if classes.is_empty() { String::new() } else { format!(" className=\"{}\"", classes.join(" ")) };

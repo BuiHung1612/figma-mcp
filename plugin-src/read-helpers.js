@@ -152,6 +152,150 @@ function resolveTextStyle(node, opts) {
   return out;
 }
 
+// ── Design Token / Variable Resolver Map ──
+var cachedVariableResolverMap = null;
+var cachedVariableResolverMapTime = 0;
+
+async function buildVariableResolverMapAsync(forceRefresh) {
+  var now = Date.now();
+  if (!forceRefresh && cachedVariableResolverMap && (now - cachedVariableResolverMapTime < 15000)) {
+    return cachedVariableResolverMap;
+  }
+  var map = { byId: {}, byName: {} };
+  try {
+    if (typeof figma.variables !== "undefined" && typeof figma.variables.getLocalVariablesAsync === "function") {
+      var vars = await figma.variables.getLocalVariablesAsync();
+      var rawMap = {};
+      for (var i = 0; i < vars.length; i++) {
+        var v = vars[i];
+        if (v && v.id) rawMap[v.id] = v;
+      }
+
+      function resolveVarValue(v, depth) {
+        if (!v || depth > 6) return null;
+        var defaultVal = null;
+        if (v.valuesByMode) {
+          var modeKeys = Object.keys(v.valuesByMode);
+          if (modeKeys.length > 0) defaultVal = v.valuesByMode[modeKeys[0]];
+        }
+        if (defaultVal && typeof defaultVal === "object" && defaultVal.type === "VARIABLE_ALIAS" && defaultVal.id) {
+          var targetVar = rawMap[defaultVal.id];
+          if (targetVar) {
+            var targetRes = resolveVarValue(targetVar, depth + 1);
+            return {
+              isAlias: true,
+              targetId: targetVar.id,
+              targetName: targetVar.name,
+              primitiveName: (targetRes && targetRes.primitiveName) ? targetRes.primitiveName : targetVar.name,
+              resolvedValue: targetRes ? targetRes.resolvedValue : null,
+            };
+          }
+        }
+        if (defaultVal && typeof defaultVal === "object" && "r" in defaultVal && "g" in defaultVal && "b" in defaultVal) {
+          return { isAlias: false, resolvedValue: rgbToHex(defaultVal), primitiveName: v.name };
+        }
+        if (typeof defaultVal === "number" || typeof defaultVal === "string" || typeof defaultVal === "boolean") {
+          return { isAlias: false, resolvedValue: defaultVal, primitiveName: v.name };
+        }
+        return { isAlias: false, resolvedValue: defaultVal, primitiveName: v.name };
+      }
+
+      for (var j = 0; j < vars.length; j++) {
+        var vr = vars[j];
+        if (!vr || !vr.id) continue;
+        var res = resolveVarValue(vr, 0);
+        var item = {
+          id: vr.id,
+          name: vr.name,
+          resolvedType: vr.resolvedType,
+          isAlias: res ? res.isAlias : false,
+          targetName: res ? res.targetName : null,
+          primitiveName: res ? res.primitiveName : vr.name,
+          resolvedValue: res ? res.resolvedValue : null,
+        };
+        map.byId[vr.id] = item;
+        map.byName[vr.name] = item;
+      }
+    }
+  } catch(e) {}
+  cachedVariableResolverMap = map;
+  cachedVariableResolverMapTime = now;
+  return map;
+}
+
+// ── Clean Variant & Component Properties Parser ──
+function cleanComponentProperties(node) {
+  var out = { variant: null, props: null };
+  if (!node) return out;
+
+  // 1. Native variantProperties on instance
+  if (node.variantProperties && typeof node.variantProperties === "object") {
+    var varKeys = Object.keys(node.variantProperties);
+    if (varKeys.length > 0) {
+      out.variant = {};
+      for (var vk = 0; vk < varKeys.length; vk++) {
+        out.variant[varKeys[vk]] = node.variantProperties[varKeys[vk]];
+      }
+    }
+  }
+
+  // 2. Component Properties parsing (strip #ID suffix and separate variants vs normal props)
+  if (node.componentProperties && typeof node.componentProperties === "object") {
+    var rawProps = node.componentProperties;
+    var propKeys = Object.keys(rawProps);
+    if (propKeys.length > 0) {
+      var cleanProps = {};
+      var inferredVariants = out.variant || {};
+      for (var pk = 0; pk < propKeys.length; pk++) {
+        var rawKey = propKeys[pk];
+        var propObj = rawProps[rawKey];
+        if (!propObj) continue;
+        var cleanKey = rawKey.split("#")[0].trim();
+        if (propObj.type === "VARIANT") {
+          inferredVariants[cleanKey] = propObj.value;
+        } else {
+          cleanProps[cleanKey] = propObj.value;
+        }
+      }
+      if (Object.keys(cleanProps).length > 0) out.props = cleanProps;
+      if (Object.keys(inferredVariants).length > 0) out.variant = inferredVariants;
+    }
+  }
+  return out;
+}
+
+// ── Infer Semantic Role ──
+function inferSemanticRole(node, info) {
+  if (!node) return null;
+  var name = (node.name || "").toLowerCase();
+  var type = node.type;
+
+  if (isLikelyIcon(node) || name.indexOf("icon") !== -1) return "icon";
+  if (name.indexOf("button") !== -1 || name.indexOf("btn") !== -1) return "button";
+  if (name.indexOf("input") !== -1 || name.indexOf("textfield") !== -1 || name.indexOf("search") !== -1) return "input";
+  if (name.indexOf("badge") !== -1 || name.indexOf("tag") !== -1 || name.indexOf("chip") !== -1 || name.indexOf("pill") !== -1) return "badge";
+  if (name.indexOf("avatar") !== -1 || name.indexOf("userpic") !== -1 || name.indexOf("profile-pic") !== -1) return "avatar";
+  if (name.indexOf("card") !== -1) return "card";
+  if (name.indexOf("modal") !== -1 || name.indexOf("dialog") !== -1 || name.indexOf("popup") !== -1) return "modal";
+  if (name.indexOf("checkbox") !== -1) return "checkbox";
+  if (name.indexOf("switch") !== -1 || name.indexOf("toggle") !== -1) return "switch";
+  if (name.indexOf("divider") !== -1 || name.indexOf("separator") !== -1) return "divider";
+  if (name.indexOf("header") !== -1 || name.indexOf("navbar") !== -1 || name.indexOf("appbar") !== -1) return "header";
+  if (name.indexOf("tab") !== -1) return "tab";
+
+  if (type === "INSTANCE") {
+    if (info && info.componentSetName) {
+      var setName = info.componentSetName.toLowerCase();
+      if (setName.indexOf("button") !== -1) return "button";
+      if (setName.indexOf("input") !== -1) return "input";
+      if (setName.indexOf("badge") !== -1) return "badge";
+      if (setName.indexOf("avatar") !== -1) return "avatar";
+      if (setName.indexOf("icon") !== -1) return "icon";
+    }
+  }
+  return null;
+}
+
 // Instance → main component resolution.
 //
 // `instance.mainComponent` throws under documentAccess: dynamic-page, so the
@@ -192,10 +336,18 @@ async function resolveInstanceComponents(entries, apply) {
     }));
     for (var b = 0; b < batch.length; b++) {
       var main = mains[b];
-      if (!main) continue;
-      var desc = describeMainComponent(main);
-      if (apply) apply(batch[b].info, desc);
-      else Object.assign(batch[b].info, desc);
+      var entryNode = batch[b].node;
+      var entryInfo = batch[b].info;
+      if (main) {
+        var desc = describeMainComponent(main);
+        if (apply) apply(entryInfo, desc);
+        else Object.assign(entryInfo, desc);
+      }
+      var parsed = cleanComponentProperties(entryNode);
+      if (parsed.variant) entryInfo.variant = parsed.variant;
+      if (parsed.props) entryInfo.props = parsed.props;
+      var role = inferSemanticRole(entryNode, entryInfo);
+      if (role) entryInfo.role = role;
       resolved++;
     }
   }
@@ -416,19 +568,41 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   try { if ("blendMode" in node && node.blendMode !== "NORMAL" && node.blendMode !== "PASS_THROUGH") info.blendMode = node.blendMode; } catch(e) {}
   try { if ("clipsContent" in node && node.clipsContent) info.clipsContent = true; } catch(e) {}
 
-  // ── Bound Variables (Design Tokens) — full only ──
-  if (isFull) try {
+  // ── Bound Variables (Design Tokens) — full & compact ──
+  if (isFull || isCompact) try {
     if (node.boundVariables) {
       var bv = {};
       var bvKeys = Object.keys(node.boundVariables);
+      var varMap = (walkState && walkState.variableMap) ? walkState.variableMap.byId : null;
       for (var bvi = 0; bvi < bvKeys.length; bvi++) {
         var bvk = bvKeys[bvi];
         var binding = node.boundVariables[bvk];
         if (binding) {
-          if (Array.isArray(binding)) {
-            bv[bvk] = binding.map(function(b) { return b ? b.id : null; });
-          } else {
-            bv[bvk] = binding.id || null;
+          var bindings = Array.isArray(binding) ? binding : [binding];
+          var resolvedList = [];
+          for (var bi = 0; bi < bindings.length; bi++) {
+            var bObj = bindings[bi];
+            if (!bObj || !bObj.id) continue;
+            var vInfo = varMap && varMap[bObj.id] ? varMap[bObj.id] : null;
+            if (vInfo) {
+              var entry = { id: bObj.id, name: vInfo.name, type: vInfo.resolvedType };
+              if (vInfo.resolvedValue !== null && vInfo.resolvedValue !== undefined) entry.value = vInfo.resolvedValue;
+              if (vInfo.isAlias && vInfo.targetName) entry.aliasTarget = vInfo.targetName;
+              resolvedList.push(entry);
+            } else {
+              resolvedList.push({ id: bObj.id });
+            }
+          }
+          if (resolvedList.length > 0) {
+            bv[bvk] = Array.isArray(binding) ? resolvedList : resolvedList[0];
+            var primaryEntry = resolvedList[0];
+            if (primaryEntry && primaryEntry.name) {
+              if (bvk === "fills" || bvk === "fill") info.fillToken = primaryEntry.name;
+              else if (bvk === "strokes" || bvk === "stroke") info.strokeToken = primaryEntry.name;
+              else if (bvk === "itemSpacing") info.gapToken = primaryEntry.name;
+              else if (bvk === "paddingTop" || bvk === "paddingBottom" || bvk === "paddingLeft" || bvk === "paddingRight") info.paddingToken = primaryEntry.name;
+              else if (bvk === "topLeftRadius" || bvk === "cornerRadius") info.radiusToken = primaryEntry.name;
+            }
           }
         }
       }
@@ -494,6 +668,8 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         mode: node.layoutMode,
       };
       if (node.itemSpacing !== undefined && node.itemSpacing !== 0) layoutObj.itemSpacing = node.itemSpacing;
+      if (info.gapToken) layoutObj.gapToken = info.gapToken;
+      if (info.paddingToken) layoutObj.paddingToken = info.paddingToken;
       if (node.primaryAxisAlignItems && node.primaryAxisAlignItems !== "MIN") layoutObj.align = node.primaryAxisAlignItems;
       if (node.counterAxisAlignItems && node.counterAxisAlignItems !== "MIN") layoutObj.crossAlign = node.counterAxisAlignItems;
 
@@ -543,7 +719,6 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   // ── Component-specific info ──
   if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
     try { info.description = node.description; } catch(e) {}
-    // Expose component property definitions for COMPONENT/COMPONENT_SET
     try {
       if (node.componentPropertyDefinitions) {
         var defs = node.componentPropertyDefinitions;
@@ -560,26 +735,16 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
     } catch(e) {}
   }
   if (node.type === "INSTANCE") {
-    // Issue #2: expose source component reference. mainComponent is async-only
-    // under documentAccess: dynamic-page, so defer to the caller's collector.
+    var parsedProps = cleanComponentProperties(node);
+    if (parsedProps.variant) info.variant = parsedProps.variant;
+    if (parsedProps.props) info.props = parsedProps.props;
     if (instanceCollector) instanceCollector.push({ info: info, node: node });
     try { if (node.overrides && node.overrides.length) info.overrideCount = node.overrides.length; } catch(e) {}
-    // Issue #4: expose explicit component property values on this instance
-    try {
-      if (node.componentProperties) {
-        var props = node.componentProperties;
-        var propKeys = Object.keys(props);
-        if (propKeys.length > 0) {
-          info.componentPropertyValues = {};
-          for (var pi = 0; pi < propKeys.length; pi++) {
-            var pk = propKeys[pi];
-            var pv = props[pk];
-            info.componentPropertyValues[pk] = { type: pv.type, value: pv.value };
-          }
-        }
-      }
-    } catch(e) {}
   }
+
+  // ── Semantic Role ──
+  var semanticRole = inferSemanticRole(node, info);
+  if (semanticRole) info.role = semanticRole;
 
   // ── VECTOR / BOOLEAN_OPERATION ──
   if (node.type === "VECTOR" || node.type === "BOOLEAN_OPERATION") {

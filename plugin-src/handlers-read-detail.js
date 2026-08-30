@@ -2,13 +2,33 @@
 
 // get_node_detail — CSS-like properties for a single node (no tree traversal)
 handlers.get_node_detail = async function(params) {
-  // Accept id, nodeId, name, nodeName — try ID first then name fallback
-  var id = params ? (params.id || params.nodeId) : null;
-  var nodeName = params ? (params.name || params.nodeName) : null;
+  // Batch support: if nodeIds array is provided, inspect multiple nodes in one call
+  if (params && (Array.isArray(params.nodeIds) || Array.isArray(params.ids))) {
+    var ids = params.nodeIds || params.ids;
+    var results = [];
+    for (var bi = 0; bi < ids.length; bi++) {
+      try {
+        var nd = await handlers.get_node_detail({ id: ids[bi] });
+        results.push(nd);
+      } catch (e) {
+        results.push({ id: ids[bi], error: e.message });
+      }
+    }
+    return { nodes: results, count: results.length };
+  }
+
+  // Accept id, nodeId, node_id, targetId, target_id, name, nodeName, node_name — try ID first then name fallback
+  var id = params ? (params.id || params.nodeId || params.node_id || params.targetId || params.target_id) : null;
+  var nodeName = params ? (params.name || params.nodeName || params.node_name) : null;
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
   if (!node && nodeName) node = findNodeByName(nodeName);
-  if (!node) throw new Error("Node not found: " + (id || nodeName || "no id/name given") + ". Use figma_read get_page_nodes to get current node IDs.");
+  if (!node) {
+    var errMsg = typeof getNodeNotFoundContext === "function"
+      ? getNodeNotFoundContext(id, nodeName)
+      : ("Node not found: " + (id || nodeName || "no id/name given") + ". Use figma_read get_page_nodes to get current node IDs.");
+    throw new Error(errMsg);
+  }
 
   var detail = {
     id: node.id, name: node.name, type: node.type,
@@ -240,6 +260,25 @@ handlers.get_node_detail = async function(params) {
     }
   } catch(e) {}
 
+  // Attach direct semantic token names on detail
+  try {
+    if (detail.boundVariables) {
+      var bvKeys = Object.keys(detail.boundVariables);
+      for (var bvi = 0; bvi < bvKeys.length; bvi++) {
+        var bvk = bvKeys[bvi];
+        var bEntry = detail.boundVariables[bvk];
+        var pName = (bEntry && typeof bEntry === "object") ? (Array.isArray(bEntry) ? (bEntry[0] && bEntry[0].name) : bEntry.name) : null;
+        if (pName) {
+          if (bvk === "fills" || bvk === "fill") detail.fillToken = pName;
+          else if (bvk === "strokes" || bvk === "stroke") detail.strokeToken = pName;
+          else if (bvk === "itemSpacing") detail.gapToken = pName;
+          else if (bvk === "paddingTop" || bvk === "paddingBottom" || bvk === "paddingLeft" || bvk === "paddingRight") detail.paddingToken = pName;
+          else if (bvk === "topLeftRadius" || bvk === "cornerRadius") detail.radiusToken = pName;
+        }
+      }
+    }
+  } catch(e) {}
+
   // P4: Resolve style IDs → name + values (not just opaque IDs)
   try {
     if (node.textStyleId && typeof node.textStyleId === "string") {
@@ -266,12 +305,15 @@ handlers.get_node_detail = async function(params) {
   try { if (node.strokeStyleId && typeof node.strokeStyleId === "string") detail.strokeStyleId = node.strokeStyleId; } catch(e) {}
   try { if (node.effectStyleId && typeof node.effectStyleId === "string") detail.effectStyleId = node.effectStyleId; } catch(e) {}
 
-  // Instance: source component reference + property values + overrides + P5 variantLabel
+  // Instance: source component reference + property values + overrides + P5 variantLabel + clean variant & props
   if (node.type === "INSTANCE") {
-    // mainComponent is async-only under documentAccess: dynamic-page.
-    // describeMainComponent yields componentId/componentName/componentSetName/variantLabel.
     var instComp = await getMainComponentSafe(node);
     if (instComp) Object.assign(detail, describeMainComponent(instComp));
+    var parsed = typeof cleanComponentProperties === "function" ? cleanComponentProperties(node) : null;
+    if (parsed) {
+      if (parsed.variant) detail.variant = parsed.variant;
+      if (parsed.props) detail.props = parsed.props;
+    }
     // P3: Full override list instead of just count
     try {
       if (node.overrides && node.overrides.length) {
@@ -296,6 +338,10 @@ handlers.get_node_detail = async function(params) {
       }
     } catch(e) {}
   }
+
+  // Semantic Role
+  var semanticRole = typeof inferSemanticRole === "function" ? inferSemanticRole(node, detail) : null;
+  if (semanticRole) detail.role = semanticRole;
 
   // Children count + text content summary
   if (node && typeof node === "object" && "children" in node && Array.isArray(node.children)) {
@@ -404,8 +450,8 @@ handlers.get_css = async function(params) {
 // Returns: flex layout semantics, token-resolved colors, typography, component instances
 // Much more code-ready than get_design (raw tree) or get_css (single string)
 handlers.get_design_context = async function(params) {
-  var id = params ? (params.id || params.nodeId) : null;
-  var nodeName = params ? (params.name || params.nodeName) : null;
+  var id = params ? (params.id || params.nodeId || params.node_id || params.targetId || params.target_id) : null;
+  var nodeName = params ? (params.name || params.nodeName || params.node_name) : null;
   var node = null;
   if (id) node = await findNodeByIdAsync(id);
   if (!node && nodeName) node = findNodeByName(nodeName);
@@ -414,7 +460,12 @@ handlers.get_design_context = async function(params) {
     var sel = figma.currentPage.selection;
     node = sel && sel.length > 0 ? sel[0] : null;
   }
-  if (!node) throw new Error("No node specified and nothing selected. Pass nodeId or select a node.");
+  if (!node) {
+    var errMsg = (id || nodeName) && typeof getNodeNotFoundContext === "function"
+      ? getNodeNotFoundContext(id, nodeName)
+      : "No node specified and nothing selected. Pass nodeId or select a node in Figma.";
+    throw new Error(errMsg);
+  }
 
   // Build variable name lookup: variableId → name
   // Use getLocalVariablesAsync (single call) instead of per-ID fetches — avoids O(n²) await loop
@@ -479,6 +530,26 @@ handlers.get_design_context = async function(params) {
     var fillVal = resolveFill(nd);
     if (fillVal) ctx.fill = fillVal;
 
+    // Direct token bindings
+    try {
+      if (nd.boundVariables) {
+        var bvKeys = Object.keys(nd.boundVariables);
+        for (var bvi = 0; bvi < bvKeys.length; bvi++) {
+          var bvk = bvKeys[bvi];
+          var binding = nd.boundVariables[bvk];
+          var bindId = binding ? (Array.isArray(binding) ? (binding[0] ? binding[0].id : null) : binding.id) : null;
+          if (bindId && varMap[bindId]) {
+            var vName = varMap[bindId].name;
+            if (bvk === "fills" || bvk === "fill") ctx.fillToken = vName;
+            else if (bvk === "strokes" || bvk === "stroke") ctx.strokeToken = vName;
+            else if (bvk === "itemSpacing") ctx.gapToken = vName;
+            else if (bvk === "paddingTop" || bvk === "paddingBottom" || bvk === "paddingLeft" || bvk === "paddingRight") ctx.paddingToken = vName;
+            else if (bvk === "topLeftRadius" || bvk === "cornerRadius") ctx.radiusToken = vName;
+          }
+        }
+      }
+    } catch(e) {}
+
     // Stroke
     try {
       if (nd.strokes && nd.strokes.length && nd.strokes[0].type === "SOLID") {
@@ -531,15 +602,16 @@ handlers.get_design_context = async function(params) {
     // documentAccess: dynamic-page, so collect now and resolve after the walk.
     if (nd.type === "INSTANCE") {
       ctxInstances.push({ info: ctx, node: nd });
-      try {
-        if (nd.componentProperties) {
-          var props = {};
-          var pks = Object.keys(nd.componentProperties);
-          for (var pi = 0; pi < pks.length; pi++) props[pks[pi]] = nd.componentProperties[pks[pi]].value;
-          if (pks.length) ctx.component = { properties: props };
-        }
-      } catch(e) {}
+      var parsedProps = typeof cleanComponentProperties === "function" ? cleanComponentProperties(nd) : null;
+      if (parsedProps) {
+        if (parsedProps.variant) ctx.variant = parsedProps.variant;
+        if (parsedProps.props) ctx.props = parsedProps.props;
+      }
     }
+
+    // Role
+    var sRole = typeof inferSemanticRole === "function" ? inferSemanticRole(nd, ctx) : null;
+    if (sRole) ctx.role = sRole;
 
     // Children (limited depth to avoid token overflow)
     if (depth < 4 && nd.children && nd.children.length) {
@@ -597,9 +669,23 @@ handlers.get_design_context = async function(params) {
 
 // Aliases for developer convenience & MCP tool naming compatibility
 handlers.inspect_node = handlers.get_design_context;
+handlers.inspectNode = handlers.get_design_context;
 handlers.inspect = handlers.get_design_context;
+handlers.getDesignContext = handlers.get_design_context;
+handlers.designContext = handlers.get_design_context;
+handlers.getCss = handlers.get_css;
+handlers.css = handlers.get_css;
+handlers.get_node = handlers.get_node_detail;
+handlers.getNode = handlers.get_node_detail;
+handlers.get_node_detail = handlers.get_node_detail;
+handlers.getNodeDetail = handlers.get_node_detail;
 handlers.get_node_info = handlers.get_node_detail;
+handlers.getNodeInfo = handlers.get_node_detail;
 handlers.node_detail = handlers.get_node_detail;
+handlers.nodeDetail = handlers.get_node_detail;
+handlers.node_info = handlers.get_node_detail;
+handlers.nodeInfo = handlers.get_node_detail;
+
 
 // get_component_map — list every component instance in a frame with variant properties
 // Use this to map Figma components to their code equivalents
@@ -910,8 +996,21 @@ handlers.get_variables = async function() {
 };
 
 handlers.get_variable_tokens = handlers.get_variables;
+handlers.getVariableTokens = handlers.get_variables;
 handlers.get_tokens = handlers.get_variables;
+handlers.getTokens = handlers.get_variables;
 handlers.tokens = handlers.get_variables;
+handlers.variables = handlers.get_variables;
+handlers.getVariables = handlers.get_variables;
+handlers.getStyles = handlers.get_styles;
+handlers.styles = handlers.get_styles;
+handlers.getLocalComponents = handlers.get_local_components;
+handlers.localComponents = handlers.get_local_components;
+handlers.getViewport = handlers.get_viewport;
+handlers.setViewport = handlers.set_viewport;
+handlers.getComponentMap = handlers.get_component_map;
+handlers.getUnmappedComponents = handlers.get_unmapped_components;
+
 
 // ─── EXPORT ASSETS (Batch Icon & Image Extractor) ────────────────────────────
 handlers.export_assets = async function(params) {
@@ -1037,3 +1136,6 @@ handlers.export_assets = async function(params) {
     images: images
   };
 };
+
+handlers.exportAssets = handlers.export_assets;
+

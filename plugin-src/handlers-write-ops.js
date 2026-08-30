@@ -93,6 +93,8 @@ handlers.set_selection = async function(params) {
   return { selected: nodes.map(nodeToInfo) };
 };
 
+handlers.setSelection = handlers.set_selection;
+
 // batch — execute multiple operations in one call
 // Supported operations: create, modify, delete (single or batch ids), append, clone
 handlers.batch = async function(params) {
@@ -104,7 +106,7 @@ handlers.batch = async function(params) {
   var results = [];
   for (var i = 0; i < operations.length; i++) {
     var op = operations[i];
-    var handler = handlers[op.operation];
+    var handler = typeof resolveOperationHandler === "function" ? resolveOperationHandler(op.operation) : handlers[op.operation];
     if (!handler) {
       results.push({ index: i, operation: op.operation, success: false, error: "Unknown operation" });
       continue;
@@ -118,3 +120,4 @@ handlers.batch = async function(params) {
   }
   return { results: results, total: operations.length, succeeded: results.filter(function(r) { return r.success; }).length };
 };
+
