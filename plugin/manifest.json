@@ -13,12 +13,23 @@
       "http://localhost:38453",
       "http://localhost:38454",
       "http://localhost:38455",
+      "http://127.0.0.1:38451",
+      "http://127.0.0.1:38452",
+      "http://127.0.0.1:38453",
+      "http://127.0.0.1:38454",
+      "http://127.0.0.1:38455",
       "ws://localhost:38451",
       "ws://localhost:38452",
       "ws://localhost:38453",
       "ws://localhost:38454",
-      "ws://localhost:38455"
+      "ws://localhost:38455",
+      "ws://127.0.0.1:38451",
+      "ws://127.0.0.1:38452",
+      "ws://127.0.0.1:38453",
+      "ws://127.0.0.1:38454",
+      "ws://127.0.0.1:38455"
     ],
-    "reasoning": "This plugin bridges Figma to the local figma-mcp Rust server running on port 38451-38455."
+    "reasoning": "Thin loader connecting dynamically to the local figma-mcp Rust engine on ports 38451-38455."
   }
 }
+

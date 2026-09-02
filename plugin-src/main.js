@@ -1,6 +1,10 @@
 // ─── PLUGIN ENTRY POINT ───────────────────────────────────────────────────────
 
-figma.showUI(__html__, { width: 320, height: 420, title: "Figma MCP Bridge" });
+if (typeof figma !== "undefined" && typeof __html__ !== "undefined") {
+  try {
+    figma.showUI(__html__, { width: 320, height: 420, title: "Figma MCP Bridge" });
+  } catch(e) {}
+}
 
 // Restore saved window size if user previously resized
 figma.clientStorage.getAsync("mcp_window_size").then(function(saved) {

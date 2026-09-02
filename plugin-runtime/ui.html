@@ -1,0 +1,1948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Figma MCP</title>
+  <style>
+    /* ── GHOSTTY DESIGN SYSTEM (High-Performance Native Terminal Aesthetic) ── */
+    :root {
+      --bg:             #0d0e12;
+      --surface-base:   #12141a;
+      --surface-card:   #171922;
+      --surface-hover:  #1d202b;
+      --surface-active: #242837;
+
+      --border-subtle:  rgba(255, 255, 255, 0.07);
+      --border-light:   rgba(255, 255, 255, 0.13);
+      --border-ghost:   rgba(147, 129, 255, 0.35);
+
+      --text-primary:   #f4f4f7;
+      --text-secondary: #9aa1b2;
+      --text-muted:     #52596d;
+      --text-dim:       #363c4e;
+
+      /* Ghostty Signature Palette */
+      --ghost-lavender: #9381ff;
+      --ghost-glow:     rgba(147, 129, 255, 0.22);
+      --ghost-mint:     #34d399;
+      --ghost-mint-glow:rgba(52, 211, 153, 0.20);
+      --ghost-cyan:     #38bdf8;
+      --ghost-peach:    #ff9f68;
+      --ghost-rose:     #fb7185;
+      --ghost-amber:    #fbbf24;
+
+      --radius-xs:      4px;
+      --radius-sm:      6px;
+      --radius-md:      9px;
+      --radius-full:    9999px;
+
+      --font-ui:        -apple-system, BlinkMacSystemFont, 'Pretendard', 'Inter', 'SF Pro Text', sans-serif;
+      --font-mono:      'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace;
+      --transition:     0.14s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+
+    body {
+      font-family: var(--font-ui);
+      background: var(--bg);
+      color: var(--text-primary);
+      font-size: 11px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Ghostty subtle atmospheric ambient */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -80px; left: -50px;
+      width: 260px; height: 260px;
+      background: radial-gradient(circle, rgba(147, 129, 255, 0.07) 0%, transparent 65%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      bottom: -60px; right: -50px;
+      width: 220px; height: 220px;
+      background: radial-gradient(circle, rgba(52, 211, 153, 0.05) 0%, transparent 65%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      padding: 8px;
+      gap: 6px;
+    }
+
+    /* ── HEADER (Ghostty macOS Native Window Chrome) ── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 6px 8px;
+      flex-shrink: 0;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+      position: relative;
+    }
+
+    /* ── INDEXING PROGRESS BAR (Embedded in Header) ── */
+    .index-progress-wrap {
+      display: none;
+      flex-direction: column;
+      gap: 3px;
+      padding: 4px 8px 6px;
+      background: rgba(147, 129, 255, 0.08);
+      border: 1px solid rgba(147, 129, 255, 0.28);
+      border-radius: var(--radius-sm);
+      margin-top: 1px;
+      animation: fadeIn 0.2s ease-out;
+    }
+    .index-progress-wrap.active {
+      display: flex;
+    }
+    .index-progress-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--ghost-lavender);
+      font-family: var(--font-mono);
+    }
+    .index-progress-label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 220px;
+    }
+    .index-progress-label svg {
+      animation: spin 1s linear infinite;
+      flex-shrink: 0;
+    }
+    .index-progress-pct {
+      color: var(--text-primary);
+      flex-shrink: 0;
+    }
+    .index-progress-track {
+      width: 100%;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 9999px;
+      overflow: hidden;
+    }
+    .index-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #7c3aed, #9381ff, #34d399);
+      border-radius: 9999px;
+      transition: width 0.2s ease-out;
+      box-shadow: 0 0 8px rgba(147, 129, 255, 0.6);
+    }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+
+    .brand { display: flex; align-items: center; gap: 7px; min-width: 0; }
+
+    .brand-logo {
+      width: 22px; height: 22px;
+      border-radius: var(--radius-xs);
+      background: linear-gradient(135deg, #7c3aed 0%, #9381ff 60%, #34d399 100%);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.18) inset, 0 2px 8px rgba(124, 58, 237, 0.35);
+      color: #ffffff;
+    }
+
+    .brand-info { display: flex; flex-direction: column; min-width: 0; }
+    .brand-title-row { display: flex; align-items: baseline; gap: 5px; }
+    .brand-name { font-size: 11px; font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary); line-height: 1; }
+    .brand-ver { font-size: 8px; font-weight: 600; color: var(--text-muted); font-family: var(--font-mono); }
+    .brand-file {
+      font-size: 9px;
+      color: var(--text-secondary);
+      font-weight: 500;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 140px;
+      margin-top: 1px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .header-icon-btn {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border-radius: var(--radius-xs);
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    .header-icon-btn:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-light);
+      color: var(--text-primary);
+    }
+    .header-icon-btn:active { transform: scale(0.94); }
+    .header-icon-btn.indexing svg {
+      animation: spin 1s linear infinite;
+      color: var(--ghost-lavender);
+    }
+
+    .status-pill {
+      display: flex; align-items: center; gap: 5px;
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-full);
+      padding: 2.5px 7px 2.5px 5px;
+      font-size: 9px; font-weight: 600;
+      color: var(--text-secondary);
+      transition: all var(--transition);
+      cursor: pointer;
+      font-family: var(--font-mono);
+    }
+    .status-pill:hover { border-color: var(--border-light); background: var(--surface-hover); color: var(--text-primary); }
+    .status-pill.connected { border-color: rgba(52,211,153,0.25); background: rgba(52,211,153,0.06); color: var(--ghost-mint); }
+    .status-pill.offline   { border-color: rgba(251,113,133,0.25); background: rgba(251,113,133,0.06); color: var(--ghost-rose); }
+    .status-pill.connecting { border-color: rgba(251,191,36,0.25); background: rgba(251,191,36,0.06); color: var(--ghost-amber); }
+
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%; flex-shrink: 0;
+      transition: all var(--transition);
+    }
+    .dot.green  { background: var(--ghost-mint); box-shadow: 0 0 0 2px rgba(52,211,153,0.2), 0 0 8px rgba(52,211,153,0.6); }
+    .dot.yellow { background: var(--ghost-amber); box-shadow: 0 0 0 2px rgba(251,191,36,0.2), 0 0 8px rgba(251,191,36,0.5); animation: pulse 1.4s ease-in-out infinite; }
+    .dot.red    { background: var(--ghost-rose); box-shadow: 0 0 0 2px rgba(251,113,133,0.2), 0 0 8px rgba(251,113,133,0.5); }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.85); } }
+
+    /* ── SELECTION INSPECTOR (Ghostty Split-Pane Card) ── */
+    .selection-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 7px;
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 6px 8px;
+      flex-shrink: 0;
+      transition: border-color var(--transition), background var(--transition), box-shadow var(--transition);
+      position: relative;
+      overflow: hidden;
+    }
+    .selection-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+    }
+    .selection-card.has-selection {
+      border-color: var(--border-ghost);
+      background: linear-gradient(135deg, rgba(147, 129, 255, 0.05) 0%, rgba(52, 211, 153, 0.02) 100%), var(--surface-card);
+    }
+    .selection-card.has-selection:hover {
+      border-color: rgba(147, 129, 255, 0.55);
+      background: linear-gradient(135deg, rgba(147, 129, 255, 0.09) 0%, rgba(52, 211, 153, 0.04) 100%), var(--surface-card);
+    }
+
+    .selection-main {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      flex: 1;
+      cursor: pointer;
+    }
+
+    .selection-icon-wrap {
+      width: 22px; height: 22px;
+      border-radius: var(--radius-xs);
+      background: var(--surface-base);
+      border: 1px solid var(--border-subtle);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      color: var(--text-muted);
+      transition: all var(--transition);
+    }
+    .selection-card.has-selection .selection-icon-wrap {
+      background: rgba(147, 129, 255, 0.12);
+      border-color: rgba(147, 129, 255, 0.35);
+      color: var(--ghost-lavender);
+    }
+
+    .selection-text { display: flex; flex-direction: column; min-width: 0; }
+    .selection-name {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-primary);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .selection-meta {
+      font-size: 9px;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .selection-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .act-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 22px;
+      padding: 0 6px;
+      border-radius: var(--radius-xs);
+      font-size: 8.5px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      background: var(--surface-base);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      letter-spacing: 0.2px;
+    }
+    .act-btn:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-light);
+      color: var(--text-primary);
+    }
+    .act-btn:active { transform: scale(0.95); }
+    .act-btn.icon-only { width: 22px; padding: 0; }
+    .act-btn.badge-btn {
+      background: rgba(147, 129, 255, 0.12);
+      border-color: rgba(147, 129, 255, 0.28);
+      color: #d1c9ff;
+    }
+    .act-btn.badge-btn:hover {
+      background: rgba(147, 129, 255, 0.28);
+      border-color: rgba(147, 129, 255, 0.6);
+      color: #ffffff;
+    }
+
+    /* ── TELEMETRY SEGMENTED STATUSLINE ── */
+    .telemetry-ribbon {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      background: var(--surface-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .telemetry-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 4px 2px;
+      gap: 1px;
+      position: relative;
+      transition: background var(--transition);
+    }
+    .telemetry-cell:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      right: 0; top: 15%; bottom: 15%;
+      width: 1px;
+      background: var(--border-subtle);
+    }
+    .telemetry-cell:hover { background: rgba(255, 255, 255, 0.02); }
+
+    .telemetry-label {
+      font-size: 7.5px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+    .telemetry-value {
+      font-size: 13px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      display: flex;
+      align-items: baseline;
+      gap: 1.5px;
+    }
+    .telemetry-unit { font-size: 7.5px; font-weight: 600; color: var(--text-muted); }
+
+    .telemetry-cell.writes .telemetry-value { color: var(--ghost-lavender); }
+    .telemetry-cell.reads  .telemetry-value { color: var(--ghost-cyan); }
+    .telemetry-cell.speed  .telemetry-value { color: var(--ghost-mint); }
+    .telemetry-cell.ram    .telemetry-value { color: var(--ghost-peach); }
+
+    /* ── GHOSTTY STREAM CONSOLE BUFFER ── */
+    .terminal-wrap {
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: column;
+      background: var(--surface-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+
+    .terminal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 7px;
+      background: rgba(255,255,255,0.02);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+
+    .terminal-tabs { display: flex; align-items: center; gap: 3px; }
+
+    .t-tab {
+      font-size: 8.5px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      letter-spacing: 0.2px;
+      padding: 2px 7px;
+      border-radius: var(--radius-xs);
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    .t-tab:hover { color: var(--text-secondary); background: rgba(255,255,255,0.04); }
+    .t-tab.active { color: var(--text-primary); background: var(--surface-card); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+    .t-tab.tab-err.active { color: var(--ghost-rose); }
+    .tab-badge-err {
+      font-size: 7.5px;
+      font-weight: 700;
+      color: var(--ghost-rose);
+      background: rgba(251, 113, 133, 0.18);
+      border-radius: var(--radius-full);
+      padding: 0 4px;
+      margin-left: 2px;
+      line-height: 1.3;
+      display: inline-block;
+    }
+
+    .terminal-meta { display: flex; align-items: center; gap: 6px; }
+
+    .event-badge {
+      font-size: 8px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-full);
+      padding: 1px 6px;
+    }
+
+    .terminal-body {
+      flex: 1;
+      padding: 6px 8px;
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      line-height: 1.5;
+      overflow-y: auto;
+      color: var(--text-secondary);
+    }
+    .terminal-body::-webkit-scrollbar { width: 3px; }
+    .terminal-body::-webkit-scrollbar-track { background: transparent; }
+    .terminal-body::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 2px; }
+
+    .log-line {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 1.5px 3px;
+      border-radius: 3px;
+      transition: background 0.1s ease;
+    }
+    .log-line:hover { background: rgba(255,255,255,0.03); }
+    .log-ts { font-size: 8px; color: var(--text-muted); flex-shrink: 0; letter-spacing: -0.2px; }
+    .log-prompt { color: var(--ghost-lavender); font-size: 9px; flex-shrink: 0; font-weight: 700; }
+    .log-msg { flex: 1; word-break: break-all; color: var(--text-secondary); }
+    .log-msg.ok   { color: var(--ghost-mint); }
+    .log-msg.err  { color: var(--ghost-rose); }
+    .log-msg.info { color: var(--ghost-cyan); }
+
+    .terminal-empty {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 100%; gap: 5px; color: var(--text-muted);
+    }
+    .terminal-empty-icon { font-size: 16px; opacity: 0.35; }
+    .terminal-empty-text { font-size: 9.5px; opacity: 0.6; font-family: var(--font-mono); }
+
+    /* ── FOOTER ACTIONS ── */
+    .footer { display: flex; gap: 6px; flex-shrink: 0; }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 6px; padding: 6px 11px;
+      border-radius: var(--radius-sm);
+      font-size: 10px; font-weight: 600;
+      font-family: var(--font-ui);
+      cursor: pointer;
+      border: 1px solid var(--border-subtle);
+      background: var(--surface-card);
+      color: var(--text-secondary);
+      transition: all var(--transition);
+      letter-spacing: 0.1px;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--surface-hover); border-color: var(--border-light); color: var(--text-primary); }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-icon { width: 30px; height: 30px; padding: 0; flex-shrink: 0; }
+
+    .btn-primary {
+      flex: 1;
+      background: linear-gradient(135deg, rgba(124,58,237,0.9) 0%, rgba(147,129,255,0.9) 50%, rgba(52,211,153,0.85) 100%);
+      border-color: rgba(147, 129, 255, 0.45);
+      color: #ffffff;
+      font-weight: 600;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.2) inset, 0 3px 12px rgba(124, 58, 237, 0.28);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #7c3aed 0%, #9381ff 50%, #34d399 100%);
+      border-color: rgba(147, 129, 255, 0.7);
+      color: #ffffff;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset, 0 4px 16px rgba(124, 58, 237, 0.45);
+    }
+
+    .btn-primary.indexing svg { animation: spin 1s linear infinite; }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+
+    /* ── TOAST NOTIFICATION ── */
+    .toast {
+      position: fixed;
+      bottom: 45px;
+      left: 50%;
+      transform: translateX(-50%) translateY(15px);
+      opacity: 0;
+      pointer-events: none;
+      background: rgba(18, 20, 26, 0.96);
+      border: 1px solid rgba(147, 129, 255, 0.3);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6), 0 0 12px rgba(147, 129, 255, 0.2);
+      border-radius: var(--radius-full);
+      padding: 5px 12px;
+      font-size: 9.5px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      z-index: 100;
+      transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+      pointer-events: auto;
+    }
+
+    /* ── CUSTOM IN-PLUGIN MODAL DIALOG (No window.prompt dependency) ── */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(8, 9, 13, 0.75);
+      backdrop-filter: blur(5px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--transition);
+    }
+    .modal-overlay.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .modal-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      box-shadow: 0 16px 36px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08) inset;
+      width: 100%;
+      max-width: 290px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transform: scale(0.95);
+      transition: transform var(--transition);
+    }
+    .modal-overlay.show .modal-card {
+      transform: scale(1);
+    }
+    .modal-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .modal-desc {
+      font-size: 9.5px;
+      color: var(--text-secondary);
+      line-height: 1.35;
+    }
+    .modal-input {
+      width: 100%;
+      background: var(--surface-base);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-xs);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      padding: 6px 8px;
+      outline: none;
+      transition: border-color var(--transition);
+    }
+    .modal-input:focus {
+      border-color: var(--ghost-lavender);
+      box-shadow: 0 0 0 2px var(--ghost-glow);
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app">
+
+    <!-- ── HEADER (Ghostty macOS Native Window Chrome) ── -->
+    <header class="header">
+      <div class="brand">
+        <div class="brand-logo">
+          <!-- Ghostty Ghost Mascot Icon -->
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 10h.01M15 10h.01M12 2a8 8 0 0 0-8 8v11l3-2 3 2 2-2 2 2 3-2 3 2V10a8 8 0 0 0-8-8z"/>
+          </svg>
+        </div>
+        <div class="brand-info">
+          <div class="brand-title-row">
+            <span class="brand-name">Figma MCP</span>
+            <span class="brand-ver">v3.0.0</span>
+          </div>
+          <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <!-- Re-index Icon Button -->
+        <button class="header-icon-btn" id="reindex-btn" onclick="triggerManualReindex()" title="Sync Index (Re-index Figma canvas to MCP)">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+            <polyline points="2 17 12 22 22 17"/>
+            <polyline points="2 12 12 17 22 12"/>
+          </svg>
+        </button>
+
+        <!-- Reconnect / Probe Bridge Port Button -->
+        <button class="header-icon-btn" id="reconnect-btn" onclick="reconnect()" title="Reconnect / Probe Bridge Port">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+
+        <!-- Copy File / Session Link -->
+        <button class="header-icon-btn" id="file-link-btn" onclick="copyFileLink(event)" title="🔗 Set / Copy Figma File Link">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+        </button>
+
+        <!-- Connection Status Pill -->
+        <div class="status-pill" id="status-pill" onclick="handleStatusClick()" title="Connection Status (Click for details)">
+          <div class="dot yellow" id="dot"></div>
+          <span id="status-text">Connecting</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── INDEXING PROGRESS HUD ── -->
+    <div class="index-progress-wrap" id="index-progress-wrap">
+      <div class="index-progress-header">
+        <span class="index-progress-label" id="index-progress-label">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          <span id="index-progress-text">Indexing canvas layers…</span>
+        </span>
+        <span class="index-progress-pct" id="index-progress-pct">0%</span>
+      </div>
+      <div class="index-progress-track">
+        <div class="index-progress-fill" id="index-progress-fill"></div>
+      </div>
+    </div>
+
+    <!-- ── SELECTION INSPECTOR HERO CARD ── -->
+    <div class="selection-card" id="selection-card">
+      <div class="selection-main" onclick="focusSelection()" title="Click to center view on selection">
+        <div class="selection-icon-wrap" id="selection-icon">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+          </svg>
+        </div>
+        <div class="selection-text">
+          <span class="selection-name" id="selection-name">No selection</span>
+          <span class="selection-meta" id="selection-meta">Document canvas root</span>
+        </div>
+      </div>
+
+      <div class="selection-actions" id="selection-actions" style="display:none;">
+        <!-- Snapshot PNG button -->
+        <button class="act-btn icon-only" id="snapshot-btn" onclick="exportSelectionImage(event)" title="📸 Copy layer PNG (2x) to clipboard">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+        </button>
+
+        <!-- Copy Link to Selection Frame button -->
+        <button class="act-btn icon-only" id="link-btn" onclick="copySelectionLink(event)" title="🔗 Copy link to selection frame">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+        </button>
+
+        <!-- Focus / Center on Canvas button -->
+        <button class="act-btn icon-only" onclick="focusSelection()" title="🎯 Center view on canvas">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="22" y1="12" x2="18" y2="12"/>
+            <line x1="6" y1="12" x2="2" y2="12"/>
+            <line x1="12" y1="6" x2="12" y2="2"/>
+            <line x1="12" y1="22" x2="12" y2="18"/>
+          </svg>
+        </button>
+
+        <!-- Copy Node ID button -->
+        <button class="act-btn icon-only" id="copy-id-btn" onclick="copySelectionId(event)" title="📋 Copy Figma Node ID">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+
+        <!-- Node Type Badge button (also clickable to copy ID) -->
+        <button class="act-btn badge-btn" id="selection-badge" onclick="copySelectionId(event)" title="📋 Click to copy Figma Node ID">
+          FRAME
+        </button>
+      </div>
+    </div>
+
+    <!-- ── TELEMETRY SEGMENTED RIBBON ── -->
+    <div class="telemetry-ribbon">
+      <div class="telemetry-cell writes" title="Write operations executed by AI">
+        <span class="telemetry-label">Writes</span>
+        <span class="telemetry-value" id="write-count">0</span>
+      </div>
+      <div class="telemetry-cell reads" title="Read / Inspection operations executed">
+        <span class="telemetry-label">Reads</span>
+        <span class="telemetry-value" id="read-count">0</span>
+      </div>
+      <div class="telemetry-cell speed" title="Execution latency of last request">
+        <span class="telemetry-label">Latency</span>
+        <span class="telemetry-value"><span id="speed-display">0</span><span class="telemetry-unit">ms</span></span>
+      </div>
+      <div class="telemetry-cell ram" title="Rust MCP Server Memory (RAM RSS)">
+        <span class="telemetry-label">RAM</span>
+        <span class="telemetry-value"><span id="ram-display">3.2</span><span class="telemetry-unit">MB</span></span>
+      </div>
+    </div>
+
+    <!-- ── STREAM CONSOLE TERMINAL ── -->
+    <section class="terminal-wrap">
+      <div class="terminal-header">
+        <div class="terminal-tabs">
+          <button class="t-tab active" onclick="setLogFilter('all', this)">All</button>
+          <button class="t-tab" onclick="setLogFilter('writes', this)">Writes</button>
+          <button class="t-tab" onclick="setLogFilter('reads', this)">Reads</button>
+          <button class="t-tab tab-err" id="tab-errors" onclick="setLogFilter('errors', this)">Errors <span class="tab-badge-err" id="tab-err-badge" style="display:none">0</span></button>
+        </div>
+        <div class="terminal-meta">
+          <span class="event-badge" id="log-count">0 ev</span>
+          <button class="act-btn icon-only" onclick="copyLogs()" title="Copy console logs (respects active tab)" style="height:18px;width:18px;border-radius:3px;">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+          <button class="act-btn icon-only" onclick="clearLog()" title="Clear stream console" style="height:18px;width:18px;border-radius:3px;">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="terminal-body" id="log">
+        <div class="terminal-empty" id="log-empty">
+          <div class="terminal-empty-icon">◌</div>
+          <div class="terminal-empty-text">Listening on MCP bridge…</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- File Key Input Modal Dialog -->
+  <div class="modal-overlay" id="key-modal-overlay">
+    <div class="modal-card">
+      <div class="modal-title-row">
+        <div class="modal-title">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--ghost-lavender)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+          Set Figma File Link
+        </div>
+      </div>
+      <div class="modal-desc">
+        Paste full Figma file URL or File Key to generate real browser links for your layers:
+      </div>
+      <input type="text" class="modal-input" id="file-key-input" placeholder="https://www.figma.com/design/..." spellcheck="false" autocomplete="off" />
+      <div class="modal-actions">
+        <button class="btn" onclick="closeKeyModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveFileKeyFromModal()">Save & Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Toast Component -->
+  <div class="toast" id="toast">
+    <span id="toast-icon">✓</span>
+    <span id="toast-text">Action completed</span>
+  </div>
+
+  <div class="resize-grip" id="resize-grip" title="Drag to resize">
+    <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <path d="M9 1L1 9M9 5L5 9"/>
+    </svg>
+  </div>
+
+  <script>
+    var currentPort = 38451;
+    var BRIDGE  = "http://localhost:" + currentPort;
+    var POLL_MS = 300;
+    var POLL_MAX_MS = 3000;
+    var LONG_POLL_TIMEOUT = 12000;
+    var SHORT_POLL_TIMEOUT = 3000;
+    var consecutiveErrors = 0;
+    var everConnected = false;
+    var lastSuccessfulPollAt = Date.now();
+    var sessionId = null;
+    var fileName = null;
+    var fileKey = null;
+
+    var writeCount = 0, readCount = 0, errCount = 0;
+    var totalLogEvents = 0;
+    var polling = true;
+    var activeLogFilter = 'all';
+
+    var logEl             = document.getElementById("log");
+    var logEmptyEl        = document.getElementById("log-empty");
+    var dotEl             = document.getElementById("dot");
+    var statusEl          = document.getElementById("status-text");
+    var statusPill        = document.getElementById("status-pill");
+    var logCountEl        = document.getElementById("log-count");
+    var docDispEl         = document.getElementById("doc-display");
+    var speedEl           = document.getElementById("speed-display");
+    var ramEl             = document.getElementById("ram-display");
+    var reindexBtn        = document.getElementById("reindex-btn");
+    var reindexBtnLabel   = document.getElementById("reindex-btn-label");
+    var indexProgressWrap = document.getElementById("index-progress-wrap");
+    var indexProgressText = document.getElementById("index-progress-text");
+    var indexProgressPct  = document.getElementById("index-progress-pct");
+    var indexProgressFill = document.getElementById("index-progress-fill");
+
+    var selCardEl         = document.getElementById("selection-card");
+    var selIconEl         = document.getElementById("selection-icon");
+    var selNameEl         = document.getElementById("selection-name");
+    var selMetaEl         = document.getElementById("selection-meta");
+    var selActionsEl      = document.getElementById("selection-actions");
+    var selBadgeEl        = document.getElementById("selection-badge");
+    var snapshotBtn       = document.getElementById("snapshot-btn");
+    var toastEl           = document.getElementById("toast");
+    var toastTextEl       = document.getElementById("toast-text");
+    var toastIconEl       = document.getElementById("toast-icon");
+
+    var currentSelectionCount = 0;
+    var currentSelectionId = null;
+    var currentSelectionMainId = null;
+    var currentSelectionName = "";
+
+    function showToast(msg, icon) {
+      if (!toastEl) return;
+      if (toastTextEl) toastTextEl.textContent = msg;
+      if (toastIconEl) toastIconEl.textContent = icon || "✓";
+      toastEl.classList.add("show");
+      setTimeout(function() {
+        toastEl.classList.remove("show");
+      }, 2200);
+    }
+
+    function setLogFilter(filter, el) {
+      activeLogFilter = filter;
+      var tabs = document.querySelectorAll(".t-tab");
+      tabs.forEach(function(t) { t.classList.remove("active"); });
+      if (el) el.classList.add("active");
+
+      var lines = logEl.querySelectorAll(".log-line");
+      var visibleCount = 0;
+      lines.forEach(function(line) {
+        var match = false;
+        if (filter === 'all') {
+          match = true;
+        } else if (filter === 'writes') {
+          match = line.dataset.type === 'write';
+        } else if (filter === 'reads') {
+          match = line.dataset.type === 'read';
+        } else if (filter === 'errors') {
+          match = line.dataset.cls === 'err';
+        }
+        line.style.display = match ? "flex" : "none";
+        if (match) visibleCount++;
+      });
+
+      if (logEmptyEl) {
+        if (visibleCount === 0 && totalLogEvents > 0) {
+          logEmptyEl.style.display = "flex";
+          var emptyText = logEmptyEl.querySelector(".terminal-empty-text");
+          if (emptyText) emptyText.textContent = filter === 'errors' ? "No errors logged" : "No matching logs";
+        } else if (totalLogEvents === 0) {
+          logEmptyEl.style.display = "flex";
+          var emptyText = logEmptyEl.querySelector(".terminal-empty-text");
+          if (emptyText) emptyText.textContent = "Listening on MCP bridge…";
+        } else {
+          logEmptyEl.style.display = "none";
+        }
+      }
+    }
+
+    async function fetchServerStats() {
+      if (!everConnected) return;
+      try {
+        var res = await fetch(BRIDGE + "/health", { signal: AbortSignal.timeout(1000) });
+        if (res.ok) {
+          var data = await res.json();
+          if (data && data.stats && data.stats.memoryMb !== undefined && ramEl) {
+            ramEl.textContent = data.stats.memoryMb.toFixed(1);
+          }
+        }
+      } catch(e) {}
+    }
+    setInterval(fetchServerStats, 4000);
+
+    function triggerManualReindex() {
+      if (!everConnected) {
+        log("Cannot index: Server is offline", "err");
+        showSetupGuide();
+        return;
+      }
+      if (reindexBtn) reindexBtn.classList.add("indexing");
+      showToast("Syncing canvas index…", "⚡");
+      log("⚡ Manual re-index triggered…", "info");
+      parent.postMessage({ pluginMessage: { type: "manual-reindex" } }, "*");
+    }
+
+    function focusSelection() {
+      if (currentSelectionCount > 0) {
+        parent.postMessage({ pluginMessage: { type: "zoom-to-selection" } }, "*");
+      }
+    }
+
+    function exportSelectionImage(event) {
+      if (event) event.stopPropagation();
+      if (currentSelectionCount === 0) return;
+      if (snapshotBtn) snapshotBtn.style.opacity = "0.5";
+      parent.postMessage({ pluginMessage: { type: "export-selection-image", scale: 2 } }, "*");
+    }
+
+    function copyTextFallback(text) {
+      try {
+        var textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        textarea.style.top = "-9999px";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        var successful = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return successful;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    function openKeyModal(onSuccess) {
+      var modal = document.getElementById("key-modal-overlay");
+      var input = document.getElementById("file-key-input");
+      if (modal && input) {
+        input.value = fileKey ? ("https://www.figma.com/design/" + fileKey) : "";
+        modal.classList.add("show");
+        window.__onKeySaved = onSuccess;
+        setTimeout(function() { input.focus(); input.select(); }, 50);
+      }
+    }
+
+    function closeKeyModal() {
+      var modal = document.getElementById("key-modal-overlay");
+      if (modal) modal.classList.remove("show");
+      window.__onKeySaved = null;
+    }
+
+    function saveFileKeyFromModal() {
+      var input = document.getElementById("file-key-input");
+      var val = input ? input.value.trim() : "";
+      if (val) {
+        var match = val.match(/(?:file|design)\/([a-zA-Z0-9]+)/);
+        var parsedKey = match ? match[1] : val;
+        fileKey = parsedKey;
+        parent.postMessage({ pluginMessage: { type: "set-file-key", fileKey: parsedKey } }, "*");
+        showToast("File Key saved!", "🔗");
+      }
+      var cb = window.__onKeySaved;
+      closeKeyModal();
+      if (typeof cb === "function") {
+        cb(fileKey);
+      }
+    }
+
+    function copyFileLink(event) {
+      if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+      openKeyModal(function(savedKey) {
+        if (savedKey) {
+          showToast("File link updated", "🔗");
+        }
+      });
+    }
+
+    function copySelectionLink(event) {
+      if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+      if (!currentSelectionId) {
+        showToast("No selection active", "⚠️");
+        try { parent.postMessage({ pluginMessage: { type: "notify", message: "⚠️ No frame selected to copy link", error: true } }, "*"); } catch(e) {}
+        return;
+      }
+
+      if (!fileKey) {
+        openKeyModal(function(savedKey) {
+          executeCopyLink(savedKey);
+        });
+        return;
+      }
+
+      executeCopyLink(fileKey);
+    }
+
+    function executeCopyLink(effectiveKey) {
+      if (!currentSelectionId) return;
+      
+      var targetId = currentSelectionMainId || currentSelectionId;
+      var figmaNodeId = targetId.replace(/:/g, "-");
+      
+      // Figma web link uses a sanitized slug of the file name (or untitled)
+      var cleanSlug = (fileName || "file")
+        .replace(/[\[\]\(\)\{\}]/g, "")
+        .trim()
+        .replace(/\s+/g, "-");
+      var encodedSlug = encodeURIComponent(cleanSlug);
+      
+      var link = "";
+      if (effectiveKey) {
+        link = "https://www.figma.com/design/" + effectiveKey + "/" + encodedSlug + "?node-id=" + figmaNodeId;
+      } else {
+        link = "https://www.figma.com/design/draft/" + encodedSlug + "?node-id=" + figmaNodeId;
+      }
+      
+      var copied = copyTextFallback(link);
+      if (!copied && navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).catch(function() {});
+      }
+      
+      showToast("Link: " + figmaNodeId, "🔗");
+      try {
+        parent.postMessage({
+          pluginMessage: {
+            type: "notify",
+            message: "🔗 Link copied to clipboard! (" + figmaNodeId + ")"
+          }
+        }, "*");
+      } catch(e) {}
+    }
+
+    function copySelectionId(event) {
+      if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+      if (!currentSelectionId) return;
+      var copied = copyTextFallback(currentSelectionId);
+      if (!copied && navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(currentSelectionId).then(function() {
+          showToast("Node ID: " + currentSelectionId + " copied", "📋");
+          try {
+            parent.postMessage({ pluginMessage: { type: "notify", message: "📋 Node ID: " + currentSelectionId + " copied" } }, "*");
+          } catch(e) {}
+        }).catch(function() {
+          prompt("Copy Node ID:", currentSelectionId);
+        });
+      } else if (copied) {
+        showToast("Node ID: " + currentSelectionId + " copied", "📋");
+        try {
+          parent.postMessage({ pluginMessage: { type: "notify", message: "📋 Node ID: " + currentSelectionId + " copied" } }, "*");
+        } catch(e) {}
+      } else {
+        prompt("Copy Node ID:", currentSelectionId);
+      }
+    }
+
+    var READ_OPS = [
+      "get_selection","get_design","get_page_nodes","screenshot",
+      "get_styles","get_local_components","get_viewport","get_variables",
+      "export_svg","get_node_detail","export_image","search_nodes","scan_design",
+      "index_scan"
+    ];
+
+    function setStatus(state, text) {
+      dotEl.className = "dot " + (state === "green" ? "green" : (state === "yellow" ? "yellow" : "red"));
+      statusEl.textContent = text;
+
+      statusPill.className = "status-pill";
+      if (state === "green")  statusPill.classList.add("connected");
+      if (state === "red")    statusPill.classList.add("offline");
+      if (state === "yellow") statusPill.classList.add("connecting");
+    }
+
+    function handleStatusClick() {
+      if (!wsConnected) {
+        showSetupGuide();
+      } else {
+        showToast("Bridge active on port " + currentPort, "⚡");
+      }
+    }
+
+    function showSetupGuide() {
+      var existing = document.getElementById("setup-overlay");
+      if (existing) { existing.remove(); return; }
+
+      var overlay = document.createElement("div");
+      overlay.id = "setup-overlay";
+      Object.assign(overlay.style, {
+        position: "fixed", inset: "0",
+        background: "rgba(9,10,15,0.96)",
+        backdropFilter: "blur(8px)",
+        zIndex: "999",
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center",
+        padding: "16px", gap: "10px",
+        fontFamily: "var(--font-ui)"
+      });
+
+      overlay.innerHTML = [
+        '<div style="width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#4f46e5,#06b6d4);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(99,102,241,0.4),0 8px 24px rgba(79,70,229,0.4);margin-bottom:2px">',
+          '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+        '</div>',
+        '<div style="font-size:13px;font-weight:700;color:#f8fafc;letter-spacing:-0.2px">Start Figma MCP Server</div>',
+        '<div style="font-size:10px;color:#94a3b8;text-align:center;max-width:240px;line-height:1.5">Run command in your project terminal:</div>',
+
+        '<div style="width:100%;background:#0f1118;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:3px">',
+          '<div style="font-size:8px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#475569">Option A · Run once</div>',
+          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#38bdf8;user-select:text">npx figma-mcp</div>',
+        '</div>',
+
+        '<div style="width:100%;background:#0f1118;border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:3px">',
+          '<div style="font-size:8px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#475569">Option B · Auto-start ✦ Recommended</div>',
+          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#10b981;user-select:text">npx figma-mcp --install-service</div>',
+          '<div style="font-size:8.5px;color:#475569">Background service for Claude / IDE</div>',
+        '</div>',
+
+        '<div style="display:flex;align-items:center;gap:6px;font-size:9px;color:#475569">',
+          '<div style="width:5px;height:5px;border-radius:50%;background:#f59e0b;animation:pulse 1.4s ease-in-out infinite"></div>',
+          'Plugin auto-connects once server is detected',
+        '</div>',
+
+        '<button onclick="document.getElementById(\'setup-overlay\').remove();reconnect();" style="',
+          'margin-top:4px;padding:6px 18px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);',
+          'background:rgba(255,255,255,0.06);color:#f8fafc;font-size:10px;font-weight:600;cursor:pointer;',
+          'font-family:inherit;letter-spacing:0.1px',
+        '">Dismiss & Retry</button>'
+      ].join("");
+
+      document.body.appendChild(overlay);
+
+      var checks = 0;
+      var checker = setInterval(function() {
+        checks++;
+        fetch(BRIDGE + "/health", { cache: "no-store", signal: AbortSignal.timeout(400) })
+          .then(function(res) {
+            if (res.ok) {
+              clearInterval(checker);
+              var ov = document.getElementById("setup-overlay");
+              if (ov) ov.remove();
+              log("✓ Server detected — connecting…", "ok");
+              reconnect();
+            }
+          })
+          .catch(function() {
+            if (checks >= 60) clearInterval(checker);
+          });
+      }, 500);
+    }
+
+    var totalErrors = 0;
+
+    function updateErrorBadge() {
+      var badge = document.getElementById("tab-err-badge");
+      if (!badge) return;
+      if (totalErrors > 0) {
+        badge.textContent = totalErrors;
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
+    }
+
+    function copyTextToClipboard(text, successMsg) {
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+          showToast(successMsg || "Copied!", "✓");
+        }).catch(function() {
+          fallbackCopy(text, successMsg);
+        });
+      } else {
+        fallbackCopy(text, successMsg);
+      }
+    }
+
+    function fallbackCopy(text, successMsg) {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        showToast(successMsg || "Copied!", "✓");
+      } catch(e) {
+        showToast("Copy failed", "✗");
+      }
+    }
+
+    function copyLogs() {
+      var lines = logEl.querySelectorAll(".log-line");
+      var visibleTexts = [];
+      lines.forEach(function(line) {
+        if (line.style.display !== "none") {
+          var ts = line.querySelector(".log-ts");
+          var msg = line.querySelector(".log-msg");
+          var text = (ts ? ts.textContent + " " : "") + (msg ? msg.textContent : line.textContent);
+          visibleTexts.push(text.trim());
+        }
+      });
+
+      if (visibleTexts.length === 0) {
+        showToast(activeLogFilter === 'errors' ? "No errors to copy" : "No logs to copy", "ℹ");
+        return;
+      }
+
+      var fullText = visibleTexts.join("\n");
+      var label = activeLogFilter === 'errors' ? "Errors copied (" + visibleTexts.length + ")!" : "Logs copied (" + visibleTexts.length + ")!";
+      copyTextToClipboard(fullText, label);
+    }
+
+    function log(msg, cls, opType) {
+      totalLogEvents++;
+      if (cls === 'err') {
+        totalErrors++;
+        updateErrorBadge();
+      }
+      if (logCountEl) logCountEl.textContent = totalLogEvents + " ev";
+
+      if (logEmptyEl) logEmptyEl.style.display = "none";
+
+      var wasNearBottom = (logEl.scrollHeight - logEl.clientHeight - logEl.scrollTop) <= 45;
+
+      var line = document.createElement("div");
+      line.className = "log-line";
+      if (opType) line.dataset.type = opType;
+      if (cls) line.dataset.cls = cls;
+      line.title = "Click to copy";
+      line.style.cursor = "pointer";
+
+      var ts = document.createElement("span");
+      ts.className = "log-ts";
+      ts.textContent = new Date().toLocaleTimeString("en", { hour12: false });
+
+      var prompt = document.createElement("span");
+      prompt.className = "log-prompt";
+      prompt.textContent = "❯";
+
+      var content = document.createElement("span");
+      content.className = "log-msg" + (cls ? " " + cls : "");
+      content.textContent = msg;
+
+      line.appendChild(ts);
+      line.appendChild(prompt);
+      line.appendChild(content);
+
+      line.addEventListener("click", function() {
+        var text = (ts ? ts.textContent + " " : "") + (content ? content.textContent : line.textContent);
+        copyTextToClipboard(text.trim(), "Copied line!");
+      });
+
+      if (activeLogFilter === 'writes' && opType !== 'write') {
+        line.style.display = "none";
+      } else if (activeLogFilter === 'reads' && opType !== 'read') {
+        line.style.display = "none";
+      } else if (activeLogFilter === 'errors' && cls !== 'err') {
+        line.style.display = "none";
+      }
+
+      logEl.appendChild(line);
+
+      if (wasNearBottom) {
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      if (logEl.children.length > 90) {
+        var keep = Array.from(logEl.children).slice(-70);
+        logEl.replaceChildren.apply(logEl, keep);
+      }
+    }
+
+    function clearLog() {
+      logEl.innerHTML = "";
+      totalLogEvents = 0;
+      totalErrors = 0;
+      updateErrorBadge();
+      if (logCountEl) logCountEl.textContent = "0 ev";
+      var empty = document.createElement("div");
+      empty.id = "log-empty";
+      empty.className = "terminal-empty";
+      empty.innerHTML = '<div class="terminal-empty-icon">◌</div><div class="terminal-empty-text">Listening on MCP bridge…</div>';
+      logEl.appendChild(empty);
+      logEmptyEl = empty;
+    }
+
+    function sleep(ms) {
+      return new Promise(function(r) { setTimeout(r, ms); });
+    }
+
+    function getBackoff() {
+      return Math.min(POLL_MS * Math.pow(2, Math.min(consecutiveErrors - 1, 3)), POLL_MAX_MS);
+    }
+
+    var ws = null;
+    var wsConnected = false;
+    var isLongPolling = false;
+    var activeAbortController = null;
+    var isFirstPoll = true;
+    var retryTimer = null;
+
+    async function initConnection() {
+      if (wsConnected) return;
+
+      try {
+        var res = await fetch("http://localhost:" + currentPort + "/health", { signal: AbortSignal.timeout(600) });
+        if (res.ok) {
+          BRIDGE = "http://localhost:" + currentPort;
+          everConnected = true;
+          consecutiveErrors = 0;
+          lastSuccessfulPollAt = Date.now();
+          setStatus("green", "Connected");
+          connectWs();
+          return;
+        }
+      } catch(e) {}
+
+      var scanPorts = [38451, 38452, 38453, 38454, 38455].filter(function(p) { return p !== currentPort; });
+      try {
+        var winner = await Promise.any(scanPorts.map(function(p) {
+          return fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(500) })
+            .then(function(r) { if (!r.ok) throw new Error("not ok"); return p; });
+        }));
+        currentPort = winner;
+        BRIDGE = "http://localhost:" + winner;
+        everConnected = true;
+        consecutiveErrors = 0;
+        lastSuccessfulPollAt = Date.now();
+        setStatus("green", "Connected");
+        connectWs();
+        return;
+      } catch(_) {}
+
+      setStatus("yellow", "Waiting…");
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(function() {
+        if (!wsConnected && polling) {
+          initConnection();
+        }
+      }, 1500);
+    }
+
+    function connectWs() {
+      if (ws) {
+        try { ws.close(); } catch(e) {}
+        ws = null;
+      }
+
+      var wsHost = BRIDGE.replace(/^http:\/\//, "ws://");
+      var wsUrl = wsHost + "/ws";
+      var qs = [];
+      if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
+      if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
+      if (qs.length) wsUrl += "?" + qs.join("&");
+
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (err) {
+        startLongPoll();
+        return;
+      }
+
+      var pingTimer = null;
+
+      ws.onopen = function() {
+        wsConnected = true;
+        consecutiveErrors = 0;
+        everConnected = true;
+        if (retryTimer) clearTimeout(retryTimer);
+        lastSuccessfulPollAt = Date.now();
+        setStatus("green", "Connected");
+        log("Connected to Figma MCP · port " + currentPort, "ok");
+
+        if (pingTimer) clearInterval(pingTimer);
+        pingTimer = setInterval(function() {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify({ type: "ping" })); } catch(e) {}
+          } else {
+            clearInterval(pingTimer);
+          }
+        }, 15000);
+      };
+
+      ws.onmessage = function(event) {
+        try {
+          var req = JSON.parse(event.data);
+          if (req && req.operation) {
+            var isRead = READ_OPS.indexOf(req.operation) >= 0;
+            log("→ " + req.operation, isRead ? "info" : "ok", isRead ? "read" : "write");
+            try { ws.send(JSON.stringify({ type: "ack", id: req.id })); } catch(e) {}
+            dispatchToMain(req);
+          }
+        } catch (e) {
+          log("WS parse error: " + e.message, "err");
+        }
+      };
+
+      ws.onerror = function() {
+        if (!everConnected) {
+          setStatus("yellow", "Connecting…");
+        }
+      };
+
+      ws.onclose = function() {
+        if (pingTimer) clearInterval(pingTimer);
+        wsConnected = false;
+        if (polling) {
+          startLongPoll();
+          if (retryTimer) clearTimeout(retryTimer);
+          retryTimer = setTimeout(function() {
+            if (!wsConnected && polling) initConnection();
+          }, 2000);
+        }
+      };
+    }
+
+    async function startLongPoll() {
+      if (isLongPolling || wsConnected) return;
+      isLongPolling = true;
+
+      try {
+        while (polling && !wsConnected) {
+          var receivedThisRound = 0;
+          try {
+            var pollUrl = BRIDGE + "/poll";
+            var qs = [];
+            if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
+            if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
+            if (isFirstPoll) {
+              qs.push("init=true");
+              isFirstPoll = false;
+            }
+            if (qs.length) pollUrl += "?" + qs.join("&");
+
+            var fetchTimeout = consecutiveErrors > 0 ? SHORT_POLL_TIMEOUT : LONG_POLL_TIMEOUT;
+            var ctrl = new AbortController();
+            activeAbortController = ctrl;
+            var timeoutId = setTimeout(function() { ctrl.abort(); }, fetchTimeout);
+            var res;
+            try {
+              res = await fetch(pollUrl, { signal: ctrl.signal });
+            } finally {
+              clearTimeout(timeoutId);
+              if (activeAbortController === ctrl) {
+                activeAbortController = null;
+              }
+            }
+
+            if (!res.ok) {
+              setStatus("yellow", "Busy");
+              consecutiveErrors++;
+              await sleep(getBackoff());
+              continue;
+            }
+
+            var body = await res.json();
+            var reqs = body.requests || [];
+            receivedThisRound = reqs.length;
+            setStatus("green", reqs.length ? reqs.length + " cmd" : "Connected");
+
+            consecutiveErrors = 0;
+            everConnected = true;
+            lastSuccessfulPollAt = Date.now();
+
+            for (var i = 0; i < reqs.length; i++) {
+              var req = reqs[i];
+              var isRead = READ_OPS.indexOf(req.operation) >= 0;
+              log("→ " + req.operation, isRead ? "info" : "ok", isRead ? "read" : "write");
+              dispatchToMain(req);
+            }
+          } catch (e) {
+            if (!polling) break;
+            consecutiveErrors++;
+            var backoff = getBackoff();
+            if (consecutiveErrors <= 5) {
+              setStatus("yellow", "Connecting (" + consecutiveErrors + ")");
+            } else if (consecutiveErrors <= 10) {
+              setStatus("yellow", "Retrying…");
+            } else {
+              setStatus("red", "Offline");
+            }
+            await sleep(backoff);
+            continue;
+          }
+          if (!receivedThisRound) await sleep(POLL_MS);
+        }
+      } finally {
+        isLongPolling = false;
+      }
+    }
+
+    function buildResponseBody(id, success, dataJson, error) {
+      return '{"id":' + JSON.stringify(id) +
+        ',"success":' + (success ? "true" : "false") +
+        ',"data":' + (dataJson === undefined || dataJson === null ? "null" : dataJson) +
+        ',"error":' + (error === undefined || error === null ? "null" : JSON.stringify(String(error))) +
+        '}';
+    }
+
+    async function sendResponse(id, success, dataJson, error) {
+      var body = buildResponseBody(id, success, dataJson, error);
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(body);
+          return;
+        } catch(e) {}
+      }
+
+      try {
+        await fetch(BRIDGE + "/response", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: body
+        });
+      } catch (e) {
+        log("Response failed: " + e.message, "err");
+      }
+    }
+
+    function dispatchToMain(req) {
+      parent.postMessage({ pluginMessage: req }, "*");
+    }
+
+    function reconnect() {
+      polling = false;
+      isFirstPoll = true;
+      consecutiveErrors = 0;
+      setStatus("yellow", "Reconnecting…");
+      if (ws) {
+        try { ws.close(); } catch(e) {}
+        ws = null;
+      }
+      if (activeAbortController) {
+        try { activeAbortController.abort(); } catch(e) {}
+      }
+      setTimeout(function() {
+        polling = true;
+        initConnection();
+      }, 100);
+    }
+
+    function sendActivePing() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: "ping", active: true, sessionId: sessionId, fileName: fileName }));
+        } catch(e) {}
+      }
+    }
+
+    window.addEventListener("focus", sendActivePing);
+    document.addEventListener("pointerdown", sendActivePing);
+
+    document.addEventListener("visibilitychange", function() {
+      if (document.visibilityState !== "visible") return;
+      sendActivePing();
+      if (!everConnected) return;
+      var idleMs = Date.now() - lastSuccessfulPollAt;
+      if (!wsConnected || consecutiveErrors > 0 || activeAbortController || idleMs > 20000) {
+        log("Focus sync (" + Math.round(idleMs / 1000) + "s)", "info");
+        reconnect();
+      }
+    });
+
+    function getIconForType(type) {
+      if (!type) return '<rect x="3" y="3" width="18" height="18" rx="2"/>';
+      var t = type.toUpperCase();
+      if (t === "FRAME" || t === "SECTION") {
+        return '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>';
+      }
+      if (t === "COMPONENT" || t === "INSTANCE") {
+        return '<path d="M12 2L2 12l10 10 10-10L12 2z"/>';
+      }
+      if (t === "TEXT") {
+        return '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/>';
+      }
+      if (t === "GROUP") {
+        return '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>';
+      }
+      return '<rect x="3" y="3" width="18" height="18" rx="2"/>';
+    }
+
+    function renderSelection(msg) {
+      if (!selCardEl || !selNameEl || !selMetaEl || !selBadgeEl || !selIconEl) return;
+
+      var count = msg.count || 0;
+      var list = msg.selection || [];
+      currentSelectionCount = count;
+      currentSelectionId = (count === 1 && list[0]) ? list[0].id : null;
+      currentSelectionMainId = (count === 1 && list[0]) ? (list[0].mainId || list[0].id) : null;
+      currentSelectionName = (count === 1 && list[0]) ? (list[0].name || "Layer") : "";
+
+      if (count === 0) {
+        selCardEl.classList.remove("has-selection");
+        selIconEl.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/></svg>';
+        selNameEl.textContent = "No selection";
+        selMetaEl.textContent = msg.pageName ? "Page: " + msg.pageName : (fileName || "Canvas root");
+        if (selActionsEl) selActionsEl.style.display = "none";
+        selCardEl.title = "No layer selected in Figma canvas";
+      } else if (count === 1) {
+        var node = list[0];
+        selCardEl.classList.add("has-selection");
+        selIconEl.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + getIconForType(node.type) + '</svg>';
+        selNameEl.textContent = node.name || "Untitled Node";
+
+        var metaParts = [];
+        if (node.width && node.height) metaParts.push(node.width + " × " + node.height);
+        if (msg.pageName) metaParts.push(msg.pageName);
+        selMetaEl.textContent = metaParts.length ? metaParts.join(" · ") : (node.type || "Layer");
+
+        selBadgeEl.textContent = node.type || "NODE";
+        if (selActionsEl) selActionsEl.style.display = "flex";
+        selCardEl.title = "Click to center view on: " + (node.name || "Node") + " (" + (node.type || "NODE") + " ID: " + node.id + ")";
+      } else {
+        selCardEl.classList.add("has-selection");
+        selIconEl.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>';
+        var names = list.slice(0, 2).map(function(n) { return n.name; }).join(", ");
+        selNameEl.textContent = count + " layers selected";
+        selMetaEl.textContent = names + (count > 2 ? " +" + (count - 2) + " more" : "");
+        selBadgeEl.textContent = count + " ITEMS";
+        if (selActionsEl) selActionsEl.style.display = "flex";
+        selCardEl.title = "Click to center view on " + count + " selected layers";
+      }
+    }
+
+    window.onmessage = async function(event) {
+      var msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === "session-info") {
+        var prevSid = sessionId;
+        sessionId = msg.sessionId || null;
+        fileName = msg.fileName || null;
+        fileKey = msg.fileKey || null;
+        if (fileName && docDispEl) {
+          docDispEl.textContent = fileName;
+          docDispEl.title = fileName + " (" + (sessionId || "active session") + ")";
+        }
+        if (sessionId) log("Linked: " + (fileName || sessionId), "info");
+        if (sessionId && sessionId !== prevSid) {
+          reconnect();
+        }
+        return;
+      }
+
+      if (msg.type === "selection-change") {
+        renderSelection(msg);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: "selection-change",
+              sessionId: sessionId,
+              count: msg.count,
+              pageName: msg.pageName,
+              selection: msg.selection,
+              fullNode: msg.fullNode
+            }));
+          } catch(e) {}
+        }
+        sendActivePing();
+        return;
+      }
+
+      if (msg.type === "delta-diff") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: "delta-diff",
+              sessionId: sessionId,
+              id: msg.id,
+              diff: msg.diff
+            }));
+          } catch(e) {}
+        }
+        return;
+      }
+
+      if (msg.type === "selection-image-exported") {
+        if (snapshotBtn) snapshotBtn.style.opacity = "1";
+        if (msg.bytes && msg.bytes.length > 0) {
+          try {
+            var blob = new Blob([new Uint8Array(msg.bytes)], { type: "image/png" });
+            if (navigator && navigator.clipboard && navigator.clipboard.write) {
+              await navigator.clipboard.write([
+                new ClipboardItem({ "image/png": blob })
+              ]);
+              showToast("PNG Copied to Clipboard (2x)", "📸");
+              log("📸 Exported PNG for " + (msg.nodeName || "node"), "ok", "read");
+            } else {
+              showToast("Image captured", "📸");
+            }
+          } catch(err) {
+            showToast("Failed to copy image", "✗");
+          }
+        }
+        return;
+      }
+
+      if (msg.type === "node-diff") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "node-diff", nodes: msg.nodes })); } catch(e) {}
+        }
+        return;
+      }
+
+      if (msg.type === "index-progress") {
+        if (reindexBtn) reindexBtn.classList.add("indexing");
+        if (indexProgressWrap) indexProgressWrap.classList.add("active");
+        if (indexProgressText && msg.label) indexProgressText.textContent = msg.label;
+        if (indexProgressPct && msg.percent !== undefined) indexProgressPct.textContent = msg.percent + "%";
+        if (indexProgressFill && msg.percent !== undefined) indexProgressFill.style.width = Math.min(100, Math.max(0, msg.percent)) + "%";
+        return;
+      }
+
+      if (msg.type === "index-chunk") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "index-chunk", nodes: msg.nodes })); } catch(e) {}
+        }
+        return;
+      }
+
+      if (msg.type === "document-change") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "document-change" })); } catch(e) {}
+        }
+        return;
+      }
+
+      if (msg.type === "index-update") {
+        if (reindexBtn) reindexBtn.classList.remove("indexing");
+        if (indexProgressPct) indexProgressPct.textContent = "100%";
+        if (indexProgressFill) indexProgressFill.style.width = "100%";
+        if (indexProgressText) indexProgressText.textContent = "Index ready";
+        setTimeout(function() {
+          if (indexProgressWrap) indexProgressWrap.classList.remove("active");
+        }, 1200);
+
+        var elapsed = msg.startMs ? (Date.now() - msg.startMs) : 0;
+        showToast("Indexed in " + elapsed + "ms", "✓");
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: "index-update",
+              data: msg.data,
+              fileName: msg.fileName,
+              sessionId: msg.sessionId,
+              startMs: msg.startMs
+            }));
+            log("Indexed " + (msg.fileName || "canvas") + " (" + elapsed + "ms)", "ok", "read");
+          } catch(e) {}
+        }
+        return;
+      }
+
+      var isRead = READ_OPS.indexOf(msg.operation) >= 0;
+      var durationStr = msg.durationMs !== undefined ? " (" + msg.durationMs + "ms)" : "";
+      if (msg.durationMs !== undefined && speedEl) {
+        speedEl.textContent = msg.durationMs;
+      }
+      if (msg.success) {
+        if (isRead) {
+          readCount++;
+          document.getElementById("read-count").textContent = readCount;
+        } else {
+          writeCount++;
+          document.getElementById("write-count").textContent = writeCount;
+        }
+        log("✓ " + (msg.id ? msg.id.slice(-6) : "ok") + durationStr, "ok", isRead ? "read" : "write");
+      } else {
+        errCount++;
+        log("✗ " + (msg.id ? msg.id.slice(-6) : "err") + durationStr + ": " + (msg.error || "fail"), "err", isRead ? "read" : "write");
+      }
+      var payloadJson = msg.dataJson !== undefined
+        ? msg.dataJson
+        : (msg.data !== undefined ? JSON.stringify(msg.data) : null);
+      await sendResponse(msg.id, msg.success, payloadJson, msg.error);
+    };
+
+    initConnection();
+
+    // Smooth Drag Resize (60FPS via requestAnimationFrame)
+    (function initResize() {
+      var grip = document.getElementById("resize-grip");
+      if (!grip) return;
+
+      var rafId = null;
+      var lastW = 0, lastH = 0;
+
+      grip.addEventListener("pointerdown", function(e) {
+        e.preventDefault();
+        grip.setPointerCapture(e.pointerId);
+        var startX = e.clientX;
+        var startY = e.clientY;
+        var startW = window.innerWidth;
+        var startH = window.innerHeight;
+
+        function onPointerMove(ev) {
+          var nw = Math.max(280, Math.min(1000, Math.round(startW + (ev.clientX - startX))));
+          var nh = Math.max(220, Math.min(1200, Math.round(startH + (ev.clientY - startY))));
+          lastW = nw;
+          lastH = nh;
+
+          if (!rafId) {
+            rafId = requestAnimationFrame(function() {
+              parent.postMessage({ pluginMessage: { type: "resize", width: lastW, height: lastH } }, "*");
+              rafId = null;
+            });
+          }
+        }
+
+        function onPointerUp(ev) {
+          try { grip.releasePointerCapture(ev.pointerId); } catch(err) {}
+          window.removeEventListener("pointermove", onPointerMove);
+          window.removeEventListener("pointerup", onPointerUp);
+          if (rafId) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+          }
+          if (lastW > 0 && lastH > 0) {
+            parent.postMessage({ pluginMessage: { type: "resize", width: lastW, height: lastH } }, "*");
+            parent.postMessage({ pluginMessage: { type: "save-window-size", width: lastW, height: lastH } }, "*");
+          }
+        }
+
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", onPointerUp);
+      });
+    })();
+  </script>
+</body>
+</html>

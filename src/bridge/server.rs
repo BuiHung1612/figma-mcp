@@ -1236,6 +1236,47 @@ async fn handle_asset_serve(
     }
 }
 
+pub const PLUGIN_RUNTIME_CODE_JS: &str = include_str!("../../plugin-runtime/code.js");
+pub const PLUGIN_RUNTIME_UI_HTML: &str = include_str!("../../plugin-runtime/ui.html");
+
+async fn handle_plugin_version() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "application/json; charset=utf-8"),
+            ("cache-control", "no-cache, no-store, must-revalidate"),
+        ],
+        Json(json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "status": "ready",
+            "name": "figma-mcp",
+            "dynamicRuntime": true
+        })),
+    )
+}
+
+async fn handle_plugin_code() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "application/javascript; charset=utf-8"),
+            ("cache-control", "no-cache, no-store, must-revalidate"),
+        ],
+        PLUGIN_RUNTIME_CODE_JS,
+    )
+}
+
+async fn handle_plugin_ui() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "text/html; charset=utf-8"),
+            ("cache-control", "no-cache, no-store, must-revalidate"),
+        ],
+        PLUGIN_RUNTIME_UI_HTML,
+    )
+}
+
 pub fn create_router(state: BridgeState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1255,6 +1296,9 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/message", post(handle_mcp_message))
         .route("/messages", post(handle_mcp_message))
         .route("/mcp", post(handle_mcp_direct))
+        .route("/plugin/version", get(handle_plugin_version))
+        .route("/plugin/code.js", get(handle_plugin_code))
+        .route("/plugin/ui.html", get(handle_plugin_ui))
         .route("/assets/*path", get(handle_asset_serve))
         .layer(cors)
         .with_state(state)

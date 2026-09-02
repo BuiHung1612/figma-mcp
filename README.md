@@ -94,13 +94,20 @@ cargo build --release
 
 ---
 
-### 4. Install the Figma Plugin
+### 4. Install the Figma Plugin (Permanent One-Time Setup)
+
+`figma-rust-mcp` uses a **Dynamic Thin Loader** architecture. You only import it once — all future UI updates, bugfixes, and features stream dynamically from the local Rust server:
+
+```bash
+# Setup permanent plugin folder (~/.figma-mcp/plugin)
+npx figma-rust-mcp --setup-plugin
+```
 
 1. Open **Figma Desktop**.
 2. Go to **Plugins** → **Development** → **Import plugin from manifest...**
-3. Select `plugin/manifest.json` from this repository.
+3. Select `~/.figma-mcp/plugin/manifest.json` (or `plugin/manifest.json` from this repo).
 4. Run the plugin (**Plugins** → **Development** → **Figma MCP Bridge**).
-5. The plugin UI will display a green dot (**Connected**).
+5. Done! You never need to reinstall or re-import the plugin on future updates.
 
 ---
 

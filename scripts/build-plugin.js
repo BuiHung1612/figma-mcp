@@ -30,5 +30,5 @@ const parts = files.map(f => {
 });
 
 const output = (banner + parts.join("\n")).replace(/\{\{PLUGIN_VERSION\}\}/g, version);
-writeFileSync("plugin/code.js", output);
-console.log(`✓ plugin/code.js written (${output.length} chars, ${output.split("\n").length} lines)`);
+writeFileSync("plugin-runtime/code.js", output);
+console.log(`✓ plugin-runtime/code.js written (${output.length} chars, ${output.split("\n").length} lines)`);

@@ -371,13 +371,46 @@ function isServiceInstalled() {
   return false;
 }
 
+function setupPlugin(customDir) {
+  const pluginDir = customDir || path.join(os.homedir(), '.figma-mcp', 'plugin');
+  const sourcePluginDir = path.resolve(__dirname, '../plugin');
+
+  fs.mkdirSync(pluginDir, { recursive: true });
+
+  const files = ['manifest.json', 'code.js', 'ui.html', 'icon16.png', 'icon32.png'];
+  for (const f of files) {
+    const src = path.join(sourcePluginDir, f);
+    const dest = path.join(pluginDir, f);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dest);
+    }
+  }
+
+  const manifestPath = path.join(pluginDir, 'manifest.json');
+  console.log(`\n\x1b[32m✓ Figma MCP Dynamic Thin Plugin installed to:\x1b[0m`);
+  console.log(`  \x1b[36m${manifestPath}\x1b[0m\n`);
+  console.log(`\x1b[1mTo connect Figma (Do this ONCE forever):\x1b[0m`);
+  console.log(`  1. Open Figma Desktop`);
+  console.log(`  2. Go to Plugins → Development → Import plugin from manifest...`);
+  console.log(`  3. Select: ${manifestPath}`);
+  console.log(`  4. Done! All future updates load dynamically from figma-mcp without file re-imports.\n`);
+  return manifestPath;
+}
+
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const args = process.argv.slice(2);
 
+  if (args.includes('--setup-plugin') || args.includes('--export-plugin') || args.includes('--setup')) {
+    const customDir = args.find(a => !a.startsWith('-') && a !== '--setup-plugin' && a !== '--export-plugin' && a !== '--setup');
+    setupPlugin(customDir);
+    return;
+  }
+
   if (args.includes('--install-service')) {
     try {
+      setupPlugin();
       const binPath = await findOrDownloadBinary();
       await installService(binPath);
     } catch (err) {
