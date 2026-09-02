@@ -21,69 +21,94 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 ---
 
-## 🏛️ Architecture
+## 🏛️ Architecture & Zero-Touch Connection
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│                      Terminal / Standalone Service                     │
+│                      Terminal / Background Service                     │
 │                       figma-mcp (Pure Rust Engine)                     │
 │  • MCP SSE Transport (/sse, /message) & Direct HTTP (/mcp)             │
+│  • Dynamic Runtime Server (/plugin/code.js, /plugin/ui.html)           │
 │  • In-Memory Fast Index (<1ms Lookups & Incremental Diffs)             │
 │  • Design-to-Code Compiler (React/Tailwind, Vue, RN, SwiftUI)          │
 │  • Design Token Transformer (CSS, Tailwind, TypeScript, W3C DTCG)      │
 │  • Sandboxed JS Runtime (Boa ECMAScript Engine)                        │
 │  • Binary MessagePack & Progressive Subtree Chunk Receiver             │
 └───────────────▲────────────────────────────────────────▲───────────────┘
-                │ (ws://127.0.0.1:38451)                 │ (http://127.0.0.1:38451/sse)
-                │ (MessagePack / JSON IPC)               │
+                │ (ws://127.0.0.1:38451/ws)              │ (http://127.0.0.1:38451/sse)
+                │ (Dynamic Code Streaming & Hot-Reload)  │ (JSON-RPC 2.0 / SSE)
       ┌─────────┴─────────┐                    ┌─────────┴─────────┐
       │   Figma Desktop   │                    │ AI Assistant(s)   │
-      │ (Plugin Bridge)   │                    │ Google Antigravity│
+      │ (Thin Loader)     │                    │ Google Antigravity│
       │                   │                    │ Cursor / Windsurf │
-      │ • Canvas Tracker  │                    │ Claude Code / Zed │
-      │ • SVG/PNG Render  │                    └───────────────────┘
+      │ • Zero-Touch Sync │                    │ Claude Code / Zed │
+      │ • Live Hot-Reload │                    └───────────────────┘
+      │ • SVG/PNG Render  │
       └───────────────────┘
 ```
+
+### 🔌 How the Zero-Touch Connection Works:
+1. **Permanent Thin Loader**: You only import the Figma plugin **once** (`~/.figma-mcp/plugin/manifest.json`).
+2. **Dynamic Runtime Streaming**: Upon launch, the Thin Loader contacts `http://127.0.0.1:38451/plugin/code.js` to fetch and execute the latest runtime in memory.
+3. **Live WebSocket Hot-Reload**: The plugin connects to `ws://127.0.0.1:38451/ws`. When you upgrade `figma-rust-mcp` or restart the daemon, the plugin automatically detects the new server version and hot-reloads seamlessly — **no need to re-import or restart the plugin in Figma**.
+4. **Auto-Reconnect & Offline Buffer**: If Figma is opened before the Rust service starts, the plugin displays a waiting screen and connects automatically the instant the service is up.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. One-Line Launch with NPX (No Rust toolchain needed)
-
-Launch `figma-rust-mcp` on macOS, Linux, or Windows with zero manual setup:
+### 1. One-Line Setup & Launch with NPX (No Rust toolchain needed)
 
 ```bash
+# Launch interactive MCP server
 npx figma-rust-mcp
 ```
-
-This automatically downloads the prebuilt native binary for your OS and architecture and starts the server.
+*(Automatically downloads precompiled native binary for macOS Apple Silicon/Intel, Linux, or Windows).*
 
 ---
 
-### 2. Auto-Start as Background Service (Recommended for SSE)
+### 2. Install the Figma Plugin (Permanent One-Time Setup)
 
-To make `figma-rust-mcp` start automatically upon OS login and run in the background across all your AI IDEs:
+Create the permanent Thin Loader folder in your home directory:
 
 ```bash
-# Install and start auto-start background service (macOS LaunchAgent, Linux systemd, Windows Task Scheduler)
+npx figma-rust-mcp --setup-plugin
+```
+
+1. Open **Figma Desktop**.
+2. Go to **Plugins** → **Development** → **Import plugin from manifest...**
+3. Select `~/.figma-mcp/plugin/manifest.json` (or `plugin/manifest.json` inside this repository).
+4. Run the plugin: **Plugins** → **Development** → **Figma MCP Bridge**.
+5. **Done!** Future updates to `figma-rust-mcp` will stream to Figma automatically.
+
+---
+
+### 3. Run as Auto-Start Background Service (Recommended)
+
+Run `figma-rust-mcp` seamlessly in the background across all your AI editors without keeping a terminal open:
+
+```bash
+# Install and start background service (macOS LaunchAgent, Linux systemd, Windows Task)
 npx figma-rust-mcp --install-service
 
-# Update/Upgrade to the latest version and hot-reload background service
-npx -y figma-rust-mcp@latest --install-service
-
-# Check service status
+# Check live background service status & bridge health
 npx figma-rust-mcp --service-status
 
-# Uninstall background service
+# One-command upgrade to latest version & auto-restart background service
+npx figma-rust-mcp --upgrade
+
+# Add convenient 'figma-mcp' alias to your shell profile (~/.zshrc, ~/.bashrc)
+npx figma-rust-mcp --alias
+
+# Stop and remove background service
 npx figma-rust-mcp --uninstall-service
 ```
 
 ---
 
-### 3. Build from Source (Rust)
+### 4. Build from Source (Optional)
 
-Prerequisites: [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`).
+If you prefer building directly with the [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`):
 
 ```bash
 git clone https://github.com/BuiHung1612/figma-mcp.git
@@ -91,23 +116,6 @@ cd figma-mcp
 cargo build --release
 ./target/release/figma-mcp
 ```
-
----
-
-### 4. Install the Figma Plugin (Permanent One-Time Setup)
-
-`figma-rust-mcp` uses a **Dynamic Thin Loader** architecture. You only import it once — all future UI updates, bugfixes, and features stream dynamically from the local Rust server:
-
-```bash
-# Setup permanent plugin folder (~/.figma-mcp/plugin)
-npx figma-rust-mcp --setup-plugin
-```
-
-1. Open **Figma Desktop**.
-2. Go to **Plugins** → **Development** → **Import plugin from manifest...**
-3. Select `~/.figma-mcp/plugin/manifest.json` (or `plugin/manifest.json` from this repo).
-4. Run the plugin (**Plugins** → **Development** → **Figma MCP Bridge**).
-5. Done! You never need to reinstall or re-import the plugin on future updates.
 
 ---
 
