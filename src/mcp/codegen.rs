@@ -90,7 +90,28 @@ fn hex_to_tailwind_color(hex_or_var: &str, prefix: &str) -> String {
     if s.starts_with("var(") {
         return format!("{}-[{}]", prefix, s);
     }
-    match s.to_lowercase().as_str() {
+    let lower = s.to_lowercase();
+    if lower.starts_with("rgba(") {
+        let clean = lower.replace(' ', "");
+        if clean.starts_with("rgba(0,0,0,") {
+            if let Some(alpha_str) = clean.strip_prefix("rgba(0,0,0,").and_then(|a| a.strip_suffix(')')) {
+                if let Ok(alpha) = alpha_str.parse::<f64>() {
+                    let pct = (alpha * 100.0).round() as i64;
+                    return format!("{}-black/{}", prefix, pct);
+                }
+            }
+        }
+        if clean.starts_with("rgba(255,255,255,") {
+            if let Some(alpha_str) = clean.strip_prefix("rgba(255,255,255,").and_then(|a| a.strip_suffix(')')) {
+                if let Ok(alpha) = alpha_str.parse::<f64>() {
+                    let pct = (alpha * 100.0).round() as i64;
+                    return format!("{}-white/{}", prefix, pct);
+                }
+            }
+        }
+        return format!("{}-[{}]", prefix, clean);
+    }
+    match lower.as_str() {
         "#ffffff" | "#fff" | "rgb(255,255,255)" | "rgba(255,255,255,1)" => format!("{}-white", prefix),
         "#000000" | "#000" | "rgb(0,0,0)" | "rgba(0,0,0,1)" => format!("{}-black", prefix),
         "#f8fafc" => format!("{}-slate-50", prefix),
@@ -213,18 +234,43 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
     // 3. Fill (Background / Text color)
     if let Some(fill) = node.get("fill").and_then(|v| v.as_str()) {
         let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if node_type == "TEXT" {
-            classes.push(hex_to_tailwind_color(fill, "text"));
+        let prefix = if node_type == "TEXT" { "text" } else { "bg" };
+        let fill_opacity = node.get("fillOpacity").and_then(|v| v.as_f64());
+        if let Some(op) = fill_opacity {
+            if op > 0.0 && op < 1.0 && !fill.starts_with("rgba(") {
+                let pct = (op * 100.0).round() as i64;
+                let base = hex_to_tailwind_color(fill, prefix);
+                classes.push(format!("{}/{}", base, pct));
+            } else {
+                classes.push(hex_to_tailwind_color(fill, prefix));
+            }
         } else {
-            classes.push(hex_to_tailwind_color(fill, "bg"));
+            classes.push(hex_to_tailwind_color(fill, prefix));
         }
     }
 
     // 4. Border / Stroke
     if let Some(stroke) = node.get("stroke") {
-        if let Some(color) = stroke.get("color").and_then(|v| v.as_str()) {
+        let color_opt = if let Some(c) = stroke.as_str() {
+            Some(c)
+        } else {
+            stroke.get("color").and_then(|v| v.as_str())
+        };
+        if let Some(color) = color_opt {
             classes.push("border".to_string());
-            classes.push(hex_to_tailwind_color(color, "border"));
+            let stroke_opacity = stroke.get("opacity").and_then(|v| v.as_f64())
+                .or_else(|| node.get("strokeOpacity").and_then(|v| v.as_f64()));
+            if let Some(op) = stroke_opacity {
+                if op > 0.0 && op < 1.0 && !color.starts_with("rgba(") {
+                    let pct = (op * 100.0).round() as i64;
+                    let base = hex_to_tailwind_color(color, "border");
+                    classes.push(format!("{}/{}", base, pct));
+                } else {
+                    classes.push(hex_to_tailwind_color(color, "border"));
+                }
+            } else {
+                classes.push(hex_to_tailwind_color(color, "border"));
+            }
         }
     }
 
@@ -902,5 +948,29 @@ mod tests {
         let swift_code = generate_code_from_context(&context, "swiftui", Some("UserProfileCard")).unwrap();
         assert!(swift_code.contains("struct UserProfileCard: View"));
         assert!(swift_code.contains("HStack {"));
+    }
+
+    #[test]
+    fn test_color_opacity_tailwind_generation() {
+        let node_rgba = json!({
+            "name": "Overlay",
+            "type": "FRAME",
+            "fill": "rgba(0, 0, 0, 0.3)",
+            "layout": { "display": "flex", "flexDirection": "row" }
+        });
+        let classes_rgba = node_to_tailwind_classes(&node_rgba);
+        assert!(classes_rgba.contains(&"bg-black/30".to_string()));
+
+        let node_hex_with_opacity = json!({
+            "name": "Backdrop",
+            "type": "FRAME",
+            "fill": "#000000",
+            "fillOpacity": 0.3,
+            "stroke": { "color": "#ffffff", "opacity": 0.5 },
+            "layout": { "display": "flex", "flexDirection": "row" }
+        });
+        let classes_hex = node_to_tailwind_classes(&node_hex_with_opacity);
+        assert!(classes_hex.contains(&"bg-black/30".to_string()));
+        assert!(classes_hex.contains(&"border-white/50".to_string()));
     }
 }

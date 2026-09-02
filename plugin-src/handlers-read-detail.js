@@ -48,11 +48,11 @@ handlers.get_node_detail = async function(params) {
         if (f.visible === false) continue;
         var fd = { type: f.type };
         if (f.type === "SOLID") {
-          fd.color = rgbToHex(f.color);
-          if (f.opacity !== undefined && f.opacity !== 1) fd.opacity = Math.round(f.opacity * 100) / 100;
+          fd.color = rgbToHex(f.color, f.opacity);
+          if (f.opacity !== undefined && f.opacity !== 1) fd.opacity = Math.round(f.opacity * 1000) / 1000;
         } else if (f.type === "GRADIENT_LINEAR" || f.type === "GRADIENT_RADIAL" || f.type === "GRADIENT_ANGULAR") {
           fd.gradientStops = f.gradientStops ? f.gradientStops.map(function(gs) {
-            return { color: rgbToHex(gs.color), position: Math.round(gs.position * 100) / 100 };
+            return { color: rgbToHex(gs.color, gs.color ? gs.color.a : 1), position: Math.round(gs.position * 100) / 100 };
           }) : [];
           // Extract gradient angle from gradientTransform matrix
           try {
@@ -97,7 +97,10 @@ handlers.get_node_detail = async function(params) {
       var strokeBindings = (node.boundVariables && node.boundVariables.strokes) ? (Array.isArray(node.boundVariables.strokes) ? node.boundVariables.strokes : [node.boundVariables.strokes]) : [];
 
       if (dStrokes.length === 1 && dStrokes[0].type === "SOLID") {
-        detail.stroke = rgbToHex(dStrokes[0].color);
+        detail.stroke = rgbToHex(dStrokes[0].color, dStrokes[0].opacity);
+        if (dStrokes[0].opacity !== undefined && dStrokes[0].opacity !== 1) {
+          detail.strokeOpacity = Math.round(dStrokes[0].opacity * 1000) / 1000;
+        }
         try {
           if (strokeBindings[0] && strokeBindings[0].id) {
             var boundStrokeVar = await resolveVariableValueAsync(strokeBindings[0].id, node, 0);
@@ -117,7 +120,8 @@ handlers.get_node_detail = async function(params) {
         for (var si = 0; si < dStrokes.length; si++) {
           var s = dStrokes[si];
           var sd = { type: s.type };
-          if (s.type === "SOLID") sd.color = rgbToHex(s.color);
+          if (s.type === "SOLID") sd.color = rgbToHex(s.color, s.opacity);
+          if (s.opacity !== undefined && s.opacity !== 1) sd.opacity = Math.round(s.opacity * 1000) / 1000;
           try {
             if (strokeBindings[si] && strokeBindings[si].id) {
               var bsv = await resolveVariableValueAsync(strokeBindings[si].id, node, 0);
@@ -529,6 +533,9 @@ handlers.get_design_context = async function(params) {
     // Fill (token-resolved)
     var fillVal = resolveFill(nd);
     if (fillVal) ctx.fill = fillVal;
+    if (nd.fills && !isMixed(nd.fills) && nd.fills.length && nd.fills[0].type === "SOLID" && nd.fills[0].opacity !== undefined && nd.fills[0].opacity !== 1) {
+      ctx.fillOpacity = Math.round(nd.fills[0].opacity * 1000) / 1000;
+    }
 
     // Direct token bindings
     try {
@@ -553,7 +560,10 @@ handlers.get_design_context = async function(params) {
     // Stroke
     try {
       if (nd.strokes && nd.strokes.length && nd.strokes[0].type === "SOLID") {
-        ctx.stroke = { color: rgbToHex(nd.strokes[0].color), weight: nd.strokeWeight };
+        ctx.stroke = { color: rgbToHex(nd.strokes[0].color, nd.strokes[0].opacity), weight: nd.strokeWeight };
+        if (nd.strokes[0].opacity !== undefined && nd.strokes[0].opacity !== 1) {
+          ctx.stroke.opacity = Math.round(nd.strokes[0].opacity * 1000) / 1000;
+        }
       }
     } catch(e) {}
 
@@ -795,7 +805,7 @@ handlers.get_styles = async function() {
       var paints = s.paints || [];
       var hex = null;
       if (paints.length > 0 && paints[0].type === "SOLID") {
-        hex = rgbToHex(paints[0].color);
+        hex = rgbToHex(paints[0].color, paints[0].opacity);
       }
       return { id: s.id, name: s.name, hex: hex, type: "PAINT" };
     }),
@@ -951,7 +961,7 @@ handlers.get_variables = async function() {
           if (Object.prototype.hasOwnProperty.call(v.valuesByMode, modeId)) {
             var val = v.valuesByMode[modeId];
             if (val && typeof val === "object" && "r" in val && "g" in val && "b" in val) {
-              var hexVal = rgbToHex(val);
+              var hexVal = rgbToHex(val, val.a);
               values[modeId] = hexVal;
               resolvedTokensMap[v.name] = hexVal;
             } else if (val && typeof val === "object" && val.type === "VARIABLE_ALIAS" && val.id) {

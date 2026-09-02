@@ -479,10 +479,10 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
     if ("fills" in node && node.fills && !isMixed(node.fills) && node.fills.length) {
       var fills = node.fills;
       if (fills.length === 1 && fills[0].type === "SOLID") {
-        info.fill = rgbToHex(fills[0].color);
+        info.fill = rgbToHex(fills[0].color, fills[0].opacity);
         if (tokenCollector && info.fill) tokenCollector.colors.add(info.fill);
         if (fills[0].opacity !== undefined && fills[0].opacity !== 1) {
-          info.fillOpacity = Math.round(fills[0].opacity * 100) / 100;
+          info.fillOpacity = Math.round(fills[0].opacity * 1000) / 1000;
         }
       } else {
         info.fills = [];
@@ -490,12 +490,12 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
           var f = fills[fi];
           var fd = { type: f.type, visible: f.visible !== false };
           if (f.type === "SOLID") {
-            fd.color = rgbToHex(f.color);
+            fd.color = rgbToHex(f.color, f.opacity);
             if (tokenCollector && fd.color) tokenCollector.colors.add(fd.color);
-            if (f.opacity !== undefined && f.opacity !== 1) fd.opacity = Math.round(f.opacity * 100) / 100;
+            if (f.opacity !== undefined && f.opacity !== 1) fd.opacity = Math.round(f.opacity * 1000) / 1000;
           } else if (f.type === "GRADIENT_LINEAR" || f.type === "GRADIENT_RADIAL" || f.type === "GRADIENT_ANGULAR") {
             fd.gradientStops = f.gradientStops ? f.gradientStops.map(function(gs) {
-              var sc = rgbToHex(gs.color);
+              var sc = rgbToHex(gs.color, gs.color ? gs.color.a : 1);
               if (tokenCollector && sc) tokenCollector.colors.add(sc);
               return { color: sc, position: Math.round(gs.position * 100) / 100 };
             }) : [];
@@ -522,18 +522,21 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
     if ("strokes" in node && node.strokes && !isMixed(node.strokes) && node.strokes.length) {
       var strokes = node.strokes;
       if (strokes.length === 1 && strokes[0].type === "SOLID") {
-        info.stroke = rgbToHex(strokes[0].color);
+        info.stroke = rgbToHex(strokes[0].color, strokes[0].opacity);
         if (tokenCollector && info.stroke) tokenCollector.colors.add(info.stroke);
         applyStrokeWeight(node, info);
+        if (strokes[0].opacity !== undefined && strokes[0].opacity !== 1) {
+          info.strokeOpacity = Math.round(strokes[0].opacity * 1000) / 1000;
+        }
         if (node.strokeAlign) info.strokeAlign = node.strokeAlign;
       } else {
         info.strokes = strokes.map(function(s) {
           var sd = { type: s.type };
           if (s.type === "SOLID") {
-            sd.color = rgbToHex(s.color);
+            sd.color = rgbToHex(s.color, s.opacity);
             if (tokenCollector && sd.color) tokenCollector.colors.add(sd.color);
           }
-          if (s.opacity !== undefined && s.opacity !== 1) sd.opacity = Math.round(s.opacity * 100) / 100;
+          if (s.opacity !== undefined && s.opacity !== 1) sd.opacity = Math.round(s.opacity * 1000) / 1000;
           return sd;
         });
         applyStrokeWeight(node, info);
@@ -618,7 +621,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         var eff = node.effects[ei];
         if (eff.visible === false) continue;
         var ed = { type: eff.type };
-        if (eff.color) ed.color = rgbToHex(eff.color);
+        if (eff.color) ed.color = rgbToHex(eff.color, eff.color.a);
         if (eff.offset) ed.offset = { x: eff.offset.x, y: eff.offset.y };
         if (eff.radius !== undefined) ed.radius = eff.radius;
         if (eff.spread !== undefined) ed.spread = eff.spread;

@@ -71,10 +71,22 @@ function hexToRgb(hex) {
   };
 }
 
-function rgbToHex({ r, g, b }) {
-  return "#" + [r, g, b]
-    .map(v => Math.round(v * 255).toString(16).padStart(2, "0"))
-    .join("");
+function colorToCss(color, opacity) {
+  if (!color) return null;
+  var r = Math.round((color.r !== undefined ? color.r : 0) * 255);
+  var g = Math.round((color.g !== undefined ? color.g : 0) * 255);
+  var b = Math.round((color.b !== undefined ? color.b : 0) * 255);
+  var a = opacity !== undefined ? opacity : (color.a !== undefined ? color.a : 1);
+  if (a !== undefined && a < 0.999 && a >= 0) {
+    var aFormatted = Math.round(a * 1000) / 1000;
+    return "rgba(" + r + ", " + g + ", " + b + ", " + aFormatted + ")";
+  }
+  return "#" + [r, g, b].map(function(v) { return v.toString(16).padStart(2, "0"); }).join("");
+}
+
+function rgbToHex(color, opacity) {
+  if (!color) return "#000000";
+  return colorToCss(color, opacity);
 }
 
 function solidFill(hex, fillOpacity) {
@@ -185,8 +197,8 @@ async function resolveVariableValueAsync(variableOrId, contextNodeOrModeMap, dep
 
   // If RGBA color
   if (typeof rawVal === "object" && "r" in rawVal && "g" in rawVal && "b" in rawVal) {
-    var hex = rgbToHex(rawVal);
-    var alpha = rawVal.a !== undefined ? Math.round(rawVal.a * 100) / 100 : 1;
+    var hex = rgbToHex(rawVal, rawVal.a);
+    var alpha = rawVal.a !== undefined ? Math.round(rawVal.a * 1000) / 1000 : 1;
     return {
       type: "COLOR",
       name: variable.name,
@@ -224,7 +236,9 @@ function isMixed(value) {
 function firstSolidHex(paints) {
   if (!paints || isMixed(paints) || !paints.length) return null;
   for (var i = 0; i < paints.length; i++) {
-    if (paints[i].type === "SOLID" && paints[i].visible !== false) return rgbToHex(paints[i].color);
+    if (paints[i].type === "SOLID" && paints[i].visible !== false) {
+      return colorToCss(paints[i].color, paints[i].opacity);
+    }
   }
   return null;
 }
