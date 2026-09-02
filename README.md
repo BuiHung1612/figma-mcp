@@ -61,7 +61,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 ```bash
 # Launch interactive MCP server
-npx figma-rust-mcp
+npx -y figma-rust-mcp@latest
 ```
 *(Automatically downloads precompiled native binary for macOS Apple Silicon/Intel, Linux, or Windows).*
 
@@ -72,7 +72,7 @@ npx figma-rust-mcp
 Create the permanent Thin Loader folder in your home directory:
 
 ```bash
-npx figma-rust-mcp --setup-plugin
+npx -y figma-rust-mcp@latest --setup-plugin
 ```
 
 1. Open **Figma Desktop**.
@@ -89,19 +89,19 @@ Run `figma-rust-mcp` seamlessly in the background across all your AI editors wit
 
 ```bash
 # Install and start background service (macOS LaunchAgent, Linux systemd, Windows Task)
-npx figma-rust-mcp --install-service
+npx -y figma-rust-mcp@latest --install-service
 
 # Check live background service status & bridge health
-npx figma-rust-mcp --service-status
+npx -y figma-rust-mcp@latest --service-status
 
 # One-command upgrade to latest version & auto-restart background service
-npx figma-rust-mcp --upgrade
+npx -y figma-rust-mcp@latest --upgrade
 
 # Add convenient 'figma-mcp' alias to your shell profile (~/.zshrc, ~/.bashrc)
-npx figma-rust-mcp --alias
+npx -y figma-rust-mcp@latest --alias
 
 # Stop and remove background service
-npx figma-rust-mcp --uninstall-service
+npx -y figma-rust-mcp@latest --uninstall-service
 ```
 
 ---
