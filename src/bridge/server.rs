@@ -794,6 +794,16 @@ async fn handle_socket(
         session.ws_tx = Some(tx);
         session.last_poll_at = now_ms();
 
+        // Send initial handshake with server version
+        let hello = json!({
+            "type": "server-hello",
+            "version": env!("CARGO_PKG_VERSION"),
+            "name": "figma-mcp",
+            "dynamicRuntime": true,
+            "connectedAt": now_ms()
+        });
+        let _ = tx_clone.send(Message::Text(hello.to_string()));
+
         // Flush any queued ops directly over WebSocket
         let queued = std::mem::take(&mut session.queue);
         for op in &queued {
@@ -1239,12 +1249,16 @@ async fn handle_asset_serve(
 pub const PLUGIN_RUNTIME_CODE_JS: &str = include_str!("../../plugin-runtime/code.js");
 pub const PLUGIN_RUNTIME_UI_HTML: &str = include_str!("../../plugin-runtime/ui.html");
 
+const RUNTIME_CODE_ETAG: &str = concat!("\"figma-code-", env!("CARGO_PKG_VERSION"), "\"");
+const RUNTIME_UI_ETAG: &str = concat!("\"figma-ui-", env!("CARGO_PKG_VERSION"), "\"");
+
 async fn handle_plugin_version() -> impl IntoResponse {
     (
         StatusCode::OK,
         [
             ("content-type", "application/json; charset=utf-8"),
             ("cache-control", "no-cache, no-store, must-revalidate"),
+            ("access-control-allow-origin", "*"),
         ],
         Json(json!({
             "version": env!("CARGO_PKG_VERSION"),
@@ -1255,26 +1269,62 @@ async fn handle_plugin_version() -> impl IntoResponse {
     )
 }
 
-async fn handle_plugin_code() -> impl IntoResponse {
+async fn handle_plugin_code(headers: HeaderMap) -> impl IntoResponse {
+    if let Some(if_none_match) = headers.get(axum::http::header::IF_NONE_MATCH) {
+        if let Ok(val) = if_none_match.to_str() {
+            if val == RUNTIME_CODE_ETAG || val == "*" {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    [
+                        ("etag", RUNTIME_CODE_ETAG),
+                        ("cache-control", "public, max-age=0, must-revalidate"),
+                        ("access-control-allow-origin", "*"),
+                    ],
+                    "",
+                ).into_response();
+            }
+        }
+    }
+
     (
         StatusCode::OK,
         [
             ("content-type", "application/javascript; charset=utf-8"),
-            ("cache-control", "no-cache, no-store, must-revalidate"),
+            ("etag", RUNTIME_CODE_ETAG),
+            ("cache-control", "public, max-age=0, must-revalidate"),
+            ("access-control-allow-origin", "*"),
         ],
         PLUGIN_RUNTIME_CODE_JS,
-    )
+    ).into_response()
 }
 
-async fn handle_plugin_ui() -> impl IntoResponse {
+async fn handle_plugin_ui(headers: HeaderMap) -> impl IntoResponse {
+    if let Some(if_none_match) = headers.get(axum::http::header::IF_NONE_MATCH) {
+        if let Ok(val) = if_none_match.to_str() {
+            if val == RUNTIME_UI_ETAG || val == "*" {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    [
+                        ("etag", RUNTIME_UI_ETAG),
+                        ("cache-control", "public, max-age=0, must-revalidate"),
+                        ("access-control-allow-origin", "*"),
+                    ],
+                    "",
+                ).into_response();
+            }
+        }
+    }
+
     (
         StatusCode::OK,
         [
             ("content-type", "text/html; charset=utf-8"),
-            ("cache-control", "no-cache, no-store, must-revalidate"),
+            ("etag", RUNTIME_UI_ETAG),
+            ("cache-control", "public, max-age=0, must-revalidate"),
+            ("access-control-allow-origin", "*"),
         ],
         PLUGIN_RUNTIME_UI_HTML,
-    )
+    ).into_response()
 }
 
 pub fn create_router(state: BridgeState) -> Router {

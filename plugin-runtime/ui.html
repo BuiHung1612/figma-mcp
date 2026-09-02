@@ -1501,6 +1501,25 @@
       ws.onmessage = function(event) {
         try {
           var req = JSON.parse(event.data);
+          if (req && req.type === "server-hello") {
+            var serverVer = req.version;
+            if (!window.__FIGMA_MCP_VER) {
+              window.__FIGMA_MCP_VER = serverVer;
+            } else if (window.__FIGMA_MCP_VER !== serverVer) {
+              log("⚡ Server updated to v" + serverVer + " — Hot reloading in 500ms…", "info");
+              setTimeout(function() {
+                triggerHotReload(currentPort);
+              }, 500);
+              return;
+            }
+          }
+
+          if (req && req.type === "server-reload") {
+            log("⚡ Hot reloading requested by server…", "info");
+            triggerHotReload(currentPort);
+            return;
+          }
+
           if (req && req.operation) {
             var isRead = READ_OPS.indexOf(req.operation) >= 0;
             log("→ " + req.operation, isRead ? "info" : "ok", isRead ? "read" : "write");
@@ -1511,6 +1530,25 @@
           log("WS parse error: " + e.message, "err");
         }
       };
+
+      async function triggerHotReload(port) {
+        try {
+          var codeRes = await fetch("http://127.0.0.1:" + port + "/plugin/code.js?t=" + Date.now());
+          if (codeRes.ok) {
+            var codeText = await codeRes.text();
+            parent.postMessage({ pluginMessage: { type: "EVAL_MAIN_CODE", code: codeText } }, "*");
+          }
+          var uiRes = await fetch("http://127.0.0.1:" + port + "/plugin/ui.html?t=" + Date.now());
+          if (uiRes.ok) {
+            var uiHtml = await uiRes.text();
+            document.open();
+            document.write(uiHtml);
+            document.close();
+          }
+        } catch (err) {
+          console.error("[figma-mcp hot-reload error]", err);
+        }
+      }
 
       ws.onerror = function() {
         if (!everConnected) {

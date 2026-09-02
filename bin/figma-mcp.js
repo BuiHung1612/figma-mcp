@@ -397,10 +397,115 @@ function setupPlugin(customDir) {
   return manifestPath;
 }
 
+function isNewer(latest, current) {
+  const pLatest = latest.split('.').map(n => parseInt(n, 10) || 0);
+  const pCurrent = current.split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pLatest[i] || 0) > (pCurrent[i] || 0)) return true;
+    if ((pLatest[i] || 0) < (pCurrent[i] || 0)) return false;
+  }
+  return false;
+}
+
+function checkForUpdatesAsync() {
+  const updateStateFile = path.join(os.homedir(), '.figma-mcp', 'update-check.json');
+  try {
+    if (fs.existsSync(updateStateFile)) {
+      const state = JSON.parse(fs.readFileSync(updateStateFile, 'utf8'));
+      const now = Date.now();
+      if (state.lastChecked && (now - state.lastChecked < 6 * 3600 * 1000)) {
+        if (state.latestVersion && isNewer(state.latestVersion, pkgVersion)) {
+          process.stderr.write(`\n\x1b[36m⚡ Update available: v${pkgVersion} → v${state.latestVersion} (Run: npx figma-rust-mcp --upgrade)\x1b[0m\n\n`);
+        }
+        return;
+      }
+    }
+  } catch (_) {}
+
+  const req = https.get('https://registry.npmjs.org/figma-rust-mcp/latest', {
+    headers: { 'User-Agent': 'figma-mcp-updater' },
+    timeout: 2000
+  }, (res) => {
+    let data = '';
+    res.on('data', chunk => { data += chunk; });
+    res.on('end', () => {
+      try {
+        if (res.statusCode === 200) {
+          const json = JSON.parse(data);
+          const latest = json.version;
+          fs.mkdirSync(path.join(os.homedir(), '.figma-mcp'), { recursive: true });
+          fs.writeFileSync(updateStateFile, JSON.stringify({
+            lastChecked: Date.now(),
+            latestVersion: latest
+          }, null, 2));
+          if (latest && isNewer(latest, pkgVersion)) {
+            process.stderr.write(`\n\x1b[36m⚡ Update available: v${pkgVersion} → v${latest}\x1b[0m\n\x1b[36m   Run: npx figma-rust-mcp --upgrade\x1b[0m\n\n`);
+          }
+        }
+      } catch (_) {}
+    });
+  });
+  req.on('error', () => {});
+  req.on('timeout', () => req.destroy());
+}
+
+async function upgrade() {
+  console.log('\x1b[36m[figma-mcp]\x1b[0m Checking for updates and upgrading figma-rust-mcp...');
+  try {
+    execSync('npm install -g figma-rust-mcp@latest', { stdio: 'inherit' });
+    console.log('\x1b[32m✓ Upgraded figma-rust-mcp to latest version.\x1b[0m');
+    setupPlugin();
+    if (isServiceInstalled()) {
+      console.log('\x1b[36mUpdating background service binary...\x1b[0m');
+      const binPath = await findOrDownloadBinary();
+      await installService(binPath);
+    }
+  } catch (err) {
+    console.log('\x1b[33mTip: Run directly with latest version:\x1b[0m\n  npx -y figma-rust-mcp@latest\n');
+  }
+}
+
+function setupAlias() {
+  const platform = process.platform;
+  if (platform === 'win32') {
+    console.log('\x1b[33mOn Windows, install globally for direct command access:\x1b[0m\n  npm install -g figma-rust-mcp\n');
+    return;
+  }
+
+  const shellRc = process.env.SHELL && process.env.SHELL.includes('zsh')
+    ? path.join(os.homedir(), '.zshrc')
+    : path.join(os.homedir(), '.bashrc');
+
+  const aliasLine = "alias figma-mcp='npx figma-rust-mcp'";
+  try {
+    let content = fs.existsSync(shellRc) ? fs.readFileSync(shellRc, 'utf8') : '';
+    if (!content.includes('alias figma-mcp=')) {
+      fs.appendFileSync(shellRc, `\n# Figma MCP alias\n${aliasLine}\n`);
+      console.log(`\x1b[32m✓ Added alias to ${shellRc}:\x1b[0m`);
+      console.log(`  ${aliasLine}`);
+      console.log(`\nRun \x1b[36msource ${shellRc}\x1b[0m to start using \x1b[1mfigma-mcp\x1b[0m command directly!`);
+    } else {
+      console.log(`\x1b[32m✓ Alias already exists in ${shellRc}\x1b[0m`);
+    }
+  } catch (err) {
+    console.error(`Failed to configure alias: ${err.message}`);
+  }
+}
+
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const args = process.argv.slice(2);
+
+  if (args.includes('--upgrade') || args.includes('--update')) {
+    await upgrade();
+    return;
+  }
+
+  if (args.includes('--alias')) {
+    setupAlias();
+    return;
+  }
 
   if (args.includes('--setup-plugin') || args.includes('--export-plugin') || args.includes('--setup')) {
     const customDir = args.find(a => !a.startsWith('-') && a !== '--setup-plugin' && a !== '--export-plugin' && a !== '--setup');
@@ -441,6 +546,9 @@ async function main() {
     }
     return;
   }
+
+  // Non-blocking auto update check
+  checkForUpdatesAsync();
 
   try {
     const binPath = await findOrDownloadBinary();
