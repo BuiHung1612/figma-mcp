@@ -125,7 +125,7 @@
     <div class="title">Connecting to figma-mcp</div>
     <div id="status" class="status-text">Scanning local ports (38451-38455)...</div>
     <div class="badge">
-      <span>●</span> <span id="port-label">127.0.0.1:38451</span>
+      <span>●</span> <span id="port-label">localhost:38451</span>
     </div>
     <div class="hint-box">
       Ensure the local Rust server is running:
@@ -141,7 +141,7 @@
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 800);
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/plugin/version`, {
+        const res = await fetch(`http://localhost:${port}/plugin/version`, {
           signal: controller.signal,
           cache: "no-store"
         });
@@ -162,7 +162,7 @@
 
       try {
         // 1. Fetch main thread code
-        const codeRes = await fetch(`http://127.0.0.1:${port}/plugin/code.js?t=${Date.now()}`);
+        const codeRes = await fetch(`http://localhost:${port}/plugin/code.js?t=${Date.now()}`);
         if (!codeRes.ok) throw new Error("Failed to load plugin code: " + codeRes.status);
         const codeText = await codeRes.text();
 
@@ -170,7 +170,7 @@
         parent.postMessage({ pluginMessage: { type: "EVAL_MAIN_CODE", code: codeText } }, "*");
 
         // 2. Fetch full UI HTML
-        const uiRes = await fetch(`http://127.0.0.1:${port}/plugin/ui.html?t=${Date.now()}`);
+        const uiRes = await fetch(`http://localhost:${port}/plugin/ui.html?t=${Date.now()}`);
         if (!uiRes.ok) throw new Error("Failed to load plugin UI: " + uiRes.status);
         const uiHtml = await uiRes.text();
 
@@ -191,7 +191,7 @@
       const portEl = document.getElementById("port-label");
 
       for (const port of PORTS) {
-        if (portEl) portEl.textContent = `127.0.0.1:${port}`;
+        if (portEl) portEl.textContent = `localhost:${port}`;
         const result = await checkPort(port);
         if (result.ok) {
           await bootstrapFromPort(port);

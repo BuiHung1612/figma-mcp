@@ -1533,12 +1533,12 @@
 
       async function triggerHotReload(port) {
         try {
-          var codeRes = await fetch("http://127.0.0.1:" + port + "/plugin/code.js?t=" + Date.now());
+          var codeRes = await fetch("http://localhost:" + port + "/plugin/code.js?t=" + Date.now());
           if (codeRes.ok) {
             var codeText = await codeRes.text();
             parent.postMessage({ pluginMessage: { type: "EVAL_MAIN_CODE", code: codeText } }, "*");
           }
-          var uiRes = await fetch("http://127.0.0.1:" + port + "/plugin/ui.html?t=" + Date.now());
+          var uiRes = await fetch("http://localhost:" + port + "/plugin/ui.html?t=" + Date.now());
           if (uiRes.ok) {
             var uiHtml = await uiRes.text();
             document.open();
