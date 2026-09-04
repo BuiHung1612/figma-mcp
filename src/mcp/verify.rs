@@ -222,6 +222,45 @@ pub fn compare_design_metrics(
         }
     }
 
+    // 7. Typography Text Transform (uppercase, lowercase, capitalize)
+    let figma_text_transform = figma_spec.get("textTransform")
+        .and_then(|v| v.as_str())
+        .or_else(|| figma_spec.get("text_transform").and_then(|v| v.as_str()))
+        .or_else(|| figma_spec.get("typography").and_then(|v| v.get("textTransform")).and_then(|v| v.as_str()))
+        .or_else(|| figma_spec.get("context").and_then(|v| v.get("text")).and_then(|v| v.get("textTransform")).and_then(|v| v.as_str()))
+        .or_else(|| {
+            // Check in child nodes if container (e.g. Button has a child label)
+            if let Some(children) = figma_spec.get("context").and_then(|v| v.get("children")).and_then(|v| v.as_array()) {
+                for c in children {
+                    if let Some(tt) = c.get("text").and_then(|t| t.get("textTransform")).and_then(|v| v.as_str()) {
+                        return Some(tt);
+                    }
+                }
+            }
+            None
+        });
+
+    if let Some(expected_tt) = figma_text_transform {
+        total_checks += 1;
+        let actual_tt = computed_styles.get("text-transform")
+            .or_else(|| computed_styles.get("textTransform"))
+            .cloned();
+
+        let is_match = actual_tt.as_deref().map(|s| s.to_lowercase()) == Some(expected_tt.to_lowercase());
+        if is_match {
+            matched_checks += 1;
+        } else {
+            fixes.push(format!("Set text-transform: `{}` (e.g., class `{}`)", expected_tt, expected_tt));
+            style_metrics.push(LayoutMetric {
+                name: "textTransform".to_string(),
+                figma_value: Some(expected_tt.to_string()),
+                actual_value: actual_tt.clone(),
+                is_matched: false,
+                difference: Some(format!("Expected text-transform '{}', got '{}'", expected_tt, actual_tt.as_deref().unwrap_or("none"))),
+            });
+        }
+    }
+
     let percentage = if total_checks > 0 {
         ((matched_checks as f64) / (total_checks as f64)) * 100.0
     } else {
@@ -244,7 +283,8 @@ mod tests {
             "padding": 16.0,
             "cornerRadius": 8.0,
             "fontSize": 14.0,
-            "fill": "#7C3AED"
+            "fill": "#7C3AED",
+            "textTransform": "uppercase"
         });
 
         let mut computed = HashMap::new();
@@ -254,6 +294,7 @@ mod tests {
         computed.insert("borderRadius".to_string(), "8px".to_string());
         computed.insert("fontSize".to_string(), "14px".to_string());
         computed.insert("backgroundColor".to_string(), "rgb(124, 58, 237)".to_string()); // Matches #7c3aed
+        computed.insert("textTransform".to_string(), "uppercase".to_string());
 
         let (layout_diffs, style_diffs, fixes, percentage) = compare_design_metrics(&figma_spec, &computed);
         assert!(layout_diffs.is_empty());

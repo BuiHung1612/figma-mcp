@@ -250,6 +250,18 @@ function resolveTextStyle(node, opts) {
       else if (node.lineHeight && node.lineHeight.unit === "PIXELS") out.lineHeight = node.lineHeight.value;
       if (node.letterSpacing && node.letterSpacing.value) out.letterSpacing = node.letterSpacing.value;
       if (node.textDecoration && node.textDecoration !== "NONE") out.textDecoration = node.textDecoration;
+      if (node.textCase && node.textCase !== "ORIGINAL") {
+        out.textCase = node.textCase;
+        if (node.textCase === "UPPER") {
+          out.textTransform = "uppercase";
+          if (out.content) out.renderedContent = out.content.toUpperCase();
+        } else if (node.textCase === "LOWER") {
+          out.textTransform = "lowercase";
+          if (out.content) out.renderedContent = out.content.toLowerCase();
+        } else if (node.textCase === "TITLE") {
+          out.textTransform = "capitalize";
+        }
+      }
     } catch(e) {}
     return out;
   }
@@ -277,6 +289,7 @@ function resolveTextStyle(node, opts) {
       else if (s.lineHeight && s.lineHeight.unit === "PIXELS") seg.lineHeight = s.lineHeight.value;
       if (s.letterSpacing && s.letterSpacing.value) seg.letterSpacing = s.letterSpacing.value;
       if (s.textDecoration && s.textDecoration !== "NONE") seg.textDecoration = s.textDecoration;
+      if (s.textCase && s.textCase !== "ORIGINAL") seg.textCase = s.textCase;
       return seg;
     });
     if (withSegments) out.segments = mapped;
@@ -290,6 +303,18 @@ function resolveTextStyle(node, opts) {
     if (head.lineHeight !== undefined)   out.lineHeight = head.lineHeight;
     if (head.letterSpacing !== undefined) out.letterSpacing = head.letterSpacing;
     if (head.textDecoration !== undefined) out.textDecoration = head.textDecoration;
+    if (head.textCase !== undefined) {
+      out.textCase = head.textCase;
+      if (head.textCase === "UPPER") {
+        out.textTransform = "uppercase";
+        if (out.content) out.renderedContent = out.content.toUpperCase();
+      } else if (head.textCase === "LOWER") {
+        out.textTransform = "lowercase";
+        if (out.content) out.renderedContent = out.content.toLowerCase();
+      } else if (head.textCase === "TITLE") {
+        out.textTransform = "capitalize";
+      }
+    }
   } else {
     // No segment API — salvage whatever is not mixed.
     if (typeof node.fontSize === "number") out.fontSize = node.fontSize;
@@ -299,6 +324,14 @@ function resolveTextStyle(node, opts) {
     }
     var fallbackHex = getFillHex(node);
     if (fallbackHex) out.fill = fallbackHex;
+    try {
+      if (node.textCase && node.textCase !== "ORIGINAL") {
+        out.textCase = node.textCase;
+        if (node.textCase === "UPPER") out.textTransform = "uppercase";
+        else if (node.textCase === "LOWER") out.textTransform = "lowercase";
+        else if (node.textCase === "TITLE") out.textTransform = "capitalize";
+      }
+    } catch(e) {}
   }
 
   return out;

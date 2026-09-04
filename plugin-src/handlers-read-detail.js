@@ -139,7 +139,10 @@ handlers.get_node_detail = async function(params) {
           detail.strokes.push(sd);
         }
       }
-      detail.strokeWeight = node.strokeWeight;
+      applyStrokeWeight(node, detail);
+      if (detail.strokeWeight === undefined && typeof node.strokeWeight === "number") {
+        detail.strokeWeight = node.strokeWeight;
+      }
       detail.strokeAlign = node.strokeAlign;
     }
   } catch(e) {}
@@ -217,6 +220,10 @@ handlers.get_node_detail = async function(params) {
         detail.lineHeight = "normal";
       }
       if (textStyle.letterSpacing !== undefined) detail.letterSpacing = textStyle.letterSpacing + "px";
+      if (textStyle.textDecoration) detail.textDecoration = textStyle.textDecoration;
+      if (textStyle.textCase) detail.textCase = textStyle.textCase;
+      if (textStyle.textTransform) detail.textTransform = textStyle.textTransform;
+      if (textStyle.renderedContent) detail.renderedContent = textStyle.renderedContent;
       if (textStyle.mixed) {
         detail.mixedStyles = true;
         if (textStyle.segments) detail.segments = textStyle.segments;
@@ -406,7 +413,21 @@ handlers.get_css = async function(params) {
   }
 
   // Stroke / border
-  if (detail.stroke) lines.push("border: " + (detail.strokeWeight || 1) + "px solid " + detail.stroke + ";");
+  if (detail.stroke) {
+    if (typeof detail.strokeWeight === "number") {
+      if (detail.strokeWeight > 0) {
+        lines.push("border: " + detail.strokeWeight + "px solid " + detail.stroke + ";");
+      }
+    } else if (detail.strokeWeight && typeof detail.strokeWeight === "object") {
+      var sw = detail.strokeWeight;
+      if (sw.top) lines.push("border-top: " + sw.top + "px solid " + detail.stroke + ";");
+      if (sw.right) lines.push("border-right: " + sw.right + "px solid " + detail.stroke + ";");
+      if (sw.bottom) lines.push("border-bottom: " + sw.bottom + "px solid " + detail.stroke + ";");
+      if (sw.left) lines.push("border-left: " + sw.left + "px solid " + detail.stroke + ";");
+    } else if (detail.strokeWeight !== 0 && !isMixed(detail.strokeWeight)) {
+      lines.push("border: 1px solid " + detail.stroke + ";");
+    }
+  }
 
   // Border radius
   if (detail.borderRadius) lines.push("border-radius: " + detail.borderRadius + ";");
@@ -433,6 +454,7 @@ handlers.get_css = async function(params) {
   if (detail.letterSpacing) lines.push("letter-spacing: " + detail.letterSpacing + ";");
   if (detail.textAlign) lines.push("text-align: " + detail.textAlign.toLowerCase() + ";");
   if (detail.textDecoration) lines.push("text-decoration: " + detail.textDecoration.toLowerCase() + ";");
+  if (detail.textTransform) lines.push("text-transform: " + detail.textTransform + ";");
 
   // Rotation
   if (detail.rotation) lines.push("transform: rotate(" + detail.rotation + "deg);");
@@ -560,7 +582,16 @@ handlers.get_design_context = async function(params) {
     // Stroke
     try {
       if (nd.strokes && nd.strokes.length && nd.strokes[0].type === "SOLID") {
-        ctx.stroke = { color: rgbToHex(nd.strokes[0].color, nd.strokes[0].opacity), weight: nd.strokeWeight };
+        var swWeight = nd.strokeWeight;
+        if (isMixed(swWeight)) {
+          var swSides = {};
+          if (typeof nd.strokeTopWeight === "number") swSides.top = nd.strokeTopWeight;
+          if (typeof nd.strokeRightWeight === "number") swSides.right = nd.strokeRightWeight;
+          if (typeof nd.strokeBottomWeight === "number") swSides.bottom = nd.strokeBottomWeight;
+          if (typeof nd.strokeLeftWeight === "number") swSides.left = nd.strokeLeftWeight;
+          swWeight = Object.keys(swSides).length ? swSides : "mixed";
+        }
+        ctx.stroke = { color: rgbToHex(nd.strokes[0].color, nd.strokes[0].opacity), weight: swWeight };
         if (nd.strokes[0].opacity !== undefined && nd.strokes[0].opacity !== 1) {
           ctx.stroke.opacity = Math.round(nd.strokes[0].opacity * 1000) / 1000;
         }
@@ -600,6 +631,10 @@ handlers.get_design_context = async function(params) {
         }
         // Token-resolved colour wins over the raw hex from the segments.
         ctx.text.color = resolveFill(nd) || ndText.fill || null;
+        if (ndText.textCase) ctx.text.textCase = ndText.textCase;
+        if (ndText.textTransform) ctx.text.textTransform = ndText.textTransform;
+        if (ndText.renderedContent) ctx.text.renderedContent = ndText.renderedContent;
+        if (ndText.textDecoration) ctx.text.textDecoration = ndText.textDecoration;
         if (ndText.mixed) {
           ctx.text.mixedStyles = true;
           if (ndText.segments) ctx.text.segments = ndText.segments;

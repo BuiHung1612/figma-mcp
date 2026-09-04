@@ -305,6 +305,16 @@ async function buildText(params, width, height, fill, fontSize, fontWeight, line
     // WIDTH_AND_HEIGHT makes the box shrink-wrap the actual rendered glyphs.
     node.textAutoResize = "WIDTH_AND_HEIGHT";
   }
+
+  var tc = params.textCase || (params.textTransform ? (params.textTransform.toLowerCase() === "uppercase" ? "UPPER" : params.textTransform.toLowerCase() === "lowercase" ? "LOWER" : params.textTransform.toLowerCase() === "capitalize" ? "TITLE" : "ORIGINAL") : null);
+  if (tc) {
+    var upperTc = String(tc).toUpperCase();
+    if (upperTc === "UPPERCASE") upperTc = "UPPER";
+    if (upperTc === "LOWERCASE") upperTc = "LOWER";
+    if (upperTc === "TITLECASE" || upperTc === "CAPITALIZE") upperTc = "TITLE";
+    try { node.textCase = upperTc; } catch(e) {}
+  }
+
   return node;
 }
 
@@ -602,6 +612,14 @@ handlers.modify = async (params) => {
           ? params.lineHeight
           : { value: params.lineHeight, unit: "PIXELS" };
       }
+    }
+    var modTc = params.textCase || (params.textTransform ? (params.textTransform.toLowerCase() === "uppercase" ? "UPPER" : params.textTransform.toLowerCase() === "lowercase" ? "LOWER" : params.textTransform.toLowerCase() === "capitalize" ? "TITLE" : "ORIGINAL") : null);
+    if (modTc) {
+      var upperModTc = String(modTc).toUpperCase();
+      if (upperModTc === "UPPERCASE") upperModTc = "UPPER";
+      if (upperModTc === "LOWERCASE") upperModTc = "LOWER";
+      if (upperModTc === "TITLECASE" || upperModTc === "CAPITALIZE") upperModTc = "TITLE";
+      try { node.textCase = upperModTc; } catch(e) {}
     }
   }
 

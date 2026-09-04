@@ -589,6 +589,12 @@ impl IndexNode {
             if let Some(c) = ts.get("color").and_then(|v| v.as_str()) {
                 typography.insert("color", c.to_string());
             }
+            if let Some(tt) = ts.get("textTransform").and_then(|v| v.as_str()) {
+                typography.insert("textTransform", tt.to_string());
+            }
+            if let Some(tc) = ts.get("textCase").and_then(|v| v.as_str()) {
+                typography.insert("textCase", tc.to_string());
+            }
         }
 
         serde_json::json!({
