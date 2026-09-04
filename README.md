@@ -8,6 +8,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 ## ⚡ Highlights
 
+- **State & Screen Variant Aggregation (`Context-Preserving Deduplication`)**: Automatically groups frames/sections containing multiple screen states (Default, Typing, Success, Error, Disabled) or repeated list items into a single Base Template + Diffs. Cuts LLM token consumption by **80–90%** while preserving 100% of typography, autolayout, tokens, and button styling.
 - **Pure Rust Native Performance**: Starts in `< 1ms`, uses `~3MB RAM`, zero GC pauses.
 - **In-Memory Deep Indexing (`figma_index`)**: Queries layers, components, styles, and tokens in `< 1ms` without slow canvas roundtrips.
 - **Binary IPC & Chunk Streaming**: Powered by **MessagePack** (`rmp-serde`) and progressive subtree chunking for instant transfers of massive design files.

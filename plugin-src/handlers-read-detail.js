@@ -625,11 +625,12 @@ handlers.get_design_context = async function(params) {
 
     // Children (limited depth to avoid token overflow)
     if (depth < 4 && nd.children && nd.children.length) {
-      ctx.children = [];
+      var rawCtxChildren = [];
       for (var i = 0; i < nd.children.length; i++) {
         var child = nodeContext(nd.children[i], depth + 1);
-        if (child) ctx.children.push(child);
+        if (child) rawCtxChildren.push(child);
       }
+      ctx.children = typeof aggregateRepeatedChildren === "function" ? aggregateRepeatedChildren(rawCtxChildren) : rawCtxChildren;
     } else if (nd.children && nd.children.length) {
       ctx.childCount = nd.children.length;
     }

@@ -1,5 +1,157 @@
 // ─── READ HELPERS ─────────────────────────────────────────────────────────────
 
+// Helper to aggregate repeating list items and state variants among sibling children
+function aggregateRepeatedChildren(children) {
+  if (!children || !Array.isArray(children) || children.length <= 2) return children;
+
+  var out = [];
+  var i = 0;
+  while (i < children.length) {
+    var cur = children[i];
+    if (!cur || typeof cur !== "object") {
+      out.push(cur);
+      i++;
+      continue;
+    }
+
+    var group = [cur];
+    var j = i + 1;
+    while (j < children.length) {
+      var next = children[j];
+      if (isSimilarStructure(cur, next)) {
+        group.push(next);
+        j++;
+      } else {
+        break;
+      }
+    }
+
+    if (group.length >= 3) {
+      // Aggregate list items
+      var rep = Object.assign({}, group[0]);
+      var itemTexts = [];
+      for (var gi = 0; gi < group.length; gi++) {
+        var gNode = group[gi];
+        if (gNode.textContent && Array.isArray(gNode.textContent)) {
+          itemTexts.push(gNode.textContent.slice(0, 3).join(" | "));
+        } else if (gNode.name) {
+          itemTexts.push(gNode.name);
+        }
+      }
+      rep._isRepeater = true;
+      rep.repeatedCount = group.length;
+      rep.itemSamples = itemTexts.slice(0, 5);
+      rep._aggregationHint = "Aggregated " + group.length + " similar repeating items to save context tokens. Structure matches representative item.";
+      out.push(rep);
+      i = j;
+    } else {
+      out.push(cur);
+      i++;
+    }
+  }
+
+  // Also check if siblings are screen state frames (e.g. Default, Typing, Success, Error)
+  return aggregateStateFrames(out);
+}
+
+// Group state frames with same dimensions and similar core layouts
+function aggregateStateFrames(children) {
+  if (!children || !Array.isArray(children) || children.length <= 1) return children;
+
+  // Detect if children are screen variants (e.g. FRAME with width >= 300, height >= 300)
+  var frameChildren = [];
+  var isAllScreens = true;
+  for (var k = 0; k < children.length; k++) {
+    var c = children[k];
+    if (c && c.type === "FRAME" && c.width && c.height && c.width >= 320 && c.height >= 320) {
+      frameChildren.push(c);
+    } else {
+      isAllScreens = false;
+    }
+  }
+
+  // If we have multiple screen frames of identical dimensions, group them into Base + State Diffs
+  if (frameChildren.length >= 2 && frameChildren.length === children.length) {
+    var firstW = frameChildren[0].width;
+    var firstH = frameChildren[0].height;
+    var allSameDim = frameChildren.every(function(f) {
+      return Math.abs(f.width - firstW) <= 10 && Math.abs(f.height - firstH) <= 10;
+    });
+
+    if (allSameDim) {
+      var baseFrame = frameChildren[0];
+      var states = [];
+      for (var si = 0; si < frameChildren.length; si++) {
+        var sf = frameChildren[si];
+        var diffInfo = extractStateDiff(baseFrame, sf, si === 0);
+        states.push({
+          id: sf.id,
+          stateName: sf.name,
+          diff: diffInfo
+        });
+      }
+
+      var aggregatedNode = Object.assign({}, baseFrame);
+      aggregatedNode._aggregatedStates = {
+        totalStates: frameChildren.length,
+        baseStateName: baseFrame.name,
+        states: states,
+        hint: "All " + frameChildren.length + " screen states share the base layout above. Only diffs (text/fills/components) are listed in states."
+      };
+      return [aggregatedNode];
+    }
+  }
+
+  return children;
+}
+
+function extractStateDiff(base, current, isBase) {
+  if (isBase) return { status: "BASE_TEMPLATE" };
+  var diff = {};
+  if (base.name !== current.name) diff.name = current.name;
+
+  // Compare direct text content
+  var currentTexts = collectNodeTextArray(current);
+  var baseTexts = collectNodeTextArray(base);
+  var uniqueTexts = currentTexts.filter(function(t) { return baseTexts.indexOf(t) === -1; });
+  if (uniqueTexts.length > 0) {
+    diff.uniqueTexts = uniqueTexts.slice(0, 10);
+  }
+
+  // Check fills diff
+  if (current.fill !== base.fill) diff.fill = current.fill;
+  if (current.stroke !== base.stroke) diff.stroke = current.stroke;
+
+  return diff;
+}
+
+function collectNodeTextArray(node) {
+  var res = [];
+  if (!node) return res;
+  if (node.content) res.push(node.content);
+  if (node.textContent && Array.isArray(node.textContent)) res = res.concat(node.textContent);
+  if (node.children && Array.isArray(node.children)) {
+    for (var i = 0; i < node.children.length; i++) {
+      res = res.concat(collectNodeTextArray(node.children[i]));
+    }
+  }
+  return res;
+}
+
+function isSimilarStructure(a, b) {
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (a.type !== b.type) return false;
+  if (a.role && b.role && a.role === b.role) return true;
+  var wDiff = Math.abs((a.width || 0) - (b.width || 0));
+  var hDiff = Math.abs((a.height || 0) - (b.height || 0));
+  if (wDiff <= 4 && hDiff <= 4 && a.type === b.type) {
+    var aChildCount = a.children ? a.children.length : (a.childCount || 0);
+    var bChildCount = b.children ? b.children.length : (b.childCount || 0);
+    if (aChildCount === bChildCount) return true;
+  }
+  return false;
+}
+
 // Detect if a node is likely an icon (small vector/group/instance)
 function isLikelyIcon(node) {
   if (!node || !("width" in node)) return false;
@@ -781,9 +933,10 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
       if (icons.truncated) info.iconNamesTruncated = true;
       if (budgetSpent) walkState.truncated = true;
     } else {
-      info.children = node.children
+      var rawChildren = node.children
         .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })
         .filter(Boolean);
+      info.children = aggregateRepeatedChildren(rawChildren);
     }
   }
 

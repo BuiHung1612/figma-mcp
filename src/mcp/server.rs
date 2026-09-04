@@ -262,7 +262,10 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             op_params["detail"] = json!(detail);
 
             match bridge.send_operation("get_selection", op_params, session_id).await {
-                Ok(data) => ToolResult::text(serde_json::to_string(&data).unwrap_or_default()),
+                Ok(data) => {
+                    let optimized = crate::mcp::semantic_optimizer::optimize_semantic_tree(&data);
+                    ToolResult::text(serde_json::to_string(&optimized).unwrap_or_default())
+                }
                 Err(e) => ToolResult::error(e),
             }
         }
@@ -553,6 +556,11 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                             };
                             return ToolResult::image(b64, "image/png", meta_str);
                         }
+                    }
+
+                    if operation == "get_design" || operation == "get_selection" {
+                        let optimized = crate::mcp::semantic_optimizer::optimize_semantic_tree(&data);
+                        return ToolResult::text(serde_json::to_string(&optimized).unwrap_or_default());
                     }
 
                     ToolResult::text(serde_json::to_string(&data).unwrap_or_default())
