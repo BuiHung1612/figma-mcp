@@ -607,6 +607,54 @@ impl IndexNode {
             "textContent": self.characters,
             "childCount": self.children.len(),
             "childrenIds": self.children
-        })
+    })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FigmaIndex;
+    use serde_json::json;
+
+    #[test]
+    fn indexes_nested_nodes_and_searches_text() {
+        let page_nodes = json!([{
+            "id": "1:1",
+            "name": "Card",
+            "type": "FRAME",
+            "children": [{
+                "id": "1:2",
+                "name": "Title",
+                "type": "TEXT",
+                "characters": "Welcome home",
+                "width": 120.0,
+                "height": 24.0
+            }]
+        }]);
+
+        let index = FigmaIndex::from_raw("session", "file", &page_nodes, None, None, None, 0);
+        assert_eq!(index.stats.total_nodes, 2);
+        assert_eq!(index.top_level_frames, vec!["1:1"]);
+        assert_eq!(index.search_nodes("welcome", Some("TEXT"), 10).len(), 1);
+        assert_eq!(index.get_node("1:2").and_then(|n| n.parent_id.as_deref()), Some("1:1"));
+    }
+
+    #[test]
+    fn upsert_and_merge_chunk_keep_index_consistent() {
+        let mut index = FigmaIndex::default();
+        index.merge_chunk(&[json!({
+            "id": "2:1",
+            "name": "Old",
+            "type": "FRAME"
+        })]);
+        assert!(!index.dirty);
+
+        index.upsert_node(&json!({
+            "id": "2:1",
+            "name": "Renamed",
+            "type": "FRAME"
+        }));
+        assert_eq!(index.get_node("2:1").map(|n| n.name.as_str()), Some("Renamed"));
+        assert_eq!(index.stats.total_nodes, 1);
     }
 }

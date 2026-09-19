@@ -414,5 +414,23 @@ pub fn get_tools() -> Vec<ToolDefinition> {
     ]
 }
 
+#[cfg(test)]
+mod tests {
+    use super::get_tools;
+    use std::collections::HashSet;
+
+    #[test]
+    fn tool_registry_has_unique_names_and_valid_schemas() {
+        let tools = get_tools();
+        let names: HashSet<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert_eq!(names.len(), tools.len());
+        assert_eq!(tools.len(), 15);
+        assert!(tools.iter().all(|tool| {
+            tool.name.starts_with("figma_")
+                && tool.input_schema.get("type").and_then(|v| v.as_str()) == Some("object")
+        }));
+    }
+}
 
 

@@ -28,7 +28,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 ┌────────────────────────────────────────────────────────────────────────┐
 │                      Terminal / Background Service                     │
 │                       figma-mcp (Pure Rust Engine)                     │
-│  • MCP SSE Transport (/sse, /message) & Direct HTTP (/mcp)             │
+│  • MCP Streamable HTTP (/mcp) & legacy SSE (/sse, /message)             │
 │  • Dynamic Runtime Server (/plugin/code.js, /plugin/ui.html)           │
 │  • In-Memory Fast Index (<1ms Lookups & Incremental Diffs)             │
 │  • Design-to-Code Compiler (React/Tailwind, Vue, RN, SwiftUI)          │
@@ -36,8 +36,8 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 │  • Sandboxed JS Runtime (Boa ECMAScript Engine)                        │
 │  • Binary MessagePack & Progressive Subtree Chunk Receiver             │
 └───────────────▲────────────────────────────────────────▲───────────────┘
-                │ (ws://127.0.0.1:38451/ws)              │ (http://127.0.0.1:38451/sse)
-                │ (Dynamic Code Streaming & Hot-Reload)  │ (JSON-RPC 2.0 / SSE)
+                │ (ws://127.0.0.1:38451/ws)              │ (http://127.0.0.1:38451/mcp)
+                │ (Dynamic Code Streaming & Hot-Reload)  │ (JSON-RPC 2.0 / Streamable HTTP)
       ┌─────────┴─────────┐                    ┌─────────┴─────────┐
       │   Figma Desktop   │                    │ AI Assistant(s)   │
       │ (Thin Loader)     │                    │ Google Antigravity│
@@ -122,7 +122,22 @@ cargo build --release
 
 ### 5. Configure Your MCP Client
 
-#### Google Antigravity (SSE Transport - Recommended)
+#### Codex and clients using Streamable HTTP (Recommended)
+
+Use the `/mcp` endpoint. It accepts `POST` JSON-RPC requests directly:
+
+```toml
+[mcp_servers.figma-mcp]
+url = "http://127.0.0.1:38451/mcp"
+```
+
+For Codex CLI, the equivalent command is:
+
+```bash
+codex mcp add figma-mcp --url http://127.0.0.1:38451/mcp
+```
+
+#### Google Antigravity (SSE Transport)
 Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.json`:
 ```json
 {
@@ -136,7 +151,7 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 
 #### Claude Code / Cursor / Windsurf / VS Code / Zed
 
-**Option A: SSE Transport (Recommended for background service)**
+**Option A: SSE Transport (for clients that require SSE)**
 ```json
 {
   "mcpServers": {
@@ -146,6 +161,11 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
   }
 }
 ```
+
+The SSE transport uses `GET /sse` to open the event stream and `POST /message`
+(or `/messages`) for JSON-RPC messages. Do not configure a Streamable HTTP
+client such as Codex against `/sse`: that endpoint does not accept `POST`, so
+the initialize request will return HTTP 405. Use `/mcp` instead.
 
 **Option B: Stdio Subprocess (via NPX)**
 ```json
@@ -158,6 +178,18 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
   }
 }
 ```
+
+### 6. Diagnose a stale Figma runtime
+
+Check the runtime bundle currently served to Figma Desktop:
+
+```bash
+curl http://127.0.0.1:38451/plugin/version
+```
+
+The response includes `version` and `runtimeHash`. If the hash changes after an
+upgrade, the dynamic plugin runtime is refreshed automatically. Restart the
+Figma plugin only if the reported hash does not change.
 
 ---
 

@@ -86,6 +86,45 @@ async fn save_export_to_disk(
     }))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::is_supported_read_operation;
+
+    #[test]
+    fn read_operation_contract_rejects_unknown_plugin_operations() {
+        assert!(is_supported_read_operation("get_design_context"));
+        assert!(is_supported_read_operation("export_assets"));
+        assert!(!is_supported_read_operation("figma_prepare_design"));
+        assert!(!is_supported_read_operation("does_not_exist"));
+    }
+}
+
+fn is_supported_read_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "get_selection"
+            | "get_design"
+            | "get_page_nodes"
+            | "screenshot"
+            | "export_svg"
+            | "get_styles"
+            | "get_local_components"
+            | "get_viewport"
+            | "get_variables"
+            | "get_variable_tokens"
+            | "get_tokens"
+            | "get_node_detail"
+            | "get_css"
+            | "get_design_context"
+            | "get_component_map"
+            | "get_unmapped_components"
+            | "export_image"
+            | "export_assets"
+            | "search_nodes"
+            | "scan_design"
+    )
+}
+
 pub async fn handle_jsonrpc_request(
     bridge: BridgeHandle,
     req: JsonRpcRequest,
@@ -100,7 +139,7 @@ pub async fn handle_jsonrpc_request(
                 },
                 "serverInfo": {
                     "name": "figma-mcp",
-                    "version": "2.6.0"
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             }),
         )),
@@ -303,9 +342,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             // Fast-path: Check if node detail is available directly in Rust In-Memory Index
             if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = session_id.unwrap_or("_default");
+                let sid = state.resolved_session_id(session_id).await;
                 let inner = state.inner.lock().await;
-                if let Some(session) = inner.sessions.get(sid) {
+                if let Some(session) = inner.sessions.get(&sid) {
                     if let Some(ref idx) = session.index {
                         if idx.is_ready() {
                             let matched_node = if let Some(ref id) = node_id {
@@ -394,6 +433,13 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 other => other,
             };
 
+            if !is_supported_read_operation(operation) {
+                return ToolResult::error(format!(
+                    "Unknown figma_read operation '{}'. Available: get_selection, get_design, get_page_nodes, screenshot, export_svg, get_styles, get_local_components, get_viewport, get_variables, get_tokens, get_node_detail, get_css, get_design_context, get_component_map, get_unmapped_components, export_image, export_assets, search_nodes, scan_design",
+                    raw_operation
+                ));
+            }
+
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
                 return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
@@ -418,9 +464,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             // Fast-path read from index cache if available for read-only catalog queries
             if ["get_styles", "get_variables", "get_local_components"].contains(&operation) {
                 if let BridgeHandle::Direct(ref state) = bridge {
-                    let sid = session_id.unwrap_or("_default");
+                    let sid = state.resolved_session_id(session_id).await;
                     let inner = state.inner.lock().await;
-                    if let Some(session) = inner.sessions.get(sid) {
+                    if let Some(session) = inner.sessions.get(&sid) {
                         if let Some(ref idx) = session.index {
                             if idx.is_ready() {
                                 if operation == "get_styles" {
@@ -610,9 +656,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             // Fast-path: If index is cached and ready, build rules directly from memory (< 1ms!)
             if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = session_id.unwrap_or("_default");
+                let sid = state.resolved_session_id(session_id).await;
                 let inner = state.inner.lock().await;
-                if let Some(session) = inner.sessions.get(sid) {
+                if let Some(session) = inner.sessions.get(&sid) {
                     if let Some(ref idx) = session.index {
                         if idx.is_ready() {
                             let mut lines = vec![
@@ -689,9 +735,18 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             let (styles_res, vars_res, comps_res) = tokio::join!(styles_fut, vars_fut, comps_fut);
 
-            let styles_data = styles_res.unwrap_or(json!({}));
-            let vars_data = vars_res.unwrap_or(json!({}));
-            let comps_data = comps_res.unwrap_or(json!({}));
+            let styles_data = match styles_res {
+                Ok(data) => data,
+                Err(e) => return ToolResult::error(format!("Failed to load Figma styles: {}", e)),
+            };
+            let vars_data = match vars_res {
+                Ok(data) => data,
+                Err(e) => return ToolResult::error(format!("Failed to load Figma variables: {}", e)),
+            };
+            let comps_data = match comps_res {
+                Ok(data) => data,
+                Err(e) => return ToolResult::error(format!("Failed to load Figma components: {}", e)),
+            };
 
             let mut lines = vec![
                 "# Design System Rules".to_string(),
@@ -963,10 +1018,13 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                             let vars = data.get("variables");
                             let comps = data.get("components");
                             let file_name = data.get("fileName").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            let sid = session_id.unwrap_or("_default");
+                            let sid = match &bridge {
+                                BridgeHandle::Direct(state) => state.resolved_session_id(session_id).await,
+                                BridgeHandle::Proxy(_) => session_id.unwrap_or("_default").to_string(),
+                            };
 
                             let idx = crate::bridge::index::FigmaIndex::from_raw(
-                                sid,
+                                &sid,
                                 file_name,
                                 page_nodes,
                                 styles,
@@ -977,7 +1035,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
                             let stats = idx.stats.clone();
                             if let BridgeHandle::Direct(ref state) = bridge {
-                                state.update_index(sid, idx).await;
+                                state.update_index(&sid, idx).await;
                             }
 
                             let out = json!({
@@ -1009,9 +1067,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             // Fast-path: If index is cached in memory, use it directly!
             let (styles_data, vars_data) = if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = session_id.unwrap_or("_default");
+                let sid = state.resolved_session_id(session_id).await;
                 let inner = state.inner.lock().await;
-                if let Some(session) = inner.sessions.get(sid) {
+                if let Some(session) = inner.sessions.get(&sid) {
                     if let Some(ref idx) = session.index {
                         if idx.is_ready() {
                             let styles_json = json!({
@@ -1042,7 +1100,15 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                     let styles_fut = bridge.send_operation("get_styles", json!({}), session_id);
                     let vars_fut = bridge.send_operation("get_variables", json!({}), session_id);
                     let (styles_res, vars_res) = tokio::join!(styles_fut, vars_fut);
-                    (styles_res.unwrap_or(json!({})), vars_res.unwrap_or(json!({})))
+                    let styles_val = match styles_res {
+                        Ok(data) => data,
+                        Err(e) => return ToolResult::error(format!("Failed to load Figma styles: {}", e)),
+                    };
+                    let vars_val = match vars_res {
+                        Ok(data) => data,
+                        Err(e) => return ToolResult::error(format!("Failed to load Figma variables: {}", e)),
+                    };
+                    (styles_val, vars_val)
                 }
             };
 
@@ -1263,9 +1329,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             // Try resolving from In-Memory Index first
             if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = session_id.unwrap_or("_default");
+                let sid = state.resolved_session_id(session_id).await;
                 let inner = state.inner.lock().await;
-                if let Some(session) = inner.sessions.get(sid) {
+                if let Some(session) = inner.sessions.get(&sid) {
                     if let Some(ref idx) = session.index {
                         if idx.is_ready() {
                             let matched = if let Some(ref id) = resolved_node_id {
@@ -1369,9 +1435,9 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             let specific_match = if let Some(nid) = node_id {
                 let mut matched_comp = None;
                 if let BridgeHandle::Direct(ref state) = bridge {
-                    let sid = session_id.unwrap_or("_default");
+                    let sid = state.resolved_session_id(session_id).await;
                     let inner = state.inner.lock().await;
-                    if let Some(session) = inner.sessions.get(sid) {
+                    if let Some(session) = inner.sessions.get(&sid) {
                         if let Some(ref idx) = session.index {
                             if let Some(node) = idx.get_node(nid) {
                                 matched_comp = crate::mcp::component_matcher::match_figma_to_codebase_component(&node.name, &scan_result).cloned();
@@ -1416,7 +1482,11 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 Err(e) => return ToolResult::error(format!("Failed to retrieve design context: {}", e)),
             };
 
-            let resolved_id = design_context.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let resolved_id = design_context.get("nodeId")
+                .or_else(|| design_context.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let resolved_name = design_context.get("name").and_then(|v| v.as_str()).unwrap_or("Screen").to_string();
 
             // 2. Extract 100% of visible text elements
@@ -1427,7 +1497,14 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             if !resolved_id.is_empty() {
                 export_params["nodeId"] = json!(resolved_id);
             }
-            let raw_assets = bridge.send_operation("export_assets", export_params, session_id).await.unwrap_or(json!({}));
+            let mut warnings = Vec::new();
+            let raw_assets = match bridge.send_operation("export_assets", export_params, session_id).await {
+                Ok(data) => data,
+                Err(e) => {
+                    warnings.push(format!("Asset export failed: {}", e));
+                    json!({})
+                }
+            };
             
             let mut exported_icons = Vec::new();
             if let Some(icons_arr) = raw_assets.get("icons").and_then(|v| v.as_array()) {
@@ -1450,7 +1527,13 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             if !resolved_id.is_empty() {
                 snap_params["id"] = json!(resolved_id);
             }
-            let screenshot_res = bridge.send_operation("screenshot", snap_params, session_id).await.ok();
+            let screenshot_res = match bridge.send_operation("screenshot", snap_params, session_id).await {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    warnings.push(format!("Screenshot capture failed: {}", e));
+                    None
+                }
+            };
             let screenshot_data_url = screenshot_res.as_ref().and_then(|v| v.get("dataUrl")).and_then(|v| v.as_str());
             
             let mut local_screenshot_path = None;
@@ -1520,6 +1603,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 "colorPalette": color_palette,
                 "discoveredCodebaseComponents": matched_components,
                 "implementationChecklist": checklist,
+                "warnings": warnings,
                 "instructionForAI": "DO NOT guess or invent icons or colors. Use the exact exported SVG components listed in 'exportedIcons'. Refer to 'resolvedColorTokens' for exact semantic-to-hex mappings. Ensure every text in 'allVisibleTexts' is accounted for."
             });
 
@@ -1529,6 +1613,3 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
         _ => ToolResult::error(format!("Unknown tool: {}", call_params.name)),
     }
 }
-
-
-

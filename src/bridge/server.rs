@@ -15,6 +15,7 @@ use futures_util::{stream::Stream, SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -171,6 +172,13 @@ impl BridgeState {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<Value, String> {
+        if operation.starts_with("figma_") {
+            return Err(format!(
+                "Invalid plugin operation '{}'. This is an MCP tool name; call it through MCP tools/call instead of figma_write or the Figma bridge.",
+                operation
+            ));
+        }
+
         let (rx, op_id, timeout_ms) = {
             let mut inner = self.inner.lock().await;
 
@@ -423,6 +431,11 @@ impl BridgeState {
         Self::resolve_best_session_id(inner)
     }
 
+    pub async fn resolved_session_id(&self, target: Option<&str>) -> String {
+        let inner = self.inner.lock().await;
+        Self::resolve_session_id(&inner, target)
+    }
+
     fn resolve_best_session_id(inner: &BridgeInner) -> String {
         let mut best_lp: Option<(&Session, u64)> = None;
         let mut best_conn: Option<(&Session, u64)> = None;
@@ -480,7 +493,7 @@ async fn handle_root(State(state): State<BridgeState>) -> impl IntoResponse {
 
     Json(json!({
         "server": "figma-mcp",
-        "version": "2.6.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "port": port,
         "pluginConnected": connected,
         "mcpClientsConnected": mcp_clients,
@@ -1249,8 +1262,13 @@ async fn handle_asset_serve(
 pub const PLUGIN_RUNTIME_CODE_JS: &str = include_str!("../../plugin-runtime/code.js");
 pub const PLUGIN_RUNTIME_UI_HTML: &str = include_str!("../../plugin-runtime/ui.html");
 
-const RUNTIME_CODE_ETAG: &str = concat!("\"figma-code-", env!("CARGO_PKG_VERSION"), "\"");
 const RUNTIME_UI_ETAG: &str = concat!("\"figma-ui-", env!("CARGO_PKG_VERSION"), "\"");
+
+fn runtime_code_hash() -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    PLUGIN_RUNTIME_CODE_JS.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
 
 async fn handle_plugin_version() -> impl IntoResponse {
     (
@@ -1264,21 +1282,23 @@ async fn handle_plugin_version() -> impl IntoResponse {
             "version": env!("CARGO_PKG_VERSION"),
             "status": "ready",
             "name": "figma-mcp",
-            "dynamicRuntime": true
+            "dynamicRuntime": true,
+            "runtimeHash": runtime_code_hash()
         })),
     )
 }
 
 async fn handle_plugin_code(headers: HeaderMap) -> impl IntoResponse {
+    let runtime_etag = format!("\"figma-code-{}-{}\"", env!("CARGO_PKG_VERSION"), runtime_code_hash());
     if let Some(if_none_match) = headers.get(axum::http::header::IF_NONE_MATCH) {
         if let Ok(val) = if_none_match.to_str() {
-            if val == RUNTIME_CODE_ETAG || val == "*" {
+            if val == runtime_etag || val == "*" {
                 return (
                     StatusCode::NOT_MODIFIED,
                     [
-                        ("etag", RUNTIME_CODE_ETAG),
-                        ("cache-control", "public, max-age=0, must-revalidate"),
-                        ("access-control-allow-origin", "*"),
+                        ("etag", runtime_etag),
+                        ("cache-control", "public, max-age=0, must-revalidate".to_string()),
+                        ("access-control-allow-origin", "*".to_string()),
                     ],
                     "",
                 ).into_response();
@@ -1289,10 +1309,10 @@ async fn handle_plugin_code(headers: HeaderMap) -> impl IntoResponse {
     (
         StatusCode::OK,
         [
-            ("content-type", "application/javascript; charset=utf-8"),
-            ("etag", RUNTIME_CODE_ETAG),
-            ("cache-control", "public, max-age=0, must-revalidate"),
-            ("access-control-allow-origin", "*"),
+            ("content-type", "application/javascript; charset=utf-8".to_string()),
+            ("etag", runtime_etag),
+            ("cache-control", "public, max-age=0, must-revalidate".to_string()),
+            ("access-control-allow-origin", "*".to_string()),
         ],
         PLUGIN_RUNTIME_CODE_JS,
     ).into_response()
@@ -1354,3 +1374,37 @@ pub fn create_router(state: BridgeState) -> Router {
         .with_state(state)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::BridgeState;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn rejects_mcp_tool_names_before_plugin_dispatch() {
+        let state = BridgeState::new(38451);
+        let err = state
+            .send_operation("figma_prepare_design", json!({}), None)
+            .await
+            .expect_err("MCP tool names must never be queued as plugin operations");
+
+        assert!(err.contains("call it through MCP tools/call"));
+    }
+
+    #[test]
+    fn runtime_hash_is_stable_and_nonempty() {
+        let first = super::runtime_code_hash();
+        assert_eq!(first, super::runtime_code_hash());
+        assert_eq!(first.len(), 16);
+    }
+
+    #[tokio::test]
+    async fn resolves_connected_session_by_file_name() {
+        let state = BridgeState::new(38451);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = super::Session::new("session-a".to_string(), Some("Checkout".to_string()));
+        session.ws_tx = Some(tx);
+        state.inner.lock().await.sessions.insert(session.id.clone(), session);
+
+        assert_eq!(state.resolved_session_id(Some("checkout")).await, "session-a");
+    }
+}

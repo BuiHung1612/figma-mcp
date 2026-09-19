@@ -42,7 +42,7 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
     let macos_dir = contents_dir.join("MacOS");
     fs::create_dir_all(&macos_dir).map_err(|e| format!("Failed to create App dir: {}", e))?;
 
-    let plist_content = r#"<?xml version="1.0" encoding="UTF-8"?>
+    let plist_content = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -53,7 +53,7 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.6.0</string>
+    <string>{}</string>
     <key>LSUIElement</key>
     <true/>
     <key>CFBundleURLTypes</key>
@@ -69,7 +69,7 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
     </array>
 </dict>
 </plist>
-"#;
+"#, env!("CARGO_PKG_VERSION"));
 
     let plist_path = contents_dir.join("Info.plist");
     fs::write(&plist_path, plist_content).map_err(|e| format!("Failed to write Info.plist: {}", e))?;
@@ -83,7 +83,7 @@ fi
 
 BIN="{}"
 if [ ! -f "$BIN" ]; then
-    BIN="$HOME/Library/Caches/figma-mcp/v2.6.0/figma-mcp"
+    BIN="$HOME/Library/Caches/figma-mcp/v{}/figma-mcp"
 fi
 if [ ! -f "$BIN" ]; then
     BIN="$HOME/.cargo/bin/figma-mcp"
@@ -93,7 +93,8 @@ if [ -f "$BIN" ]; then
     nohup "$BIN" --server >/dev/null 2>&1 &
 fi
 "#,
-        exe_str
+        exe_str,
+        env!("CARGO_PKG_VERSION")
     );
 
     let launcher_path = macos_dir.join("FigmaMCP");

@@ -72,6 +72,12 @@ fn traverse_text(node: &Value, out: &mut Vec<TextElement>) {
         return;
     }
 
+    // get_design_context wraps the optimized tree in `context`. Keep support
+    // for both that shape and the raw get_design/get_selection tree.
+    if let Some(context) = node.get("context") {
+        traverse_text(context, out);
+    }
+
     let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let is_visible = node.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
     if !is_visible {
@@ -79,25 +85,40 @@ fn traverse_text(node: &Value, out: &mut Vec<TextElement>) {
     }
 
     if node_type == "TEXT" {
-        let text_content = node.get("characters").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let text_obj = node.get("text").filter(|v| v.is_object());
+        let text_content = text_obj
+            .and_then(|v| v.get("content"))
+            .or_else(|| node.get("characters"))
+            .or_else(|| node.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         if !text_content.is_empty() {
             let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let font_size = node.get("typography")
-                .and_then(|t| t.get("fontSize"))
+            let font_size = text_obj
+                .and_then(|v| v.get("fontSize"))
+                .or_else(|| node.get("typography").and_then(|t| t.get("fontSize")))
                 .or_else(|| node.get("fontSize"))
                 .and_then(|v| v.as_f64())
                 .unwrap_or(14.0);
 
-            let font_weight = node.get("typography")
-                .and_then(|t| t.get("fontWeight"))
+            let font_weight = text_obj
+                .and_then(|v| v.get("fontWeight"))
+                .or_else(|| node.get("typography").and_then(|t| t.get("fontWeight")))
                 .and_then(|v| v.as_str())
                 .unwrap_or("Regular")
                 .to_string();
 
-            let color = node.get("fill").and_then(|v| v.as_str()).unwrap_or("#000000").to_string();
-            let line_height = node.get("typography")
-                .and_then(|t| t.get("lineHeight"))
+            let color = text_obj
+                .and_then(|v| v.get("color"))
+                .or_else(|| node.get("fill"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("#000000")
+                .to_string();
+            let line_height = text_obj
+                .and_then(|v| v.get("lineHeight"))
+                .or_else(|| node.get("typography").and_then(|t| t.get("lineHeight")))
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
@@ -218,5 +239,35 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].component_name, "IcAccountOrderHistory");
         assert_eq!(specs[0].local_path, Some("assets/images/ic_account_order_history.svg".to_string()));
+    }
+
+    #[test]
+    fn test_extract_text_from_design_context_shape() {
+        let context = json!({
+            "nodeId": "1:2",
+            "context": {
+                "id": "1:2",
+                "name": "Screen",
+                "type": "FRAME",
+                "children": [{
+                    "id": "1:3",
+                    "name": "Title",
+                    "type": "TEXT",
+                    "text": {
+                        "content": "Hello",
+                        "fontSize": 24.0,
+                        "fontWeight": "Bold",
+                        "color": "#123456",
+                        "lineHeight": "28px"
+                    }
+                }]
+            }
+        });
+
+        let texts = extract_all_text_elements(&context);
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0].text, "Hello");
+        assert_eq!(texts[0].font_size, 24.0);
+        assert_eq!(texts[0].color, "#123456");
     }
 }

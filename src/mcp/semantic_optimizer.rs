@@ -59,8 +59,23 @@ fn is_redundant_wrapper(node: &Value) -> bool {
         return false;
     }
 
+    // A transparent frame can still carry layout semantics. Flattening it
+    // would silently discard padding, gap, alignment, or an explicit size.
+    if node_type == "FRAME"
+        && (node.get("layout").is_some()
+            || node.get("padding").is_some()
+            || node.get("itemSpacing").is_some()
+            || node.get("size").is_some())
+    {
+        return false;
+    }
+
     let has_fill = node.get("fill").is_some();
-    let has_stroke = node.get("stroke").is_some();
+    let has_stroke = node.get("stroke").is_some()
+        || node
+            .get("strokes")
+            .and_then(|v| v.as_array())
+            .is_some_and(|strokes| !strokes.is_empty());
     let has_effects = node.get("effects").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty());
     let has_radius = node.get("borderRadius").and_then(|v| v.as_str()).is_some_and(|r| r != "0px");
 
@@ -79,7 +94,14 @@ fn prune_zero_impact_attributes(node: &mut Value) {
         obj.remove("blendMode");
         obj.remove("isMask");
         obj.remove("layoutVersion");
-        obj.remove("strokes");
+        // Preserve real borders. Only remove an absent/empty stroke payload.
+        let empty_strokes = obj
+            .get("strokes")
+            .map(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty))
+            .unwrap_or(false);
+        if empty_strokes {
+            obj.remove("strokes");
+        }
         
         if obj.get("opacity") == Some(&json!(1.0)) || obj.get("opacity") == Some(&json!(1)) {
             obj.remove("opacity");
@@ -319,5 +341,25 @@ mod tests {
         assert_eq!(agg.get("totalStates"), Some(&json!(3)));
         let states = agg.get("states").and_then(|v| v.as_array()).unwrap();
         assert_eq!(states.len(), 3);
+    }
+
+    #[test]
+    fn preserves_strokes_and_layout_wrappers() {
+        let raw = json!({
+            "name": "Card",
+            "type": "FRAME",
+            "children": [{
+                "name": "LayoutWrapper",
+                "type": "FRAME",
+                "layout": { "display": "flex", "gap": "8px" },
+                "strokes": [{ "color": "#ff0000" }],
+                "children": [{ "name": "Label", "type": "TEXT", "content": "Hi" }]
+            }]
+        });
+
+        let opt = optimize_semantic_tree(&raw);
+        let wrapper = &opt["children"][0];
+        assert_eq!(wrapper["name"], "LayoutWrapper");
+        assert!(wrapper["strokes"].is_array());
     }
 }
