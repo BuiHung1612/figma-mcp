@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.2.7] — 2026-09-19
+
+### Fixed — Higher-Fidelity Figma Reads and Asset Export
+- Preserve fractional geometry for exact/full design scans.
+- Report scan completeness, truncation, precision, and asset export failures.
+- Decode large SVG assets safely without aborting the whole export batch.
+- Prevent empty UI verification payloads from reporting a false 100% match.
+- Keep Rust tests and Clippy clean for the release build.
+
 ## [3.0.4] — 2026-08-29
 
 ### Added & Fixed — UI Error Log Filtering, Copy Console & Handler Resilience

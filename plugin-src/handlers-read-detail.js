@@ -1071,6 +1071,7 @@ handlers.export_assets = async function(params) {
 
   var icons = [];
   var images = [];
+  var failures = [];
   var seenNames = {};
 
   function sanitizeAssetName(rawName, fallback) {
@@ -1146,7 +1147,11 @@ handlers.export_assets = async function(params) {
     if (item.kind === "icon") {
       try {
         var svgBytes = await nd.exportAsync({ format: "SVG" });
-        var svgStr = String.fromCharCode.apply(null, Array.from(svgBytes));
+        // Large SVGs can exceed the argument limit of Function#apply. Use the
+        // shared chunked decoder so one oversized icon does not abort the batch.
+        var svgStr = typeof uint8ArrayToString === "function"
+          ? uint8ArrayToString(svgBytes)
+          : String.fromCharCode.apply(null, Array.from(svgBytes));
         icons.push({
           id: nd.id,
           name: baseName,
@@ -1155,7 +1160,9 @@ handlers.export_assets = async function(params) {
           height: Math.round(nd.height),
           svg: svgStr
         });
-      } catch (e) {}
+      } catch (e) {
+        failures.push({ id: nd.id, name: nd.name, kind: "icon", error: String(e && e.message ? e.message : e) });
+      }
     } else if (item.kind === "image") {
       try {
         var pngBytes = await nd.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: 2 } });
@@ -1168,7 +1175,9 @@ handlers.export_assets = async function(params) {
           height: Math.round(nd.height),
           dataUrl: "data:image/png;base64," + b64
         });
-      } catch (e) {}
+      } catch (e) {
+        failures.push({ id: nd.id, name: nd.name, kind: "image", error: String(e && e.message ? e.message : e) });
+      }
     }
   }
 
@@ -1178,10 +1187,13 @@ handlers.export_assets = async function(params) {
     sourceNodeName: targetNode.name,
     totalIcons: icons.length,
     totalImages: images.length,
+    inspected: exportLimit,
+    discovered: nodesToInspect.length,
+    truncated: nodesToInspect.length > exportLimit,
+    failures: failures,
     icons: icons,
     images: images
   };
 };
 
 handlers.exportAssets = handlers.export_assets;
-

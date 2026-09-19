@@ -539,13 +539,14 @@ async function resolveInstanceComponents(entries, apply) {
   return { resolved: resolved, truncated: truncated };
 }
 
-function absoluteBox(node) {
+function absoluteBox(node, precise) {
   try {
     var box = node.absoluteBoundingBox;
     if (!box) return null;
+    var value = function(n) { return precise ? n : Math.round(n); };
     return {
-      x: Math.round(box.x), y: Math.round(box.y),
-      width: Math.round(box.width), height: Math.round(box.height),
+      x: value(box.x), y: value(box.y),
+      width: value(box.width), height: value(box.height),
     };
   } catch(e) { return null; }
 }
@@ -604,7 +605,7 @@ function applyStrokeWeight(node, info) {
 // instanceCollector: optional array — INSTANCE nodes are pushed as { info, node }
 //   for the caller to resolve via resolveInstanceComponents (mainComponent is
 //   async-only under documentAccess: dynamic-page).
-// walkState: optional { remaining, truncated, absolute } — `remaining` is a node
+// walkState: optional { remaining, truncated, absolute, precise } — `remaining` is a node
 //   budget so one huge frame can't produce a multi-MB payload; subtrees past the
 //   budget are summarized like the depth limit and `truncated` is set.
 function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState) {
@@ -622,14 +623,18 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   var isCompact = (detailLevel === "compact");
   var isFull    = (detailLevel === "full");
 
+  var precise = !!(walkState && walkState.precise);
+  var numberValue = function(value) {
+    return precise ? value : Math.round(value);
+  };
   var info = {
     id:    node.id,
     name:  node.name,
     type:  node.type,
-    x:     "x"      in node ? Math.round(node.x)      : undefined,
-    y:     "y"      in node ? Math.round(node.y)       : undefined,
-    width: "width"  in node ? Math.round(node.width)   : undefined,
-    height:"height" in node ? Math.round(node.height)  : undefined,
+    x:     "x"      in node ? numberValue(node.x)      : undefined,
+    y:     "y"      in node ? numberValue(node.y)       : undefined,
+    width: "width"  in node ? numberValue(node.width)   : undefined,
+    height:"height" in node ? numberValue(node.height)  : undefined,
   };
 
   if (tokenCollector && info.width) tokenCollector.sizes.add(info.width);
@@ -638,7 +643,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   if (walkState && typeof walkState.remaining === "number") walkState.remaining--;
 
   if (!isMinimal && ((walkState && walkState.absolute) || needsAbsoluteBox(node))) {
-    var abox = absoluteBox(node);
+    var abox = absoluteBox(node, precise);
     if (abox) info.absoluteBoundingBox = abox;
   }
 

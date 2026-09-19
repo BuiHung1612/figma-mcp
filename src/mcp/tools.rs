@@ -147,6 +147,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "outputPath": { "type": "string", "description": "Optional file path to save exported SVG/image directly to disk (for export_svg, export_image, or screenshot)." },
                     "includeHidden": { "type": "boolean", "description": "Include invisible nodes (visible:false) in results. Default false — hidden layers are skipped to reduce noise." },
                     "maxNodes": { "type": "number", "description": "Node budget for get_design/get_selection (default 3000) and scan_design (default 50000). Subtrees past it are summarized and meta.nodesTruncated is set — raise it for one big frame, lower it to keep the payload small." },
+                    "precision": { "type": "string", "enum": ["exact", "rounded"], "description": "Geometry precision for read operations. Full/exact preserves fractional Figma coordinates; rounded is smaller and uses integer geometry." },
                     "absolute": { "type": "boolean", "description": "Force absoluteBoundingBox on every node in get_design/get_selection. Off by default: it is emitted only where parent-relative x/y is insufficient (inside a GROUP, or under rotation)." },
                     "inlineIcons": { "type": "boolean", "description": "Inline SVG markup for icon nodes in get_design (detail 'full', first 10 icons). Off by default — exporting SVG for many icons is slow." },
                     "withAnnotations": { "type": "boolean", "description": "For screenshot: export image with numbered bounding-box annotation overlays and metadata for multimodal LLM analysis." },
@@ -432,5 +433,4 @@ mod tests {
         }));
     }
 }
-
 

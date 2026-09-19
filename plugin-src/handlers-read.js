@@ -9,13 +9,16 @@ var DEFAULT_NODE_BUDGET = 3000;
 async function makeWalkStateAsync(params) {
   var p = params || {};
   var budget = (p.maxNodes !== undefined && Number(p.maxNodes) > 0) ? Number(p.maxNodes) : DEFAULT_NODE_BUDGET;
+  // Full detail is intended for faithful reconstruction. Keep fractional
+  // geometry unless the caller explicitly requests compact/rounded output.
+  var precise = p.precision === "exact" || p.detail === "full" || p.detail === undefined;
   var varMap = null;
   try {
     if (typeof buildVariableResolverMapAsync === "function") {
       varMap = await buildVariableResolverMapAsync();
     }
   } catch(e) {}
-  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true, variableMap: varMap };
+  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true, precise: precise, variableMap: varMap };
 }
 
 function walkStateMeta(walkState) {
@@ -169,13 +172,15 @@ handlers.scan_design = async function(params) {
   // flag, so a caller can tell "that's all of it" from "that's the first N".
   var SCAN_LIMITS = { text: 500, images: 50, icons: 50, components: 50, colors: 30, fonts: 30 };
   var maxNodes = (p.maxNodes !== undefined && Number(p.maxNodes) > 0) ? Number(p.maxNodes) : 50000;
+  var precise = p.precision === "exact" || p.precision === "full" || p.precision === undefined;
+  var numberValue = function(value) { return precise ? value : Math.round(value); };
 
   var summary = {
     rootId: root.id,
     rootName: root.name,
     rootType: root.type,
-    width: Math.round(root.width),
-    height: Math.round(root.height),
+    width: numberValue(root.width),
+    height: numberValue(root.height),
     totalNodes: 0,
     sections: [],      // top-level children with their text content
     allText: [],       // every text node: id, content, font, color, position
@@ -204,8 +209,8 @@ handlers.scan_design = async function(params) {
       totals.textNodes++;
       var textInfo = {
         id: node.id, name: node.name,
-        x: Math.round(node.x), y: Math.round(node.y),
-        width: Math.round(node.width), height: Math.round(node.height),
+        x: numberValue(node.x), y: numberValue(node.y),
+        width: numberValue(node.width), height: numberValue(node.height),
       };
       var textStyle = resolveTextStyle(node, { segments: false });
       if (textStyle) {
@@ -249,8 +254,8 @@ handlers.scan_design = async function(params) {
       if (summary.images.length < SCAN_LIMITS.images) {
         summary.images.push({
           id: node.id, name: node.name,
-          x: Math.round(node.x), y: Math.round(node.y),
-          width: Math.round(node.width), height: Math.round(node.height),
+          x: numberValue(node.x), y: numberValue(node.y),
+          width: numberValue(node.width), height: numberValue(node.height),
         });
       }
     }
@@ -260,7 +265,7 @@ handlers.scan_design = async function(params) {
       totals.iconNodes++;
       if (section) section.iconCount++;
       if (summary.icons.length < SCAN_LIMITS.icons) {
-        summary.icons.push({ id: node.id, name: node.name, width: Math.round(node.width), height: Math.round(node.height) });
+        summary.icons.push({ id: node.id, name: node.name, width: numberValue(node.width), height: numberValue(node.height) });
       }
     }
 
@@ -272,7 +277,7 @@ handlers.scan_design = async function(params) {
         var compEntry = {
           id: node.id, name: node.name,
           componentName: null, componentId: null,
-          width: Math.round(node.width), height: Math.round(node.height),
+          width: numberValue(node.width), height: numberValue(node.height),
         };
         summary.components.push(compEntry);
         instanceEntries.push({ info: compEntry, node: node });
@@ -294,8 +299,8 @@ handlers.scan_design = async function(params) {
       if (!scanIncludeHidden && child.visible === false) continue;
       var section = {
         id: child.id, name: child.name, type: child.type,
-        x: Math.round(child.x), y: Math.round(child.y),
-        width: Math.round(child.width), height: Math.round(child.height),
+        x: numberValue(child.x), y: numberValue(child.y),
+        width: numberValue(child.width), height: numberValue(child.height),
         childCount: ("children" in child && Array.isArray(child.children)) ? child.children.length : 0,
         iconCount: 0,
         imageCount: 0,
@@ -340,6 +345,10 @@ handlers.scan_design = async function(params) {
     summary.truncated = truncated;
     summary.truncatedHint = "Lists above are capped — compare with `totals` and re-scan a specific section id for the rest.";
   }
+  summary.complete = Object.keys(truncated).length === 0;
+  summary.precision = precise ? "exact" : "rounded";
+  summary.warnings = [];
+  if (!summary.complete) summary.warnings.push("Scan output is capped or hit maxNodes; use totals and re-scan sections for complete data.");
 
   return summary;
 };
@@ -849,4 +858,3 @@ handlers.takeScreenshot = handlers.screenshot;
 handlers.exportSvg = handlers.export_svg;
 handlers.exportImage = handlers.export_image;
 handlers.indexScan = handlers.index_scan;
-

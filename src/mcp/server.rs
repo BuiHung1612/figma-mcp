@@ -86,19 +86,6 @@ async fn save_export_to_disk(
     }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_supported_read_operation;
-
-    #[test]
-    fn read_operation_contract_rejects_unknown_plugin_operations() {
-        assert!(is_supported_read_operation("get_design_context"));
-        assert!(is_supported_read_operation("export_assets"));
-        assert!(!is_supported_read_operation("figma_prepare_design"));
-        assert!(!is_supported_read_operation("does_not_exist"));
-    }
-}
-
 fn is_supported_read_operation(operation: &str) -> bool {
     matches!(
         operation,
@@ -1505,6 +1492,20 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                     json!({})
                 }
             };
+            if raw_assets.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false) {
+                warnings.push(format!(
+                    "Asset export was capped: discovered {}, inspected {}.",
+                    raw_assets.get("discovered").and_then(|v| v.as_u64()).unwrap_or(0),
+                    raw_assets.get("inspected").and_then(|v| v.as_u64()).unwrap_or(0)
+                ));
+            }
+            if let Some(failures) = raw_assets.get("failures").and_then(|v| v.as_array()) {
+                for failure in failures {
+                    let name = failure.get("name").and_then(|v| v.as_str()).unwrap_or("asset");
+                    let error = failure.get("error").and_then(|v| v.as_str()).unwrap_or("unknown export error");
+                    warnings.push(format!("Asset '{}' export failed: {}", name, error));
+                }
+            }
             
             let mut exported_icons = Vec::new();
             if let Some(icons_arr) = raw_assets.get("icons").and_then(|v| v.as_array()) {
@@ -1611,5 +1612,18 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
         }
 
         _ => ToolResult::error(format!("Unknown tool: {}", call_params.name)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_supported_read_operation;
+
+    #[test]
+    fn read_operation_contract_rejects_unknown_plugin_operations() {
+        assert!(is_supported_read_operation("get_design_context"));
+        assert!(is_supported_read_operation("export_assets"));
+        assert!(!is_supported_read_operation("figma_prepare_design"));
+        assert!(!is_supported_read_operation("does_not_exist"));
     }
 }

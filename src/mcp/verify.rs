@@ -261,10 +261,12 @@ pub fn compare_design_metrics(
         }
     }
 
+    // An empty spec is not a successful verification. Returning 100 here made
+    // missing/incomplete Figma payloads look like perfect matches.
     let percentage = if total_checks > 0 {
         ((matched_checks as f64) / (total_checks as f64)) * 100.0
     } else {
-        100.0
+        0.0
     };
 
     (layout_metrics, style_metrics, fixes, percentage)
@@ -302,5 +304,13 @@ mod tests {
         assert!(fixes.is_empty());
         assert_eq!(percentage, 100.0);
     }
-}
 
+    #[test]
+    fn empty_spec_is_not_reported_as_a_match() {
+        let (layout, style, fixes, percentage) = compare_design_metrics(&json!({}), &HashMap::new());
+        assert!(layout.is_empty());
+        assert!(style.is_empty());
+        assert!(fixes.is_empty());
+        assert_eq!(percentage, 0.0);
+    }
+}
