@@ -21,6 +21,7 @@ const files = [
   "plugin-src/handlers-read-detail.js",
   "plugin-src/handlers-tokens.js",
   "plugin-src/handlers-write-ops.js",
+  "plugin-src/task-scope.js",
   "plugin-src/main.js",
 ];
 

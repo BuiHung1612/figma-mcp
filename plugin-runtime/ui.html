@@ -683,7 +683,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma MCP</span>
-            <span class="brand-ver" id="runtime-version">v3.2.8</span>
+            <span class="brand-ver" id="runtime-version">v3.2.9</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -897,6 +897,7 @@
     var sessionId = null;
     var fileName = null;
     var fileKey = null;
+    var documentId = null;
 
     var writeCount = 0, readCount = 0, errCount = 0;
     var totalLogEvents = 0;
@@ -1471,6 +1472,7 @@
       }
     }
     function connectWs() {
+      if (!sessionId) return; // Wait for runtime identity; never share _default.
       if (ws) {
         try { ws.close(); } catch(e) {}
         ws = null;
@@ -1481,6 +1483,7 @@
       var qs = [];
       if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
       if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
+      if (documentId) qs.push("documentId=" + encodeURIComponent(documentId));
       if (qs.length) wsUrl += "?" + qs.join("&");
 
       try {
@@ -1490,9 +1493,11 @@
         return;
       }
 
+      var socket = ws;
       var pingTimer = null;
 
       ws.onopen = function() {
+        if (ws !== socket) return;
         wsConnected = true;
         sendRuntimeCapabilities();
         consecutiveErrors = 0;
@@ -1504,8 +1509,8 @@
 
         if (pingTimer) clearInterval(pingTimer);
         pingTimer = setInterval(function() {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            try { ws.send(JSON.stringify({ type: "ping" })); } catch(e) {}
+          if (ws === socket && socket.readyState === WebSocket.OPEN) {
+            try { socket.send(JSON.stringify({ type: "ping" })); } catch(e) {}
           } else {
             clearInterval(pingTimer);
           }
@@ -1513,9 +1518,11 @@
       };
 
       ws.onmessage = function(event) {
+        if (ws !== socket) return;
         try {
           var req = JSON.parse(event.data);
           if (req && req.type === "server-hello") {
+            if (Array.isArray(req.activeTaskIds)) dispatchToMain({ type: "task-sync", taskIds: req.activeTaskIds });
             var serverVer = req.version;
             updateRuntimeVersion(serverVer);
             if (!window.__FIGMA_MCP_VER) {
@@ -1567,6 +1574,7 @@
       }
 
       ws.onerror = function() {
+        if (ws !== socket) return;
         if (!everConnected) {
           setStatus("yellow", "Connecting…");
         }
@@ -1574,6 +1582,7 @@
 
       ws.onclose = function() {
         if (pingTimer) clearInterval(pingTimer);
+        if (ws !== socket) return;
         wsConnected = false;
         if (polling) {
           startLongPoll();
@@ -1586,17 +1595,19 @@
     }
 
     async function startLongPoll() {
-      if (isLongPolling || wsConnected) return;
+      if (!sessionId || isLongPolling || wsConnected) return;
       isLongPolling = true;
 
       try {
-        while (polling && !wsConnected) {
+        while (sessionId && polling && !wsConnected) {
           var receivedThisRound = 0;
           try {
+            var pollSid = sessionId;
             var pollUrl = BRIDGE + "/poll";
             var qs = [];
             if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
             if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
+      if (documentId) qs.push("documentId=" + encodeURIComponent(documentId));
             if (isFirstPoll) {
               qs.push("init=true");
               isFirstPoll = false;
@@ -1625,6 +1636,7 @@
             }
 
             var body = await res.json();
+            if (pollSid !== sessionId || (body.sessionId && body.sessionId !== pollSid)) continue;
             var reqs = body.requests || [];
             receivedThisRound = reqs.length;
             setStatus("green", reqs.length ? reqs.length + " cmd" : "Connected");
@@ -1668,10 +1680,11 @@
         '}';
     }
 
-    async function sendResponse(id, success, dataJson, error) {
+    async function sendResponse(id, success, dataJson, error, responseSessionId) {
       var body = buildResponseBody(id, success, dataJson, error);
+      body = body.slice(0, -1) + ",\"sessionId\":" + JSON.stringify(responseSessionId || sessionId) + "}";
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if ((!responseSessionId || responseSessionId === sessionId) && ws && ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(body);
           return;
@@ -1695,6 +1708,7 @@
 
     function reconnect() {
       polling = false;
+      wsConnected = false;
       isFirstPoll = true;
       consecutiveErrors = 0;
       setStatus("yellow", "Reconnecting…");
@@ -1800,12 +1814,13 @@
 
       if (msg.type === "session-info") {
         runtimeCapabilities = { type: "runtime-capabilities", runtimeVersion: msg.runtimeVersion,
-          protocolVersion: msg.protocolVersion, operations: msg.operations };
+          protocolVersion: msg.protocolVersion, operations: msg.operations, documentId: msg.documentId };
         sendRuntimeCapabilities();
         var prevSid = sessionId;
         sessionId = msg.sessionId || null;
         fileName = msg.fileName || null;
         fileKey = msg.fileKey || null;
+        documentId = msg.documentId || null;
         if (fileName && docDispEl) {
           docDispEl.textContent = fileName;
           docDispEl.title = fileName + " (" + (sessionId || "active session") + ")";
@@ -1947,7 +1962,7 @@
       var payloadJson = msg.dataJson !== undefined
         ? msg.dataJson
         : (msg.data !== undefined ? JSON.stringify(msg.data) : null);
-      await sendResponse(msg.id, msg.success, payloadJson, msg.error);
+      await sendResponse(msg.id, msg.success, payloadJson, msg.error, msg.sessionId);
     };
 
     initConnection();

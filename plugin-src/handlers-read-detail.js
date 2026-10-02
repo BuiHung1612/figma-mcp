@@ -619,7 +619,7 @@ handlers.get_design_context = async function(params) {
         var child = nodeContext(nd.children[i], depth + 1);
         if (child) rawCtxChildren.push(child);
       }
-      ctx.children = typeof aggregateRepeatedChildren === "function" ? aggregateRepeatedChildren(rawCtxChildren) : rawCtxChildren;
+      ctx.children = rawCtxChildren;
     } else if (nd.children && nd.children.length) {
       ctx.childCount = nd.children.length;
     }
@@ -823,13 +823,33 @@ handlers.get_styles = async function() {
 
 // get_local_components — enhanced component listing with descriptions and properties
 handlers.get_local_components = async function() {
-  if (typeof figma.loadAllPagesAsync === "function") {
-    try { await figma.loadAllPagesAsync(); } catch (e) {}
+  var comps = [], sets = [];
+  var pages = figma.root.children || [];
+  for (var pi = 0; pi < pages.length; pi++) {
+    var page = pages[pi];
+    if (typeof page.loadAsync === "function") await page.loadAsync();
+    // Cursor stack avoids recursion and copying all descendants at once.
+    var stack = [{ children: page.children || [], next: 0 }];
+    var visited = 0, sliceStart = Date.now();
+    while (stack.length) {
+      var cursor = stack[stack.length - 1];
+      if (cursor.next >= cursor.children.length) { stack.pop(); continue; }
+      var node = cursor.children[cursor.next++];
+      if (!node || node.removed) continue;
+      var nodeType = node.type;
+      if (nodeType === "COMPONENT") comps.push(node);
+      if (nodeType === "COMPONENT_SET") sets.push(node);
+      // Instance descendants are copies, not local component definitions.
+      if (nodeType !== "INSTANCE" && "children" in node && node.children.length) {
+        stack.push({ children: node.children, next: 0 });
+      }
+      if (++visited % 100 === 0 || Date.now() - sliceStart >= 8) {
+        await yieldToUI(0);
+        sliceStart = Date.now();
+      }
+    }
+    await yieldToUI(0);
   }
-  var comps = figma.root.findAllWithCriteria({ types: ["COMPONENT"] });
-  if (typeof yieldToUI === "function") await yieldToUI(0);
-  var sets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET"] });
-  if (typeof yieldToUI === "function") await yieldToUI(0);
 
   var componentList = [];
   var COMP_BATCH_SIZE = 50;

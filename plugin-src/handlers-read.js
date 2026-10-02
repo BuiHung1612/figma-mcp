@@ -738,8 +738,24 @@ handlers.export_image = async function(params) {
   };
 };
 
-// index_scan — aggregate page nodes, styles, variables, and components in one call for pre-indexing
-handlers.index_scan = async function() {
+// index_scan — active-page nodes/tokens; document-wide components on demand.
+var indexScanTask = null;
+var indexScanKey = null;
+handlers.index_scan = async function(params) {
+  var includeComponents = !(params && params.deferComponents);
+  var key = figma.currentPage.id + ":" + includeComponents;
+  while (indexScanTask) {
+    var existingKey = indexScanKey;
+    var result = await indexScanTask;
+    if (existingKey === key) return result;
+  }
+  indexScanKey = key;
+  indexScanTask = runIndexScan(includeComponents);
+  try { return await indexScanTask; } finally { indexScanTask = null; }
+};
+
+async function runIndexScan(includeComponents) {
+  var page = figma.currentPage;
   if (figma.ui) {
     try {
       figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 5, label: "Scanning canvas layers…" });
@@ -748,7 +764,6 @@ handlers.index_scan = async function() {
 
   var pageNodes = [];
   try {
-    var page = figma.currentPage;
     var topFrames = page.children || [];
     var CHUNK_SIZE = 10;
     var totalFrames = topFrames.length;
@@ -758,7 +773,7 @@ handlers.index_scan = async function() {
       var chunkData = chunk.map(function(n) {
         return Object.assign(nodeToInfo(n), { childCount: "children" in n ? n.children.length : 0 });
       });
-      pageNodes = pageNodes.concat(chunkData);
+      Array.prototype.push.apply(pageNodes, chunkData);
 
       var nodePct = totalFrames > 0 ? Math.min(40, Math.round(5 + (pageNodes.length / totalFrames) * 35)) : 35;
       if (figma.ui) {
@@ -772,14 +787,15 @@ handlers.index_scan = async function() {
         } catch(e) {}
       }
 
-      // Stream chunk progressively if there are multiple chunks
-      if (topFrames.length > CHUNK_SIZE && figma.ui) {
+      // Only stream explicit full reindexes for the still-active page.
+      // Startup/page switches publish one snapshot so chunks cannot mix pages.
+      if (includeComponents && figma.currentPage.id === page.id && topFrames.length > CHUNK_SIZE && figma.ui) {
         try {
           figma.ui.postMessage({ type: "index-chunk", nodes: chunkData });
         } catch(e3) {}
       }
 
-      // Yield after every chunk so canvas/UI remains completely smooth
+      // Yield between batches so the next batch does not monopolize the thread.
       if (typeof yieldToUI === "function") {
         await yieldToUI(0);
       }
@@ -822,7 +838,7 @@ handlers.index_scan = async function() {
 
   var components = null;
   try {
-    if (handlers.get_local_components) components = await handlers.get_local_components({});
+    if (includeComponents && handlers.get_local_components) components = await handlers.get_local_components({});
   } catch (e) {}
 
   if (figma.ui) {
@@ -838,6 +854,8 @@ handlers.index_scan = async function() {
   return {
     fileName: figma.root ? figma.root.name : "unknown",
     sessionId: resolvedSid,
+    pageId: page.id,
+    componentsDeferred: !includeComponents,
     pageNodes: pageNodes,
     styles: styles,
     variables: variables,

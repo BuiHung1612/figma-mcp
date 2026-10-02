@@ -335,14 +335,13 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
 // ── React + Tailwind Generator ───────────────────────────────────────────────
 
 fn generate_react_tailwind(context: &Value, component_name: &str) -> String {
-    // 1. Optimize tree by flattening redundant single-child wrapper frames
-    let optimized_context = crate::mcp::semantic_optimizer::optimize_semantic_tree(context);
+    // Code generation consumes the original tree, never shared-style references.
 
     // 2. Infer dynamic interactive states, repeaters, and typescript props interface
-    let logic = crate::mcp::state_engine::infer_component_logic(&optimized_context, component_name);
+    let logic = crate::mcp::state_engine::infer_component_logic(context, component_name);
 
     let mut jsx_buffer = String::new();
-    render_jsx_node(&optimized_context, &mut jsx_buffer, 2);
+    render_jsx_node(context, &mut jsx_buffer, 2);
 
     let mut state_decls = String::new();
     for st in &logic.states {

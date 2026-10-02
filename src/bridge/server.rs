@@ -47,18 +47,38 @@ fn get_op_timeout(op: &str) -> u64 {
     }
 }
 
+fn is_read_operation(operation: &str) -> bool {
+    let key: String = operation.chars().filter(char::is_ascii_alphanumeric).flat_map(char::to_lowercase).collect();
+    matches!(key.as_str(), "status" | "query" | "listpages" | "listcomponents" | "getselection" | "getdesign" |
+        "getpagenodes" | "getnodedetail" | "getdesigncontext" | "getcss" | "getcomponentmap" | "getunmappedcomponents" |
+        "getstyles" | "getvariables" | "getvariabletokens" | "gettokens" | "getlocalcomponents" | "getviewport" |
+        "screenshot" | "exportsvg" | "exportimage" | "exportassets" | "scandesign" | "searchnodes" | "indexscan" |
+        "getcomponentproperties" | "getreactions")
+}
+
 pub struct BridgeInner {
     pub port: u16,
     pub sessions: HashMap<String, Session>,
     pub op_to_session: HashMap<String, String>,
     pub global_stats: SessionStats,
     pub mcp_sse_clients: HashMap<String, tokio::sync::mpsc::UnboundedSender<JsonRpcResponse>>,
+    pub tasks: HashMap<String, TaskBinding>,
     pub last_cleanup_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskBinding {
+    pub task_id: String,
+    pub session_id: String,
+    pub frame_id: String,
+    pub document_id: String,
 }
 
 #[derive(Clone)]
 pub struct BridgeState {
     pub inner: Arc<Mutex<BridgeInner>>,
+    pub task_scope: Option<TaskBinding>,
 }
 
 impl BridgeState {
@@ -70,8 +90,10 @@ impl BridgeState {
                 op_to_session: HashMap::new(),
                 global_stats: SessionStats::default(),
                 mcp_sse_clients: HashMap::new(),
+                tasks: HashMap::new(),
                 last_cleanup_at: 0,
             })),
+            task_scope: None,
         }
     }
 
@@ -123,7 +145,7 @@ impl BridgeState {
             .values()
             .map(|s| SessionInfo {
                 id: s.id.clone(),
-                file_name: s.file_name.clone(),
+                document_id: s.document_id.clone(),                file_name: s.file_name.clone(),
                 connected: s.is_connected(),
                 last_poll_ago_ms: if s.last_poll_at > 0 { Some(now - s.last_poll_at) } else { None },
                 queue_length: s.queue.len(),
@@ -152,7 +174,7 @@ impl BridgeState {
         let inner = self.inner.lock().await;
         let sessions: Vec<SessionInfo> = inner.sessions.values().map(|s| SessionInfo {
             id: s.id.clone(),
-            file_name: s.file_name.clone(),
+                document_id: s.document_id.clone(),            file_name: s.file_name.clone(),
             connected: s.is_connected(),
             last_poll_ago_ms: if s.last_poll_at > 0 { Some(now - s.last_poll_at) } else { None },
             queue_length: s.queue.len(),
@@ -188,15 +210,30 @@ impl BridgeState {
                 _ => return Err("export_node supports PNG, JPG/JPEG or SVG".into()),
             }
         } else { operation };
-        let (rx, op_id, timeout_ms) = {
+        let (rx, op_id, timeout_ms, target_sid) = {
             let mut inner = self.inner.lock().await;
 
-            let sid = Self::resolve_session_id(&inner, session_id);
+            let sid = Self::checked_session_id(&inner, session_id)?;
+
+            if self.task_scope.is_none() && !is_read_operation(operation)
+                && operation != "task_start" && operation != "task_end"
+                && inner.tasks.values().any(|task| task.document_id == inner.sessions.get(&sid).and_then(|s| s.document_id.as_deref()).unwrap_or(&sid)) {
+                return Err("This tab has active frame tasks. Pass taskId through MCP for writes.".into());
+            }
 
             let session = inner
                 .sessions
                 .entry(sid.clone())
                 .or_insert_with(|| Session::new(sid.clone(), None));
+
+            if let Some(task) = &self.task_scope {
+                if task.session_id != sid { return Err("Task cannot switch tabs".into()); }
+                if !params.is_object() && !params.is_array() { return Err("Scoped operations require object/array params".into()); }
+                if params.is_array() { params = json!({"operations": params}); }
+                params["_taskId"] = json!(task.task_id);
+            } else {
+                if let Some(obj) = params.as_object_mut() { obj.remove("_taskId"); }
+            }
 
             if let Some(operations) = &session.operations {
                 let key = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
@@ -213,7 +250,7 @@ impl BridgeState {
                         session.runtime_version.as_deref().unwrap_or("unknown"), session.protocol_version.unwrap_or(0)));
                 }
             }
-            if !["get_styles", "get_variables", "get_variable_tokens", "index_scan"].contains(&operation) {
+            if !["get_styles", "get_variables", "get_variable_tokens", "get_local_components", "index_scan"].contains(&operation) {
                 if let Some(idx) = &mut session.index { idx.tokens_dirty = true; }
             }
             if session.queue.len() >= MAX_QUEUE {
@@ -221,7 +258,7 @@ impl BridgeState {
             }
 
             let timeout_ms = get_op_timeout(operation);
-            let op_id = format!("{}-{}", now_ms(), &Uuid::new_v4().to_string()[..5]);
+            let op_id = format!("{}-{}", now_ms(), Uuid::new_v4());
 
             tracing::debug!(request_id = %op_id, operation, session_id = %sid,
                 runtime_version = ?session.runtime_version, protocol_version = ?session.protocol_version,
@@ -277,12 +314,22 @@ impl BridgeState {
             }
 
             inner.op_to_session.insert(op_id.clone(), sid.clone());
-            (rx, op_id, timeout_ms)
+            (rx, op_id, timeout_ms, sid)
         };
 
         // Await with timeout
         match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
-            Ok(Ok(val)) => val,
+            Ok(Ok(val)) => {
+                if operation == "get_local_components" {
+                    if let Ok(data) = &val {
+                        let mut inner = self.inner.lock().await;
+                        if let Some(idx) = inner.sessions.get_mut(&target_sid).and_then(|s| s.index.as_mut()) {
+                            if idx.is_ready() { idx.cache_components(data); }
+                        }
+                    }
+                }
+                val
+            },
             Ok(Err(_)) => Err("Operation cancelled or bridge closed".to_string()),
             Err(_) => {
                 // Timeout clean up
@@ -358,7 +405,7 @@ impl BridgeState {
         let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| {
-            s.index.as_ref().map(|idx| {
+            s.index.as_ref().filter(|idx| idx.is_ready() && idx.stats.components_indexed).map(|idx| {
                 idx.search_components(name, limit)
                     .into_iter()
                     .cloned()
@@ -427,68 +474,52 @@ impl BridgeState {
         }
     }
 
-    pub fn resolve_session_id(inner: &BridgeInner, target: Option<&str>) -> String {
-        if let Some(target) = target {
-            let target_trim = target.trim();
-            if !target_trim.is_empty() {
-                // 1. Exact match on session ID
-                if let Some(s) = inner.sessions.get(target_trim) {
-                    if s.is_connected() {
-                        return target_trim.to_string();
-                    }
-                }
-                // 2. Exact match on file name (case-insensitive)
-                for (id, s) in &inner.sessions {
-                    if s.is_connected() && s.file_name.eq_ignore_ascii_case(target_trim) {
-                        return id.clone();
-                    }
-                }
-                // 3. Substring match on file name (case-insensitive)
-                for (id, s) in &inner.sessions {
-                    if s.is_connected() && s.file_name.to_lowercase().contains(&target_trim.to_lowercase()) {
-                        return id.clone();
-                    }
-                }
-                // 4. Prefix match on session ID
-                for (id, s) in &inner.sessions {
-                    if s.is_connected() && id.starts_with(target_trim) {
-                        return id.clone();
-                    }
-                }
+    pub fn checked_session_id(inner: &BridgeInner, target: Option<&str>) -> Result<String, String> {
+        let connected: Vec<_> = inner.sessions.values().filter(|s| s.is_connected()).collect();
+        let target = target.map(str::trim).filter(|t| !t.is_empty());
+        let matches: Vec<_> = if let Some(target) = target {
+            if let Some(session) = inner.sessions.get(target) {
+                return if session.is_connected() { Ok(target.into()) }
+                    else { Err(format!("Figma session '{target}' is disconnected. Call figma_status.")) };
             }
+            let exact: Vec<_> = connected.iter().copied().filter(|s| s.file_name.eq_ignore_ascii_case(target)).collect();
+            if !exact.is_empty() { exact } else {
+                connected.iter().copied().filter(|s| s.file_name.to_lowercase().contains(&target.to_lowercase()) || s.id.starts_with(target)).collect()
+            }
+        } else { connected };
+        match matches.as_slice() {
+            [session] => Ok(session.id.clone()),
+            [] => Err("No matching connected Figma tab. Call figma_status and pass an exact sessionId.".into()),
+            _ => Err("Ambiguous Figma tab. Call figma_status and pass an exact sessionId; automatic tab switching is disabled.".into()),
         }
-        // Fallback: Pick the most recently active connected session
-        Self::resolve_best_session_id(inner)
+    }
+
+    // Cache-only callers get a sentinel on failure, never a different tab.
+    pub fn resolve_session_id(inner: &BridgeInner, target: Option<&str>) -> String {
+        Self::checked_session_id(inner, target).unwrap_or_default()
     }
 
     pub async fn resolved_session_id(&self, target: Option<&str>) -> String {
+        Self::resolve_session_id(&*self.inner.lock().await, target)
+    }
+
+    pub async fn tool_target(&self, target: Option<&str>, task_id: Option<&str>, allow_disconnected: bool)
+        -> Result<(String, Arc<Mutex<()>>, Option<TaskBinding>), String> {
         let inner = self.inner.lock().await;
-        Self::resolve_session_id(&inner, target)
+        let task = match task_id {
+            Some(id) => Some(inner.tasks.get(id).cloned().ok_or_else(|| format!("Unknown taskId '{id}'. Start a task with figma_task."))?),
+            None => None,
+        };
+        let sid = match (allow_disconnected, &task) {
+            (true, Some(task)) => task.session_id.clone(),
+            _ => Self::checked_session_id(&inner, task.as_ref().map(|t| t.session_id.as_str()).or(target))?,
+        };
+        if task.is_some() && target.is_some() && target != Some(sid.as_str()) && Self::checked_session_id(&inner, target)? != sid {
+            return Err("taskId is bound to a different Figma tab".into());
+        }
+        Ok((sid.clone(), inner.sessions.get(&sid).ok_or("Task session expired")?.tool_lock.clone(), task))
     }
 
-    fn resolve_best_session_id(inner: &BridgeInner) -> String {
-        let mut best_lp: Option<(&Session, u64)> = None;
-        let mut best_conn: Option<(&Session, u64)> = None;
-
-        for s in inner.sessions.values() {
-            if s.is_connected() {
-                if s.long_poll.is_some() && best_lp.is_none_or(|(_, t)| s.last_poll_at > t) {
-                    best_lp = Some((s, s.last_poll_at));
-                }
-                if best_conn.is_none_or(|(_, t)| s.last_poll_at > t) {
-                    best_conn = Some((s, s.last_poll_at));
-                }
-            }
-        }
-
-        if let Some((s, _)) = best_lp {
-            return s.id.clone();
-        }
-        if let Some((s, _)) = best_conn {
-            return s.id.clone();
-        }
-        "_default".to_string()
-    }
 }
 
 // ── HTTP Handlers ────────────────────────────────────────────────────────────
@@ -499,12 +530,16 @@ struct SessionQuery {
     session_id: Option<String>,
     #[serde(rename = "fileName")]
     file_name: Option<String>,
+    #[serde(rename = "documentId")]
+    document_id: Option<String>,
     init: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct ResponsePayload {
     id: String,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
     #[serde(default)]
     success: bool,
     data: Option<Value>,
@@ -559,16 +594,19 @@ async fn handle_poll(
 
     let is_init = query.init.unwrap_or(false);
 
-    let (immediate_resp, rx) = {
+    let (immediate_resp, rx, poll_generation) = {
         let mut inner = state.inner.lock().await;
         let session = inner
             .sessions
             .entry(sid.clone())
             .or_insert_with(|| Session::new(sid.clone(), query.file_name.clone()));
 
+        if let Some(document_id) = query.document_id { session.document_id = Some(document_id); }
         if let Some(fn_name) = query.file_name {
             session.file_name = fn_name;
         }
+        session.poll_generation += 1;
+        let generation = session.poll_generation;
         let is_first_poll = session.last_poll_at == 0;
         session.last_poll_at = now_ms();
 
@@ -586,7 +624,7 @@ async fn handle_poll(
                     mode: "ready".to_string(),
                     session_id: sid.clone(),
                 }),
-                None,
+                None, generation,
             )
         } else if is_init || is_first_poll {
             // Instant handshake on startup
@@ -596,13 +634,13 @@ async fn handle_poll(
                     mode: "ready".to_string(),
                     session_id: sid.clone(),
                 }),
-                None,
+                None, generation,
             )
         } else {
             let (tx, rx) = oneshot::channel();
             // Drop previous long poll if present
             session.long_poll = Some(tx);
-            (None, Some(rx))
+            (None, Some(rx), generation)
         }
     };
 
@@ -617,8 +655,10 @@ async fn handle_poll(
                 // Poll timeout, return empty requests
                 let mut inner = state.inner.lock().await;
                 if let Some(s) = inner.sessions.get_mut(&sid) {
-                    s.long_poll = None;
-                    s.last_poll_at = now_ms();
+                    if s.poll_generation == poll_generation {
+                        s.long_poll = None;
+                        s.last_poll_at = now_ms();
+                    }
                 }
                 Json(PollResponse {
                     requests: Vec::new(),
@@ -641,6 +681,9 @@ async fn handle_response(
     Json(payload): Json<ResponsePayload>,
 ) -> impl IntoResponse {
     let mut inner = state.inner.lock().await;
+    if let Some(origin) = &payload.session_id {
+        if inner.op_to_session.get(&payload.id) != Some(origin) { return Json(json!({"ok": false, "error": "Response belongs to a different tab"})); }
+    }
     if let Some(sid) = inner.op_to_session.remove(&payload.id) {
         if let Some(session) = inner.sessions.get_mut(&sid) {
             if let Some(pending) = session.pending.remove(&payload.id) {
@@ -672,14 +715,19 @@ async fn handle_exec(
         headers.get("x-session-id").and_then(|h| h.to_str().ok()).map(|s| s.to_string())
     });
 
-    if !state.is_plugin_connected(sid.as_deref()).await {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "Plugin not connected" })),
-        );
+    if matches!(payload.operation.as_str(), "task_start" | "task_end") {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "Use figma_task through MCP"})));
     }
+    let (sid, lock, _) = match state.tool_target(sid.as_deref(), None, false).await {
+        Ok(target) => target,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))),
+    };
+    let _guard = match tokio::time::timeout(Duration::from_secs(120), lock.lock_owned()).await {
+        Ok(guard) => guard,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Figma tab is busy"}))),
+    };
 
-    match state.send_operation(&payload.operation, payload.params, sid.as_deref()).await {
+    match state.send_operation(&payload.operation, payload.params, Some(&sid)).await {
         Ok(data) => (StatusCode::OK, Json(json!({ "success": true, "data": data }))),
         Err(e) => (StatusCode::OK, Json(json!({ "success": false, "error": e }))),
     }
@@ -698,6 +746,8 @@ async fn handle_health(State(state): State<BridgeState>) -> impl IntoResponse {
                 || !s.pending.is_empty()
                 || (now - s.last_poll_at) < SESSION_EXPIRE_MS
         });
+        let sessions: std::collections::HashSet<_> = inner.sessions.keys().cloned().collect();
+        inner.tasks.retain(|_, task| sessions.contains(&task.session_id));
     }
 
     let last_poll = inner.sessions.values().map(|s| s.last_poll_at).max().unwrap_or(0);
@@ -709,7 +759,7 @@ async fn handle_health(State(state): State<BridgeState>) -> impl IntoResponse {
         .values()
         .map(|s| SessionInfo {
             id: s.id.clone(),
-            file_name: s.file_name.clone(),
+                document_id: s.document_id.clone(),            file_name: s.file_name.clone(),
             connected: s.is_connected(),
             last_poll_ago_ms: if s.last_poll_at > 0 { Some(now - s.last_poll_at) } else { None },
             queue_length: s.queue.len(),
@@ -823,13 +873,17 @@ async fn handle_socket(
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
+    let socket_tx = tx.clone();
+
     // Register ws_tx in session and flush queued ops
     {
         let mut inner = state.inner.lock().await;
+        let active_task_ids: Vec<_> = inner.tasks.values().filter(|task| task.session_id == sid).map(|task| task.task_id.clone()).collect();
         let session = inner
             .sessions
             .entry(sid.clone())
             .or_insert_with(|| Session::new(sid.clone(), query.file_name.clone()));
+        if let Some(document_id) = query.document_id { session.document_id = Some(document_id); }
         if let Some(fn_name) = query.file_name {
             session.file_name = fn_name;
         }
@@ -848,10 +902,16 @@ async fn handle_socket(
             "dynamicRuntime": true,
             "runtimeHash": env!("FIGMA_RUNTIME_CODE_HASH"),
             "protocolVersion": 2,
+            "activeTaskIds": active_task_ids,
             "connectedAt": now_ms()
         });
         let _ = tx_clone.send(Message::Text(hello.to_string()));
 
+        for pending in session.pending.values() {
+            if !pending.acked && !session.queue.iter().any(|op| op.id == pending.op.id) {
+                session.queue.push(pending.op.clone());
+            }
+        }
         // Flush any queued ops directly over WebSocket
         let queued = std::mem::take(&mut session.queue);
         for op in &queued {
@@ -876,14 +936,22 @@ async fn handle_socket(
     // Task to receive incoming responses from WebSocket
     let state_clone = state.clone();
     let sid_clone = sid.clone();
+    let owner_tx = socket_tx.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
+            {
+                let inner = state_clone.inner.lock().await;
+                if !inner.sessions.get(&sid_clone).and_then(|s| s.ws_tx.as_ref()).is_some_and(|tx| tx.same_channel(&owner_tx)) {
+                    break;
+                }
+            }
             match msg {
                 Message::Text(text) => {
                     if let Ok(val) = serde_json::from_str::<Value>(&text) {
                         if val["type"] == "runtime-capabilities" {
                             let mut inner = state_clone.inner.lock().await;
                             if let Some(s) = inner.sessions.get_mut(&sid_clone) {
+                                s.document_id = val["documentId"].as_str().map(str::to_owned).or(s.document_id.clone());
                                 s.runtime_version = val["runtimeVersion"].as_str().map(str::to_owned);
                                 s.protocol_version = val["protocolVersion"].as_u64();
                                 s.operations = val["operations"].as_array().map(|ops| ops.iter().filter_map(Value::as_str).map(str::to_owned).collect());
@@ -1013,6 +1081,7 @@ async fn handle_socket(
                             let error = val.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
 
                             let mut inner = state_clone.inner.lock().await;
+                            if inner.op_to_session.get(id) != Some(&sid_clone) { continue; }
                             if let Some(s_id) = inner.op_to_session.remove(id) {
                                 if let Some(session) = inner.sessions.get_mut(&s_id) {
                                     if let Some(pending) = session.pending.remove(id) {
@@ -1080,6 +1149,7 @@ async fn handle_socket(
                             let error = val.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
 
                             let mut inner = state_clone.inner.lock().await;
+                            if inner.op_to_session.get(id) != Some(&sid_clone) { continue; }
                             if let Some(s_id) = inner.op_to_session.remove(id) {
                                 if let Some(session) = inner.sessions.get_mut(&s_id) {
                                     if let Some(pending) = session.pending.remove(id) {
@@ -1125,7 +1195,9 @@ async fn handle_socket(
     let mut inner = state.inner.lock().await;
     let mut requeued: Vec<QueuedOp> = Vec::new();
     if let Some(s) = inner.sessions.get_mut(&sid) {
+        if !s.ws_tx.as_ref().is_some_and(|tx| tx.same_channel(&socket_tx)) { return; }
         s.ws_tx = None;
+        if s.long_poll.is_none() { s.last_poll_at = 0; }
 
         let unacked_ids: Vec<String> = s
             .pending

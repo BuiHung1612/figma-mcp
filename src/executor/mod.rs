@@ -4,9 +4,11 @@ use crate::bridge::BridgeHandle;
 use assets::fetch_svg_icon;
 use base64::Engine;
 use boa_engine::{
+    builtins::promise::PromiseState,
     js_string,
     native_function::NativeFunction,
     object::FunctionObjectBuilder,
+    object::builtins::JsPromise,
     property::Attribute,
     Context, JsError, JsValue, Source,
 };
@@ -415,7 +417,15 @@ figma.loadIconIn = async (iconName, opts = {}) => {
         }
 
         let wrapped_code = format!("(async () => {{\n{}\n}})()", code_owned);
-        let eval_res = context.eval(Source::from_bytes(&wrapped_code));
+        let eval_res = context.eval(Source::from_bytes(&wrapped_code)).and_then(|value| {
+            let promise = JsPromise::from_object(value.as_object().unwrap().clone())?;
+            context.run_jobs();
+            match promise.state() {
+                PromiseState::Fulfilled(value) => Ok(value),
+                PromiseState::Rejected(error) => Err(JsError::from_opaque(error)),
+                PromiseState::Pending => Err(JsError::from_opaque(JsValue::String(js_string!("Sandbox promise did not settle")))),
+            }
+        });
 
         match eval_res {
             Ok(js_val) => {

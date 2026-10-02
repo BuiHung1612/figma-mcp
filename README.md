@@ -8,7 +8,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 ## ⚡ Highlights
 
-- **State & Screen Variant Aggregation (`Context-Preserving Deduplication`)**: Automatically groups frames/sections containing multiple screen states (Default, Typing, Success, Error, Disabled) or repeated list items into a single Base Template + Diffs. Cuts LLM token consumption by **80–90%** while preserving 100% of typography, autolayout, tokens, and button styling.
+- **Lossless Rust Tree Compression**: Compact/minimal tree responses share identical style bundles when the complete JSON becomes smaller. Node IDs, hierarchy, text, geometry and state differences remain intact. Full detail bypasses Rust compression; no heuristic merging of screens or repeated items.
 - **Pure Rust Native Performance**: Starts in `< 1ms`, uses `~3MB RAM`, zero GC pauses.
 - **In-Memory Deep Indexing (`figma_index`)**: Queries layers, components, styles, and tokens in `< 1ms` without slow canvas roundtrips.
 - **Binary IPC & Chunk Streaming**: Powered by **MessagePack** (`rmp-serde`) and progressive subtree chunking for instant transfers of massive design files.
@@ -256,8 +256,21 @@ a restart with the new binary to load the updated runtime.
 
 
 ### 5. `figma_get_selection`
-Token-compressed inspection of currently selected layers/frames on the Figma canvas. Returns compacted layout and typography hierarchy with **60–80% fewer tokens**.
-- **`detail`**: `"compact"` (recommended), `"minimal"`, `"full"`.
+Inspection of currently selected layers/frames, with shared-style compression when it reduces response size.
+- **`detail`**: `"compact"` (default), `"minimal"`, `"full"`.
+
+Compact/minimal `get_selection` and `get_design` responses may contain a root
+`_compression` object with `version: 1` and a `styles` dictionary. For each node
+with `styleRef`, merge `_compression.styles[node.styleRef]` into that node and
+remove `styleRef`; remove root `_compression` to reconstruct the plugin payload
+exactly. Style references are dictionary lookups, not inherited CSS. Payloads
+with reserved-field collisions or no net byte savings stay inline. `detail: "full"` bypasses this Rust transformation and queries the plugin rather than a
+compact selection cache. Plugin detail, visibility, precision, depth and node
+budgets still determine the source payload; compression cannot restore fields
+omitted there. Code generation continues to consume inline styles.
+
+No token-reduction or AI-latency percentage is claimed without a tokenizer and
+end-to-end benchmark on real designs.
 - **`depth`**: Tree depth limit or `"full"`.
 
 ### 6. `figma_export_asset`
@@ -330,6 +343,43 @@ Scans your local codebase directories (`src/components`, `components/ui`) to dis
 - **`projectDir`**: Base directory for component discovery.
 
 ---
+
+### Multiple tabs and frame tasks
+
+Each plugin runtime has its own `sessionId`; tabs of the same file share a
+`documentId`. Use `figma_status` to discover tabs. With multiple connected tabs,
+pass an exact `sessionId`; the server rejects ambiguous routing.
+
+For multiple agents editing one file, call `figma_task` with `action: "start"`,
+`sessionId` and `frameId`, then pass the returned `taskId` on subsequent tools.
+Each task reserves a separate FRAME directly under a PAGE or SECTION, without
+shared component definitions. Writes stay inside that frame; global styles,
+variables, page and selection changes are blocked. A frame cannot be reserved
+twice, including across tabs of the same document. Release it with `figma_task`
+using `action: "end"` and `taskId`; restart tasks after a plugin reload.
+
+Tools on one tab run sequentially, including every awaited operation in a
+`figma_write` call. Different tabs run independently. `npm run test:sessions`
+(Node >=22) checks real WebSocket/HTTP transport with a simulated plugin canvas;
+it does not replace validation in Figma Desktop.
+
+### Startup indexing
+
+Opening the bridge indexes top-level nodes on the active page and local tokens.
+It does not preload every page or scan the document-wide component catalogue.
+`figma_index` status exposes `components_indexed: false` until a full reindex;
+this means deferred, not an empty catalogue. Live component queries populate
+the Rust cache for subsequent reads while the index remains valid. Component reads/searches and rules
+that require the complete catalogue fall back to a live query.
+
+The plugin listens to active-page `nodechange` and global `stylechange` events,
+and rebuilds the lightweight index when the active page changes. It does not
+subscribe to document-wide node changes by preloading the whole file. Explicit
+reindexing still includes all local components; discovery loads pages one at a
+time and yields after at most 100 nodes or an 8ms traversal slice. Figma's native
+page load itself cannot be interrupted by the plugin. Concurrent identical
+index requests share one scan, and results from a previously active page are
+not published as the current index.
 
 ## 💻 Development & Testing
 

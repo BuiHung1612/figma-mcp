@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 
@@ -59,12 +60,15 @@ pub struct ActiveSelection {
 }
 
 pub struct Session {
+    pub tool_lock: Arc<tokio::sync::Mutex<()>>,
     pub id: String,
     pub file_name: String,
+    pub document_id: Option<String>,
     pub last_poll_at: u64,
     pub queue: Vec<QueuedOp>,
     pub pending: HashMap<String, PendingOp>,
     pub long_poll: Option<oneshot::Sender<PollResponse>>,
+    pub poll_generation: u64,
     pub ws_tx: Option<tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>>,
     pub stats: SessionStats,
     pub index: Option<crate::bridge::index::FigmaIndex>,
@@ -77,12 +81,15 @@ pub struct Session {
 impl Session {
     pub fn new(id: String, file_name: Option<String>) -> Self {
         Self {
+            tool_lock: Arc::new(tokio::sync::Mutex::new(())),
             id,
             file_name: file_name.unwrap_or_else(|| "unknown".to_string()),
+            document_id: None,
             last_poll_at: 0,
             queue: Vec::new(),
             pending: HashMap::new(),
             long_poll: None,
+            poll_generation: 0,
             ws_tx: None,
             stats: SessionStats::default(),
             index: None,
@@ -101,6 +108,8 @@ impl Session {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
+    #[serde(rename = "documentId", default)]
+    pub document_id: Option<String>,
     #[serde(rename = "fileName")]
     pub file_name: String,
     pub connected: bool,

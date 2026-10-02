@@ -52,7 +52,8 @@ function getOrCreateSessionId() {
   return newId;
 }
 
-var currentSessionId = getOrCreateSessionId();
+var currentDocumentId = getOrCreateSessionId();
+var currentSessionId = currentDocumentId + ":tab:" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
 var currentFileName = figma.root ? figma.root.name : "Untitled";
 var currentFileKey = getSavedFileKey();
 
@@ -63,6 +64,7 @@ try {
     sessionId: currentSessionId,
     fileName: currentFileName,
     fileKey: currentFileKey,
+    documentId: currentDocumentId,
     runtimeVersion: "{{PLUGIN_VERSION}}",
     protocolVersion: 2,
     operations: Object.keys(handlers)
@@ -113,10 +115,12 @@ function onDocChange(event) {
   try {
     variableCache.clear();
     figma.ui.postMessage({ type: "document-change" });
-    if (event && event.documentChanges) {
-      for (var i = 0; i < event.documentChanges.length; i++) {
-        var ch = event.documentChanges[i];
-        if (ch && ch.id) pendingChangedNodeIds.add(ch.id);
+    var changes = event && (event.documentChanges || event.nodeChanges);
+    if (changes) {
+      for (var i = 0; i < changes.length; i++) {
+        var ch = changes[i];
+        var changedId = ch && (ch.id || (ch.node && ch.node.id));
+        if (changedId) pendingChangedNodeIds.add(changedId);
       }
     }
     if (docChangeTimer) clearTimeout(docChangeTimer);
@@ -169,37 +173,45 @@ function onDocChange(event) {
   } catch (e) {}
 }
 
-// In dynamic-page mode, Figma requires figma.loadAllPagesAsync() before registering documentchange.
-// Delay loading all pages slightly so plugin UI opens and paints immediately without UI freeze.
-setTimeout(function() {
-  if (typeof figma.loadAllPagesAsync === "function") {
-    figma.loadAllPagesAsync().then(function() {
-      try {
-        figma.on("documentchange", onDocChange);
-      } catch (e) {}
-    }).catch(function() {});
-  } else {
-    try {
-      figma.on("documentchange", onDocChange);
-    } catch (e) {}
+// Listen only to the active page: documentchange requires loading the entire
+// file and was making startup expensive even before the index scan began.
+var watchedPage = null;
+function watchCurrentPage() {
+  if (watchedPage && typeof watchedPage.off === "function") {
+    watchedPage.off("nodechange", onDocChange);
   }
-}, 800);
+  watchedPage = figma.currentPage;
+  if (watchedPage && typeof watchedPage.on === "function") {
+    watchedPage.on("nodechange", onDocChange);
+  }
+  pendingChangedNodeIds.clear();
+  if (docChangeTimer) clearTimeout(docChangeTimer);
+}
+try {
+  watchCurrentPage();
+  figma.on("stylechange", onDocChange);
+  figma.on("currentpagechange", function() {
+    watchCurrentPage();
+    onDocChange();
+    publishIndex(true).catch(function() {});
+  });
+} catch(e) {}
 
-// Background initial scan after 1.8s startup delay (ensures UI is fully rendered and WebSocket connected)
-setTimeout(async function() {
-  try {
-    if (handlers.index_scan) {
-      var startMs = Date.now();
-      var scanResult = await handlers.index_scan();
-      figma.ui.postMessage({
-        type: "index-update",
-        data: scanResult,
-        fileName: currentFileName,
-        sessionId: currentSessionId,
-        startMs: startMs
-      });
-    }
-  } catch (e) {}
+async function publishIndex(deferComponents) {
+  var startMs = Date.now();
+  var scanResult = await handlers.index_scan({ deferComponents: deferComponents });
+  // A scan for the previous page must not overwrite the newly active page.
+  if (scanResult.pageId !== figma.currentPage.id) return;
+  figma.ui.postMessage({
+    type: "index-update", data: scanResult, fileName: currentFileName,
+    sessionId: currentSessionId, startMs: startMs
+  });
+}
+
+// Startup indexes the active page and tokens, deferring the file-wide component
+// catalogue until a component query or an explicit reindex requests it.
+setTimeout(function() {
+  publishIndex(true).catch(function() {});
 }, 1800);
 
 // ─── DISPATCHER ───────────────────────────────────────────────────────────────
@@ -225,12 +237,33 @@ function stringifyForBridge(data) {
   }
 }
 
-figma.ui.onmessage = async (request) => {
+var bridgeReplies = new Map();
+function sendBridgeReply(reply) {
+  reply.sessionId = currentSessionId;
+  bridgeReplies.set(reply.id, reply);
+  // ponytail: replay cache covers the last 256 requests in this runtime;
+  // durable replay after a plugin restart needs a persisted operation journal.
+  if (bridgeReplies.size > 256) bridgeReplies.delete(bridgeReplies.keys().next().value);
+  figma.ui.postMessage(reply);
+}
+
+async function handlePluginRequest(request) {
   if (!request) return;
+  if (request.id && bridgeReplies.has(request.id)) {
+    figma.ui.postMessage(bridgeReplies.get(request.id));
+    return;
+  }
+
+  if (request.type === "task-sync") {
+    var liveTasks = new Set(request.taskIds || []);
+    for (var leaseId of frameTasks.keys()) { if (!liveTasks.has(leaseId)) frameTasks.delete(leaseId); }
+    return;
+  }
 
   if (request.type === "runtime-ready") {
     figma.ui.postMessage({ type: "session-info", sessionId: currentSessionId,
       fileName: currentFileName, fileKey: currentFileKey,
+    documentId: currentDocumentId,
       runtimeVersion: "{{PLUGIN_VERSION}}", protocolVersion: 2, operations: Object.keys(handlers) });
     return;
   }
@@ -322,19 +355,7 @@ figma.ui.onmessage = async (request) => {
 
   // Handle manual reindex request from UI
   if (request.type === "manual-reindex") {
-    try {
-      if (handlers.index_scan) {
-        var startMs = Date.now();
-        var scanResult = await handlers.index_scan();
-        figma.ui.postMessage({
-          type: "index-update",
-          data: scanResult,
-          fileName: currentFileName,
-          sessionId: currentSessionId,
-          startMs: startMs
-        });
-      }
-    } catch(e) {}
+    try { await publishIndex(false); } catch(e) {}
     return;
   }
 
@@ -344,7 +365,7 @@ figma.ui.onmessage = async (request) => {
     : handlers[operation];
 
   if (!handler) {
-    figma.ui.postMessage({
+    sendBridgeReply({
       id, operation, success: false,
       error: `Unsupported operation "${operation}" (request ${id}, runtime {{PLUGIN_VERSION}}, protocol 2). Available: ${Object.keys(handlers).join(", ")}`,
     });
@@ -353,13 +374,21 @@ figma.ui.onmessage = async (request) => {
 
   const startTime = Date.now();
   try {
-    var data = await handler(params || {});
+    var scoped = await validateTaskOperation(operation, params || {});
+    var scopedHandler = resolveOperationHandler(scoped.operation);
+    var data = await scopedHandler(scoped.params);
     var durationMs = Date.now() - startTime;
-    figma.ui.postMessage({ id: id, operation: operation, success: true, dataJson: stringifyForBridge(data), durationMs: durationMs });
+    sendBridgeReply({ id: id, operation: operation, success: true, dataJson: stringifyForBridge(data), durationMs: durationMs });
   } catch (err) {
     var durationMs = Date.now() - startTime;
     var errMsg = "[dispatch:" + operation + "] " + (err && err.message ? err.message : String(err));
-    figma.ui.postMessage({ id: id, operation: operation, success: false, error: errMsg, durationMs: durationMs });
+    sendBridgeReply({ id: id, operation: operation, success: false, error: errMsg, durationMs: durationMs });
   }
-};
+ }
 
+var pluginRequestTail = Promise.resolve();
+figma.ui.onmessage = function(request) {
+  var result = pluginRequestTail.then(function() { return handlePluginRequest(request); });
+  pluginRequestTail = result.catch(function() {});
+  return result;
+};

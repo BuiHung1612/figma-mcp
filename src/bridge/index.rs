@@ -96,6 +96,8 @@ pub struct IndexVariable {
 pub struct IndexStats {
     pub total_nodes: usize,
     pub total_components: usize,
+    #[serde(default)]
+    pub components_indexed: bool,
     pub total_styles: usize,
     pub total_variables: usize,
     pub indexed_at_ms: u64,
@@ -113,12 +115,21 @@ pub struct FigmaIndex {
     pub top_level_frames: Vec<String>,
     pub stats: IndexStats,
     pub dirty: bool,
+    pub raw_components: Option<Value>,
     pub raw_styles: Option<Value>,
     pub raw_variables: Option<Value>,
     pub tokens_dirty: bool,
 }
 
 impl FigmaIndex {
+    pub fn cache_components(&mut self, data: &Value) {
+        self.components.clear();
+        self.ingest_components(data);
+        self.raw_components = Some(data.clone());
+        self.stats.components_indexed = true;
+        self.stats.total_components = self.components.len();
+    }
+
     pub fn token_snapshot(&self) -> Option<(Value, Value)> {
         let (styles, variables) = (self.raw_styles.as_ref()?, self.raw_variables.as_ref()?);
         if !self.is_ready() || self.tokens_dirty || styles["schemaVersion"] != 2 || variables["schemaVersion"] != 2 {
@@ -152,6 +163,7 @@ impl FigmaIndex {
 
         let mut idx = FigmaIndex {
             stats: IndexStats {
+                components_indexed: comps_data.is_some_and(Value::is_object),
                 indexed_at_ms: now_ms,
                 duration_ms: now_ms.saturating_sub(start_ms),
                 file_name: file_name.to_string(),
@@ -177,7 +189,7 @@ impl FigmaIndex {
 
         if let Some(styles) = styles_data { idx.ingest_styles(styles); }
         if let Some(vars) = vars_data { idx.ingest_variables(vars); }
-        if let Some(comps) = comps_data { idx.ingest_components(comps); }
+        if let Some(comps) = comps_data.filter(|v| v.is_object()) { idx.cache_components(comps); }
 
         idx.stats.total_nodes = idx.nodes.len();
         idx.stats.total_components = idx.components.len();
@@ -639,6 +651,24 @@ impl IndexNode {
 mod tests {
     use super::FigmaIndex;
     use serde_json::json;
+
+    #[test]
+    fn deferred_components_are_not_a_complete_empty_catalogue() {
+        let nodes = json!([]);
+        let deferred = FigmaIndex::from_raw("s", "f", &nodes, None, None, Some(&json!(null)), 0);
+        assert!(!deferred.stats.components_indexed);
+        let complete = FigmaIndex::from_raw("s", "f", &nodes, None, None,
+            Some(&json!({"components": [], "componentSets": []})), 0);
+        assert!(complete.stats.components_indexed);
+        let mut cached = deferred;
+        let catalogue = json!({"components": [{"id": "1:1", "name": "Button", "properties": {"size": "small"}}], "componentSets": [], "total": 1});
+        cached.cache_components(&catalogue);
+        cached.cache_components(&catalogue);
+        assert!(cached.stats.components_indexed);
+        assert_eq!(cached.raw_components, Some(catalogue));
+        assert_eq!(cached.stats.total_components, 1);
+
+    }
 
     #[test]
     fn indexes_nested_nodes_and_searches_text() {

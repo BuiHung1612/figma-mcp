@@ -2,7 +2,7 @@ use super::protocol::ToolDefinition;
 use serde_json::json;
 
 pub fn get_tools() -> Vec<ToolDefinition> {
-    vec![
+    let mut tools = vec![
         ToolDefinition {
             name: "figma_status".to_string(),
             description: "Check whether the Figma plugin bridge is connected. Always call this first to confirm the plugin is running before any other tool.".to_string(),
@@ -43,7 +43,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "detail": {
                         "type": "string",
                         "enum": ["minimal", "compact", "full"],
-                        "description": "Detail level: 'compact' (recommended default), 'full', 'minimal'."
+                        "description": "Detail level: 'compact' (default) or 'minimal' uses lossless shared-style references when smaller. Merge _compression.styles[node.styleRef] into referenced nodes. 'full' bypasses Rust compression. Plugin detail/depth/node budgets still apply."
                     },
                     "maxNodes": {
                         "type": "number",
@@ -143,7 +143,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "scale": { "type": "number", "description": "Export scale for screenshot / export_image (default 1 for screenshot, 2 for export_image)." },
                     "depth": { "type": "string", "description": "Tree depth for get_design/get_selection. Number (default 10) or 'full' for unlimited. Higher = more detail but larger output." },
                     "format": { "type": "string", "description": "Image format for export_image: 'png' (default) or 'jpg'." },
-                    "detail": { "type": "string", "description": "Detail level for get_design/get_selection: 'minimal' (~5% tokens), 'compact' (~30%), 'full' (default, 100%). Use minimal for large files." },
+                    "detail": { "type": "string", "description": "Detail level for get_design/get_selection: 'full' (default) bypasses Rust compression; 'compact'/'minimal' use shared styles when smaller. Merge _compression.styles[node.styleRef] into referenced nodes. Plugin detail/depth/node budgets still apply." },
                     "outputPath": { "type": "string", "description": "Optional file path to save exported SVG/image directly to disk (for export_svg, export_image, or screenshot)." },
                     "includeHidden": { "type": "boolean", "description": "Include invisible nodes (visible:false) in results. Default false — hidden layers are skipped to reduce noise." },
                     "maxNodes": { "type": "number", "description": "Node budget for get_design/get_selection (default 3000) and scan_design (default 50000). Subtrees past it are summarized and meta.nodesTruncated is set — raise it for one big frame, lower it to keep the payload small." },
@@ -412,7 +412,23 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 "required": []
             }),
         },
-    ]
+    ];
+    tools.push(ToolDefinition {
+        name: "figma_task".into(),
+        description: "Reserve an independent frame for one AI task. Start with sessionId + frameId; pass returned taskId to every tool. Same-frame tasks conflict; writes cannot escape the frame or change shared styles/variables/selection. End releases the frame. Different tabs execute independently.".into(),
+        input_schema: json!({"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["start", "end", "list"]},
+            "sessionId": {"type": "string", "description": "Exact tab ID from figma_status; required when multiple tabs are connected."},
+            "frameId": {"type": "string", "description": "Independent FRAME under PAGE/SECTION, without component definitions."},
+            "taskId": {"type": "string", "description": "Task ID returned by start; required to end."}
+        }, "required": ["action"]}),
+    });
+    for tool in &mut tools {
+        if !matches!(tool.name.as_str(), "figma_status" | "figma_docs" | "figma_task") {
+            tool.input_schema["properties"]["taskId"] = json!({"type": "string", "description": "Frame task ID returned by figma_task. Pins the tab and confines writes to its frame."});
+        }
+    }
+    tools
 }
 
 #[cfg(test)]
@@ -426,7 +442,7 @@ mod tests {
         let names: HashSet<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
 
         assert_eq!(names.len(), tools.len());
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 16);
         assert!(tools.iter().all(|tool| {
             tool.name.starts_with("figma_")
                 && tool.input_schema.get("type").and_then(|v| v.as_str()) == Some("object")

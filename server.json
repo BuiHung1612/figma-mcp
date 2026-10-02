@@ -6,12 +6,12 @@
     "url": "https://github.com/BuiHung1612/figma-mcp",
     "source": "github"
   },
-  "version": "3.2.8",
+  "version": "3.2.9",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "figma-mcp",
-      "version": "3.2.8",
+      "version": "3.2.9",
       "transport": {
         "type": "stdio"
       }

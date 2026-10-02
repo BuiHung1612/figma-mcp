@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.2.9] — 2026-10-02
+
+### Added
+- Isolate plugin tabs and reserve independent frames for concurrent agent tasks.
+- Add WebSocket/HTTP integration coverage for reconnects, routing and task isolation.
+
+### Fixed
+- Await all sandbox operations before completing writes or releasing the tab lock.
+- Preserve complete design trees with lossless shared-style compression.
+- Defer document-wide component indexing and cache catalogue reads in Rust.
+
 ## [3.2.8] — 2026-10-02
 
 ### Fixed

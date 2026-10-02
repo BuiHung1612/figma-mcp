@@ -145,3 +145,216 @@ test('build rejects wrong release tags and checked-in bundle matches source', ()
   assert.notEqual(rejected.status, 0);
   assert.match(rejected.stderr, /does not match build version/);
 });
+
+
+test('tree reads preserve same-size screens and all repeated siblings', () => {
+  const r = runtime();
+  vm.runInContext(readFileSync('plugin-src/read-helpers.js', 'utf8'), r);
+  const screens = Array.from({ length: 12 }, (_, i) => ({
+    id: `screen:${i}`, name: `Screen ${i}`, type: 'FRAME', width: 402, height: 800,
+    layoutMode: 'VERTICAL', itemSpacing: i,
+    children: [{ id: `item:${i}`, name: `Item ${i}`, type: 'FRAME', width: 100, height: 40 }],
+  }));
+  const root = { id: 'root', name: 'Screens', type: 'SECTION', children: screens };
+  for (const detail of ['compact', 'full']) {
+    const tree = plain(r.extractDesignTree(root, 0, 10, detail, true));
+    assert.equal(tree.children.length, 12);
+    assert.deepEqual(tree.children.map(node => node.id), screens.map(node => node.id));
+    assert.equal(tree.children[11].layout.itemSpacing, 11);
+    assert.equal(tree.children[11].children[0].id, 'item:11');
+  }
+});
+
+
+test('startup index defers document-wide components and coalesces duplicate scans', async () => {
+  let componentQueries = 0, styleQueries = 0;
+  const page = { id: 'page:1', children: [{ id: 'frame:1', name: 'Frame', type: 'FRAME' }] };
+  const r = runtime({ currentPage: page, root: { name: 'File', getPluginData: () => '' } });
+  r.handlers.get_styles = async () => { styleQueries++; return { schemaVersion: 2 }; };
+  r.handlers.get_variables = async () => ({ schemaVersion: 2 });
+  r.handlers.get_local_components = async () => { componentQueries++; return { components: [], componentSets: [] }; };
+  const [a, b] = await Promise.all([
+    r.handlers.index_scan({ deferComponents: true }),
+    r.handlers.index_scan({ deferComponents: true }),
+  ]);
+  assert.equal(componentQueries, 0);
+  assert.equal(styleQueries, 1);
+  assert.equal(a, b);
+  assert.equal(a.pageId, page.id);
+  assert.equal(a.componentsDeferred, true);
+  assert.equal(a.pageNodes[0].id, 'frame:1');
+  const [light, full] = await Promise.all([
+    r.handlers.index_scan({ deferComponents: true }), r.handlers.index_scan({}),
+  ]);
+  assert.equal(light.components, null);
+  assert.equal(full.componentsDeferred, false);
+  assert.equal(componentQueries, 1);
+});
+
+test('component catalogue walks pages cooperatively without bulk loading or root searches', async () => {
+  let loaded = 0, yields = 0, reads = 0, lastYieldReads = 0, maxSliceReads = 0;
+  const page = { type: 'PAGE', name: 'Components', loadAsync: async () => { loaded++; } };
+  page.children = Array.from({ length: 1000 }, (_, i) => ({
+    id: `c:${i}`, name: `Component ${i}`, parent: page, width: 10, height: 10,
+    get type() { reads++; return i % 2 ? 'COMPONENT_SET' : 'COMPONENT'; },
+  }));
+  const r = runtime({
+    root: { children: [page], findAllWithCriteria: () => assert.fail('root-wide search') },
+    loadAllPagesAsync: () => assert.fail('bulk page load'),
+  });
+  r.yieldToUI = async () => {
+    yields++; maxSliceReads = Math.max(maxSliceReads, reads - lastYieldReads); lastYieldReads = reads;
+  };
+  const result = await r.handlers.get_local_components();
+  assert.equal(loaded, 1);
+  assert.equal(result.components.length, 500);
+  assert.equal(result.componentSets.length, 500);
+  assert.ok(yields >= 10, 'large traversal must yield before finishing');
+  assert.ok(maxSliceReads <= 200, 'no more than 100 nodes between traversal yields');
+});
+
+test('startup subscribes to active-page changes without loading the whole file', async () => {
+  const events = new Map(), timers = [], messages = [];
+  let pageListener;
+  const page = {
+    id: 'page:1', children: [], selection: [],
+    on: (name, callback) => { assert.equal(name, 'nodechange'); pageListener = callback; },
+    off: () => {},
+  };
+  const r = runtime({
+    currentPage: page, root: { name: 'File', getPluginData: () => 'session' },
+    clientStorage: { getAsync: async () => null }, ui: { postMessage: msg => messages.push(msg) },
+    on: (name, callback) => { events.set(name, callback); },
+    loadAllPagesAsync: () => assert.fail('startup bulk page load'),
+  });
+  r.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
+  r.clearTimeout = () => {};
+  vm.runInContext(readFileSync('plugin-src/main.js', 'utf8'), r);
+  assert.ok(pageListener);
+  assert.ok(events.has('stylechange'));
+  assert.ok(!events.has('documentchange'));
+  let scanOptions;
+  r.handlers.index_scan = async options => { scanOptions = options; return { pageId: page.id }; };
+  await timers.find(timer => timer.delay === 1800).callback();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(scanOptions.deferComponents, true);
+  pageListener({ nodeChanges: [{ type: 'PROPERTY_CHANGE', node: { id: 'changed:1' } }] });
+  assert.ok(r.pendingChangedNodeIds.has('changed:1'));
+  assert.ok(messages.some(msg => msg.type === 'document-change'));
+  const next = { id: 'page:2', on: () => {}, off: () => {} };
+  r.figma.currentPage = next;
+  r.handlers.index_scan = async () => ({ pageId: 'page:1' });
+  const previousUpdates = messages.filter(msg => msg.type === 'index-update').length;
+  await r.publishIndex(true);
+  assert.equal(messages.filter(msg => msg.type === 'index-update').length, previousUpdates);
+});
+
+
+function taskRuntime() {
+  const page = { id: 'page', type: 'PAGE' };
+  const a = { id: 'a', name: 'A', type: 'FRAME', parent: page, children: [] };
+  const b = { id: 'b', name: 'B', type: 'FRAME', parent: page, children: [] };
+  const child = { id: 'a:child', type: 'TEXT', parent: a };
+  a.children.push(child);
+  const nodes = new Map([page, a, b, child].map(node => [node.id, node]));
+  const r = runtime();
+  vm.runInContext(readFileSync('plugin-src/task-scope.js', 'utf8'), r);
+  r.findNodeByIdAsync = async id => nodes.get(id);
+  return { r, nodes, a, b, page };
+}
+
+test('frame tasks reject outside/global writes and batch escape before mutations', async () => {
+  const { r, a, b } = taskRuntime();
+  await r.handlers.task_start({ taskId: 'task-a', frameId: a.id });
+  await r.handlers.task_start({ taskId: 'task-b', frameId: b.id });
+  await assert.rejects(r.handlers.task_start({ taskId: 'task-c', frameId: a.id }), /reserved/);
+  const create = await r.validateTaskOperation('create', { _taskId: 'task-a', type: 'TEXT', content: 'Hello' });
+  assert.equal(create.params.parentId, a.id);
+  const read = await r.validateTaskOperation('get_selection', { _taskId: 'task-a' });
+  assert.equal(read.operation, 'get_design');
+  assert.equal(read.params.id, a.id);
+  assert.equal((await r.validateTaskOperation('screenshot', { _taskId: 'task-a', keepViewport: false })).params.keepViewport, true);
+  await r.validateTaskOperation('modify', { _taskId: 'task-a', id: 'a:child', name: 'Updated' });
+  for (const [operation, params] of [
+    ['modify', { id: b.id }], ['create', { type: 'TEXT', parentId: b.id }],
+    ['delete', { id: a.id, force: true }], ['clone', { id: a.id }],
+    ['append', { parentId: b.id, childId: 'a:child' }],
+    ['set_selection', { nodeIds: [a.id] }], ['setPage', { id: 'page' }],
+    ['setVariableValue', { id: 'variable' }], ['createPaintStyle', { name: 'Global' }],
+    ['create', { type: 'COMPONENT' }],
+    ['batch', { operations: [{ operation: 'modify', params: { id: 'a:child' } }, { operation: 'delete', params: { id: b.id } }] }],
+  ]) {
+    await assert.rejects(r.validateTaskOperation(operation, { ...params, _taskId: 'task-a' }));
+  }
+  await assert.rejects(r.validateTaskOperation('modify', { id: 'a:child' }), /require taskId/);
+  await r.handlers.task_end({ taskId: 'task-a' });
+  await assert.rejects(r.validateTaskOperation('modify', { _taskId: 'task-a', id: 'a:child' }), /Unknown task/);
+});
+
+test('task roots cannot be shared masters or nested layout frames', async () => {
+  const { r, nodes, a } = taskRuntime();
+  const nested = { id: 'nested', type: 'FRAME', parent: a, children: [] };
+  nodes.set(nested.id, nested);
+  await assert.rejects(r.handlers.task_start({ taskId: 'nested-task', frameId: nested.id }), /independent FRAME/);
+  a.children.push({ id: 'master', type: 'COMPONENT', parent: a });
+  await assert.rejects(r.handlers.task_start({ taskId: 'master-task', frameId: a.id }), /shared component/);
+});
+
+test('plugin tab IDs differ for the same document and request replay does not write twice', async () => {
+  const messages = [];
+  function boot() {
+    const r = runtime({
+      fileKey: 'same-file', root: { name: 'File', getPluginData: () => 'same-file' },
+      currentPage: { id: 'page', selection: [], on: () => {} },
+      clientStorage: { getAsync: async () => null }, ui: { postMessage: msg => messages.push(msg) }, on: () => {},
+    });
+    r.setTimeout = () => 0; r.clearTimeout = () => {};
+    r.validateTaskOperation = async (operation, params) => ({ operation, params });
+    vm.runInContext(readFileSync('plugin-src/main.js', 'utf8'), r);
+    return r;
+  }
+  const first = boot(), second = boot();
+  assert.notEqual(first.currentSessionId, second.currentSessionId);
+  assert.equal(first.currentDocumentId, second.currentDocumentId);
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const entered = [];
+  first.handlers.modify = async params => { entered.push(params.id); if (params.id === 'first') await blocked; return params; };
+  const call1 = first.figma.ui.onmessage({ id: 'request-1', operation: 'modify', params: { id: 'first' } });
+  const replay = first.figma.ui.onmessage({ id: 'request-1', operation: 'modify', params: { id: 'first' } });
+  const call2 = first.figma.ui.onmessage({ id: 'request-2', operation: 'modify', params: { id: 'second' } });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(entered, ['first']);
+  release(); await Promise.all([call1, replay, call2]);
+  assert.deepEqual(entered, ['first', 'second']);
+  assert.equal(messages.filter(msg => msg.id === 'request-1' && msg.success).length, 2);
+  assert.ok(messages.filter(msg => msg.id).every(msg => msg.sessionId === first.currentSessionId));
+});
+
+test('old UI socket callbacks cannot clear or dispatch through a replacement socket', () => {
+  const html = readFileSync('plugin-runtime/ui.html', 'utf8');
+  const source = html.slice(html.indexOf('    function connectWs()'), html.indexOf('    async function startLongPoll()'));
+  const sockets = [], dispatched = [];
+  class Socket {
+    static OPEN = 1;
+    constructor(url) { this.url = url; this.readyState = 1; sockets.push(this); }
+    close() {} send() {}
+  }
+  const r = vm.createContext({
+    ws: null, wsConnected: false, sessionId: null, fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:38451',
+    WebSocket: Socket, setInterval: () => 1, clearInterval: () => {}, setTimeout: () => 1, clearTimeout: () => {},
+    sendRuntimeCapabilities: () => {}, consecutiveErrors: 0, everConnected: false, retryTimer: null, polling: true,
+    setStatus: () => {}, log: () => {}, currentPort: 38451, READ_OPS: [],
+    startLongPoll: () => assert.fail('stale socket started poll'), dispatchToMain: req => dispatched.push(req),
+  });
+  vm.runInContext(source, r);
+  r.connectWs(); assert.equal(sockets.length, 0);
+  r.sessionId = 'tab-a'; r.connectWs(); const old = sockets[0];
+  old.onopen(); r.connectWs(); const replacement = sockets[1]; replacement.onopen();
+  old.onclose(); old.onmessage({ data: JSON.stringify({ id: 'old', operation: 'modify' }) });
+  assert.equal(r.wsConnected, true);
+  assert.equal(r.ws, replacement);
+  assert.equal(dispatched.length, 0);
+  replacement.onmessage({ data: JSON.stringify({ id: 'new', operation: 'modify' }) });
+  assert.equal(dispatched[0].id, 'new');
+});
