@@ -67,6 +67,7 @@ pub struct IndexStyle {
     pub id: String,
     pub name: String,
     pub style_type: String,
+    pub source: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,6 +84,9 @@ pub struct IndexVariable {
     pub name: String,
     pub resolved_type: String,
     pub collection_name: String,
+    pub source: Value,
+    pub modes: Value,
+    pub default_mode_id: Option<String>,
     pub values: HashMap<String, Value>,
 }
 
@@ -109,15 +113,27 @@ pub struct FigmaIndex {
     pub top_level_frames: Vec<String>,
     pub stats: IndexStats,
     pub dirty: bool,
+    pub raw_styles: Option<Value>,
+    pub raw_variables: Option<Value>,
+    pub tokens_dirty: bool,
 }
 
 impl FigmaIndex {
+    pub fn token_snapshot(&self) -> Option<(Value, Value)> {
+        let (styles, variables) = (self.raw_styles.as_ref()?, self.raw_variables.as_ref()?);
+        if !self.is_ready() || self.tokens_dirty || styles["schemaVersion"] != 2 || variables["schemaVersion"] != 2 {
+            return None;
+        }
+        Some((styles.clone(), variables.clone()))
+    }
+
     pub fn is_ready(&self) -> bool {
         self.stats.indexed_at_ms > 0 && !self.dirty
     }
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.tokens_dirty = true;
     }
 
     pub fn from_raw(
@@ -226,11 +242,11 @@ impl FigmaIndex {
                         None
                     }
                 }),
-            fills: node.get("fills").cloned(),
+            fills: node.get("paintData").or_else(|| node.get("fills")).cloned(),
             strokes: node.get("strokes").cloned(),
             border_radius: node.get("borderRadius").cloned()
                 .or_else(|| node.get("cornerRadius").cloned()),
-            effects: node.get("effects").cloned(),
+            effects: node.get("effectData").or_else(|| node.get("effects")).cloned(),
             text_style: node.get("textStyle").cloned(),
             full_data: Some(node.clone()),
             children: children_ids,
@@ -291,11 +307,11 @@ impl FigmaIndex {
                         None
                     }
                 }),
-            fills: node.get("fills").cloned(),
+            fills: node.get("paintData").or_else(|| node.get("fills")).cloned(),
             strokes: node.get("strokes").cloned(),
             border_radius: node.get("borderRadius").cloned()
                 .or_else(|| node.get("cornerRadius").cloned()),
-            effects: node.get("effects").cloned(),
+            effects: node.get("effectData").or_else(|| node.get("effects")).cloned(),
             text_style: node.get("textStyle").cloned(),
             full_data: Some(node.clone()),
             children: if children_ids.is_empty() {
@@ -310,6 +326,8 @@ impl FigmaIndex {
     }
 
     pub fn apply_delta(&mut self, node_id: &str, delta: &Value) {
+        // A node delta cannot establish that catalog styles/variables are fresh.
+        self.tokens_dirty = true;
         if let Some(existing) = self.nodes.get_mut(node_id) {
             if let Some(name) = delta.get("name").and_then(|v| v.as_str()) {
                 existing.name = name.to_string();
@@ -349,6 +367,7 @@ impl FigmaIndex {
     }
 
     fn ingest_styles(&mut self, data: &Value) {
+        self.raw_styles = Some(data.clone());
         let mut push = |arr: &[Value], style_type: &str| {
             for s in arr {
                 let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -357,6 +376,7 @@ impl FigmaIndex {
                     id,
                     name: s.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                     style_type: style_type.to_string(),
+                    source: s.clone(),
                     hex: s.get("hex").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     font_family: s.get("fontFamily").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     font_size: s.get("fontSize").and_then(|v| v.as_f64()),
@@ -370,22 +390,21 @@ impl FigmaIndex {
     }
 
     fn ingest_variables(&mut self, data: &Value) {
+        self.raw_variables = Some(data.clone());
         if let Some(collections) = data.get("collections").and_then(|v| v.as_array()) {
             for col in collections {
                 let col_name = col.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let modes: Vec<String> = col.get("modes")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|m| m.get("name").and_then(|v| v.as_str())).map(|s| s.to_string()).collect())
-                    .unwrap_or_default();
+                let modes = col.get("modes").and_then(Value::as_array);
 
                 if let Some(vars) = col.get("variables").and_then(|v| v.as_array()) {
                     for var in vars {
                         let id = var.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         if id.is_empty() { continue; }
                         let mut values = HashMap::new();
-                        if let Some(vals_obj) = var.get("valuesByMode").and_then(|v| v.as_object()) {
-                            for (i, (_, val)) in vals_obj.iter().enumerate() {
-                                let mode_name = modes.get(i).cloned().unwrap_or_else(|| format!("mode_{}", i));
+                        if let Some(vals_obj) = var.get("values").or_else(|| var.get("valuesByMode")).and_then(|v| v.as_object()) {
+                            for (mode_id, val) in vals_obj {
+                                let mode_name = modes.and_then(|ms| ms.iter().find(|m| m["id"].as_str() == Some(mode_id)))
+                                    .and_then(|m| m["name"].as_str()).unwrap_or(mode_id).to_string();
                                 values.insert(mode_name, val.clone());
                             }
                         }
@@ -394,6 +413,9 @@ impl FigmaIndex {
                             name: var.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                             resolved_type: var.get("resolvedType").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                             collection_name: col_name.clone(),
+                            source: var.clone(),
+                            modes: col["modes"].clone(),
+                            default_mode_id: col["defaultModeId"].as_str().map(str::to_owned),
                             values,
                         });
                     }
@@ -523,22 +545,18 @@ impl IndexNode {
             }
         }
 
-        // Fills (Background / Color)
-        if let Some(ref fills) = self.fills {
-            if let Some(arr) = fills.as_array() {
-                for f in arr {
-                    if f.get("visible").and_then(|v| v.as_bool()).unwrap_or(true) {
-                        if let Some(c) = f.get("color").and_then(|v| v.as_str()) {
-                            let opacity = f.get("opacity").and_then(|v| v.as_f64()).unwrap_or(1.0);
-                            if opacity < 1.0 {
-                                css.insert("background-color", format!("{} (opacity: {:.2})", c, opacity));
-                            } else {
-                                css.insert("background-color", c.to_string());
-                            }
-                            break;
-                        }
-                    }
-                }
+        let mut diagnostics = Vec::new();
+        if let Some(paints) = self.fills.as_ref().and_then(Value::as_array) {
+            match crate::mcp::tokens::background_css(paints, self.width.unwrap_or(0.0), self.height.unwrap_or(0.0)) {
+                Ok(Some((property, value))) => { css.insert(property, value); }
+                Ok(None) => {},
+                Err(error) => diagnostics.push(error),
+            }
+        }
+        if let Some(effects) = self.effects.as_ref().and_then(Value::as_array) {
+            match crate::mcp::tokens::effect_css(effects) {
+                Ok(properties) => { for (key, value) in properties { css.insert(match key.as_str() { "box-shadow" => "box-shadow", "filter" => "filter", _ => "backdrop-filter" }, value); } }
+                Err(error) => diagnostics.push(error),
             }
         }
 
@@ -603,6 +621,12 @@ impl IndexNode {
             "type": self.node_type,
             "visible": self.visible.unwrap_or(true),
             "css": css,
+            "fills": self.fills,
+            "effects": self.effects,
+            "diagnostics": diagnostics,
+            "width": self.width,
+            "height": self.height,
+            "fill": self.full_data.as_ref().and_then(|v| v.get("fill")),
             "typography": if typography.is_empty() { None } else { Some(typography) },
             "textContent": self.characters,
             "childCount": self.children.len(),
@@ -656,5 +680,32 @@ mod tests {
         }));
         assert_eq!(index.get_node("2:1").map(|n| n.name.as_str()), Some("Renamed"));
         assert_eq!(index.stats.total_nodes, 1);
+    }
+}
+
+#[cfg(test)]
+mod token_cache_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn live_and_cached_tokens_are_identical_and_mode_ids_are_not_positional() {
+        let fixture: Value = serde_json::from_str(include_str!("../../tests/fixtures/tokens-v2.json")).unwrap();
+        let styles = &fixture["styles"]; let variables = &fixture["variables"];
+        let mut idx = FigmaIndex::from_raw("session", "file", &json!([]), Some(styles), Some(variables), None, 0);
+        let (cached_styles, cached_variables) = idx.token_snapshot().unwrap();
+        assert_eq!(cached_styles, *styles);
+        assert_eq!(cached_variables, *variables);
+        assert_eq!(idx.variables[0].values["Light"], "rgb(100% 100% 100% / 50%)");
+        assert_eq!(idx.variables[0].values["Dark"], "#0008");
+        for format in ["css", "tailwind", "typescript", "json", "w3c"] {
+            assert_eq!(crate::mcp::tokens::generate_tokens(styles, variables, format, None, None, None).unwrap(),
+                crate::mcp::tokens::generate_tokens(&cached_styles, &cached_variables, format, None, None, None).unwrap());
+        }
+        idx.mark_dirty();
+        idx.apply_delta("missing", &json!({"name":"changed"}));
+        assert!(idx.token_snapshot().is_none());
+        let legacy = FigmaIndex::from_raw("session", "file", &json!([]), Some(&json!({"paintStyles":[]})), Some(variables), None, 0);
+        assert!(legacy.token_snapshot().is_none());
     }
 }

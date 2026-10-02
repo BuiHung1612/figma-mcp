@@ -90,7 +90,8 @@ fn hex_to_tailwind_color(hex_or_var: &str, prefix: &str) -> String {
     if s.starts_with("var(") {
         return format!("{}-[{}]", prefix, s);
     }
-    let lower = s.to_lowercase();
+    let canonical = crate::mcp::color::Rgba::parse(&serde_json::json!(s)).map(|c| c.css()).unwrap_or_else(|_| s.to_string());
+    let lower = canonical.to_lowercase();
     if lower.starts_with("rgba(") {
         let clean = lower.replace(' ', "");
         if clean.starts_with("rgba(0,0,0,") {
@@ -125,7 +126,7 @@ fn hex_to_tailwind_color(hex_or_var: &str, prefix: &str) -> String {
         "#1e293b" => format!("{}-slate-800", prefix),
         "#0f172a" => format!("{}-slate-900", prefix),
         "#020617" => format!("{}-slate-950", prefix),
-        _ => format!("{}-[{}]", prefix, s),
+        _ => format!("{}-[{}]", prefix, canonical.replace(' ', "_")),
     }
 }
 
@@ -237,7 +238,7 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
         let prefix = if node_type == "TEXT" { "text" } else { "bg" };
         let fill_opacity = node.get("fillOpacity").and_then(|v| v.as_f64());
         if let Some(op) = fill_opacity {
-            if op > 0.0 && op < 1.0 && !fill.starts_with("rgba(") {
+            if (0.0..1.0).contains(&op) && crate::mcp::color::Rgba::parse(&serde_json::json!(fill)).is_ok_and(|c| c.0[3] >= 1.0) {
                 let pct = (op * 100.0).round() as i64;
                 let base = hex_to_tailwind_color(fill, prefix);
                 classes.push(format!("{}/{}", base, pct));
@@ -246,6 +247,18 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
             }
         } else {
             classes.push(hex_to_tailwind_color(fill, prefix));
+        }
+    }
+
+    if node["type"] != "TEXT" {
+        if let Some(paints) = node.get("paintData").or_else(|| node.get("fills")).and_then(Value::as_array) {
+            let width = node["width"].as_f64().or_else(|| node["size"]["width"].as_f64()).unwrap_or(0.0);
+            let height = node["height"].as_f64().or_else(|| node["size"]["height"].as_f64()).unwrap_or(0.0);
+            if let Ok(Some((property, value))) = crate::mcp::tokens::background_css(paints, width, height) {
+                classes.retain(|class| !class.starts_with("bg-"));
+                if property == "background-color" { classes.push(hex_to_tailwind_color(&value, "bg")); }
+                else { classes.push(format!("[background:{}]", value.replace(' ', "_"))); }
+            }
         }
     }
 
@@ -261,7 +274,7 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
             let stroke_opacity = stroke.get("opacity").and_then(|v| v.as_f64())
                 .or_else(|| node.get("strokeOpacity").and_then(|v| v.as_f64()));
             if let Some(op) = stroke_opacity {
-                if op > 0.0 && op < 1.0 && !color.starts_with("rgba(") {
+                if (0.0..1.0).contains(&op) && crate::mcp::color::Rgba::parse(&serde_json::json!(color)).is_ok_and(|c| c.0[3] >= 1.0) {
                     let pct = (op * 100.0).round() as i64;
                     let base = hex_to_tailwind_color(color, "border");
                     classes.push(format!("{}/{}", base, pct));
@@ -281,17 +294,12 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
         }
     }
 
-    // 6. Effects (Shadows)
-    if let Some(effects) = node.get("effects").and_then(|v| v.as_array()) {
-        for eff in effects {
-            if eff.get("type").and_then(|v| v.as_str()) == Some("DROP_SHADOW") {
-                let radius = eff.get("radius").and_then(|v| v.as_f64()).unwrap_or(4.0);
-                if radius <= 3.0 { classes.push("shadow-sm".to_string()); }
-                else if radius <= 8.0 { classes.push("shadow".to_string()); }
-                else if radius <= 16.0 { classes.push("shadow-md".to_string()); }
-                else if radius <= 24.0 { classes.push("shadow-lg".to_string()); }
-                else { classes.push("shadow-xl".to_string()); }
-                break;
+    // Preserve actual shadow stacks, inset and blur instead of radius-based presets.
+    if let Some(effects) = node.get("effects").and_then(Value::as_array) {
+        if let Ok(css) = crate::mcp::tokens::effect_css(effects) {
+            for (property, value) in css {
+                let utility = match property.as_str() { "box-shadow" => "shadow", "backdrop-filter" => "backdrop-filter", _ => "filter" };
+                classes.push(format!("{utility}-[{}]", value.replace(' ', "_")));
             }
         }
     }
@@ -864,6 +872,18 @@ fn render_swiftui_node(node: &Value, out: &mut String, indent_level: usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exact_shadow_and_alpha_classes_are_preserved() {
+        let node = serde_json::json!({"type":"FRAME", "fill":"rgb(100% 0% 0% / 50%)", "fillOpacity":0.5,
+            "effects":[{"type":"DROP_SHADOW", "color":"#00000020", "offset":{"x":1,"y":2}, "radius":7,"spread":-1},
+                {"type":"INNER_SHADOW", "color":"rgba(255,0,0,0)", "offset":{"x":0,"y":0}, "radius":0,"spread":0}]});
+        let classes = super::node_to_tailwind_classes(&node);
+        assert!(classes.contains(&"bg-[rgba(255,0,0,0.5)]".into()));
+        let shadow = classes.iter().find(|class| class.starts_with("shadow-[")).unwrap();
+        assert!(shadow.contains("1px_2px_7px_-1px"));
+        assert!(shadow.contains("inset_0px_0px_0px_0px_rgba(255,_0,_0,_0)"));
+        assert!(!classes.contains(&"shadow-md".into()));
+    }
     use super::*;
     use serde_json::json;
 

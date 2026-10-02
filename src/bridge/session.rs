@@ -69,6 +69,9 @@ pub struct Session {
     pub stats: SessionStats,
     pub index: Option<crate::bridge::index::FigmaIndex>,
     pub active_selection: Option<ActiveSelection>,
+    pub runtime_version: Option<String>,
+    pub protocol_version: Option<u64>,
+    pub operations: Option<Vec<String>>,
 }
 
 impl Session {
@@ -84,6 +87,9 @@ impl Session {
             stats: SessionStats::default(),
             index: None,
             active_selection: None,
+            runtime_version: None,
+            protocol_version: None,
+            operations: None,
         }
     }
 

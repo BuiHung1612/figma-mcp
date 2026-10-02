@@ -105,6 +105,8 @@ fn is_supported_read_operation(operation: &str) -> bool {
             | "get_design_context"
             | "get_component_map"
             | "get_unmapped_components"
+            | "export_node"
+            | "exportNode"
             | "export_image"
             | "export_assets"
             | "search_nodes"
@@ -327,34 +329,8 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 }
             }
 
-            // Fast-path: Check if node detail is available directly in Rust In-Memory Index
-            if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = state.resolved_session_id(session_id).await;
-                let inner = state.inner.lock().await;
-                if let Some(session) = inner.sessions.get(&sid) {
-                    if let Some(ref idx) = session.index {
-                        if idx.is_ready() {
-                            let matched_node = if let Some(ref id) = node_id {
-                                idx.get_node(id)
-                            } else if let Some(name) = node_name {
-                                idx.get_node_by_name(name)
-                            } else {
-                                None
-                            };
-
-                            if let Some(n) = matched_node {
-                                let mut context = n.to_css_spec();
-                                if let Some(obj) = context.as_object_mut() {
-                                    obj.insert("cached".to_string(), json!(true));
-                                    obj.insert("source".to_string(), json!("rust_memory_index"));
-                                }
-                                return ToolResult::text(serde_json::to_string(&context).unwrap_or_default());
-                            }
-                        }
-                    }
-                }
-            }
-
+            // The compact node index is not the get_design_context contract.
+            // Resolve paints, consumer modes and effects through the live handler.
             let mut op_params = json!({});
             if let Some(ref nid) = node_id { op_params["id"] = json!(nid); }
             if let Some(nname) = node_name { op_params["name"] = json!(nname); }
@@ -415,6 +391,7 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             let operation = match raw_operation {
                 "inspect_node" | "inspect" => "get_design_context",
                 "get_node_info" | "node_detail" => "get_node_detail",
+                "get_tokens" | "tokens" if args.get("format").is_some() => "get_tokens",
                 "get_tokens" | "tokens" => "get_variable_tokens",
                 "export_icons" => "export_assets",
                 other => other,
@@ -451,26 +428,17 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             // Fast-path read from index cache if available for read-only catalog queries
             if ["get_styles", "get_variables", "get_local_components"].contains(&operation) {
                 if let BridgeHandle::Direct(ref state) = bridge {
-                    let sid = state.resolved_session_id(session_id).await;
                     let inner = state.inner.lock().await;
+                    let sid = crate::bridge::server::BridgeState::resolve_session_id(&inner, session_id);
                     if let Some(session) = inner.sessions.get(&sid) {
                         if let Some(ref idx) = session.index {
                             if idx.is_ready() {
-                                if operation == "get_styles" {
-                                    let styles_json = json!({
-                                        "cached": true,
-                                        "styles": idx.styles,
-                                        "paintStyles": idx.styles.iter().filter(|s| s.style_type == "PAINT").collect::<Vec<_>>(),
-                                        "textStyles": idx.styles.iter().filter(|s| s.style_type == "TEXT").collect::<Vec<_>>(),
-                                        "effectStyles": idx.styles.iter().filter(|s| s.style_type == "EFFECT").collect::<Vec<_>>(),
-                                    });
-                                    return ToolResult::text(serde_json::to_string(&styles_json).unwrap_or_default());
-                                } else if operation == "get_variables" {
-                                    let vars_json = json!({
-                                        "cached": true,
-                                        "variables": idx.variables,
-                                    });
-                                    return ToolResult::text(serde_json::to_string(&vars_json).unwrap_or_default());
+                                if operation == "get_styles" || operation == "get_variables" {
+                                    if let Some((styles, vars)) = idx.token_snapshot() {
+                                        let mut data = if operation == "get_styles" { styles } else { vars };
+                                        data["cached"] = json!(true);
+                                        return ToolResult::text(serde_json::to_string(&data).unwrap_or_default());
+                                    }
                                 } else if operation == "get_local_components" {
                                     let comps_json = json!({
                                         "cached": true,
@@ -524,8 +492,10 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
                 let vars_fut = bridge.send_operation("get_variables", json!({}), session_id);
                 let (styles_res, vars_res) = tokio::join!(styles_fut, vars_fut);
 
-                let styles_data = styles_res.unwrap_or(json!({}));
-                let vars_data = vars_res.unwrap_or(json!({}));
+                let (styles_data, vars_data) = match (styles_res, vars_res) {
+                    (Ok(s), Ok(v)) => (s, v),
+                    (Err(e), _) | (_, Err(e)) => return ToolResult::error(format!("Token extraction failed: {e}")),
+                };
 
                 match crate::mcp::tokens::generate_tokens(&styles_data, &vars_data, format, collection, mode, prefix) {
                     Ok(content) => {
@@ -643,8 +613,8 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             // Fast-path: If index is cached and ready, build rules directly from memory (< 1ms!)
             if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = state.resolved_session_id(session_id).await;
                 let inner = state.inner.lock().await;
+                let sid = crate::bridge::server::BridgeState::resolve_session_id(&inner, session_id);
                 if let Some(session) = inner.sessions.get(&sid) {
                     if let Some(ref idx) = session.index {
                         if idx.is_ready() {
@@ -1052,50 +1022,18 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             let prefix = args.get("prefix").and_then(|v| v.as_str());
             let output_path = args.get("outputPath").and_then(|v| v.as_str());
 
-            // Fast-path: If index is cached in memory, use it directly!
-            let (styles_data, vars_data) = if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = state.resolved_session_id(session_id).await;
+            let cached = if let BridgeHandle::Direct(ref state) = bridge {
                 let inner = state.inner.lock().await;
-                if let Some(session) = inner.sessions.get(&sid) {
-                    if let Some(ref idx) = session.index {
-                        if idx.is_ready() {
-                            let styles_json = json!({
-                                "paintStyles": idx.styles.iter().filter(|s| s.style_type == "PAINT").collect::<Vec<_>>(),
-                                "textStyles": idx.styles.iter().filter(|s| s.style_type == "TEXT").collect::<Vec<_>>(),
-                                "effectStyles": idx.styles.iter().filter(|s| s.style_type == "EFFECT").collect::<Vec<_>>(),
-                            });
-                            let vars_json = json!({
-                                "variables": idx.variables,
-                            });
-                            (Some(styles_json), Some(vars_json))
-                        } else {
-                            (None, None)
-                        }
-                    } else {
-                        (None, None)
-                    }
-                } else {
-                    (None, None)
-                }
-            } else {
-                (None, None)
-            };
-
-            let (styles_val, vars_val) = match (styles_data, vars_data) {
-                (Some(s), Some(v)) => (s, v),
-                _ => {
-                    let styles_fut = bridge.send_operation("get_styles", json!({}), session_id);
-                    let vars_fut = bridge.send_operation("get_variables", json!({}), session_id);
-                    let (styles_res, vars_res) = tokio::join!(styles_fut, vars_fut);
-                    let styles_val = match styles_res {
-                        Ok(data) => data,
-                        Err(e) => return ToolResult::error(format!("Failed to load Figma styles: {}", e)),
-                    };
-                    let vars_val = match vars_res {
-                        Ok(data) => data,
-                        Err(e) => return ToolResult::error(format!("Failed to load Figma variables: {}", e)),
-                    };
-                    (styles_val, vars_val)
+                let sid = crate::bridge::server::BridgeState::resolve_session_id(&inner, session_id);
+                inner.sessions.get(&sid).and_then(|s| s.index.as_ref()).and_then(|idx| idx.token_snapshot())
+            } else { None };
+            let (styles_val, vars_val) = if let Some(snapshot) = cached { snapshot } else {
+                let (styles, vars) = tokio::join!(
+                    bridge.send_operation("get_styles", json!({}), session_id),
+                    bridge.send_operation("get_variables", json!({}), session_id));
+                match (styles, vars) {
+                    (Ok(s), Ok(v)) => (s, v),
+                    (Err(e), _) | (_, Err(e)) => return ToolResult::error(format!("Token extraction failed: {e}")),
                 }
             };
 
@@ -1316,8 +1254,8 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 
             // Try resolving from In-Memory Index first
             if let BridgeHandle::Direct(ref state) = bridge {
-                let sid = state.resolved_session_id(session_id).await;
                 let inner = state.inner.lock().await;
+                let sid = crate::bridge::server::BridgeState::resolve_session_id(&inner, session_id);
                 if let Some(session) = inner.sessions.get(&sid) {
                     if let Some(ref idx) = session.index {
                         if idx.is_ready() {
@@ -1422,8 +1360,8 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             let specific_match = if let Some(nid) = node_id {
                 let mut matched_comp = None;
                 if let BridgeHandle::Direct(ref state) = bridge {
-                    let sid = state.resolved_session_id(session_id).await;
                     let inner = state.inner.lock().await;
+                    let sid = crate::bridge::server::BridgeState::resolve_session_id(&inner, session_id);
                     if let Some(session) = inner.sessions.get(&sid) {
                         if let Some(ref idx) = session.index {
                             if let Some(node) = idx.get_node(nid) {
@@ -1623,6 +1561,7 @@ mod tests {
     fn read_operation_contract_rejects_unknown_plugin_operations() {
         assert!(is_supported_read_operation("get_design_context"));
         assert!(is_supported_read_operation("export_assets"));
+        assert!(is_supported_read_operation("export_node"));
         assert!(!is_supported_read_operation("figma_prepare_design"));
         assert!(!is_supported_read_operation("does_not_exist"));
     }

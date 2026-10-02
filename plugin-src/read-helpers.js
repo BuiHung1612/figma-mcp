@@ -668,7 +668,8 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   try {
     if ("fills" in node && node.fills && !isMixed(node.fills) && node.fills.length) {
       var fills = node.fills;
-      if (fills.length === 1 && fills[0].type === "SOLID") {
+      info.paintData = fills.map(serializePaint);
+      if (fills.length === 1 && fills[0].type === "SOLID" && fills[0].visible !== false) {
         info.fill = rgbToHex(fills[0].color, fills[0].opacity);
         if (tokenCollector && info.fill) tokenCollector.colors.add(info.fill);
         if (fills[0].opacity !== undefined && fills[0].opacity !== 1) {
@@ -678,29 +679,9 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         info.fills = [];
         for (var fi = 0; fi < fills.length; fi++) {
           var f = fills[fi];
-          var fd = { type: f.type, visible: f.visible !== false };
-          if (f.type === "SOLID") {
-            fd.color = rgbToHex(f.color, f.opacity);
-            if (tokenCollector && fd.color) tokenCollector.colors.add(fd.color);
-            if (f.opacity !== undefined && f.opacity !== 1) fd.opacity = Math.round(f.opacity * 1000) / 1000;
-          } else if (f.type === "GRADIENT_LINEAR" || f.type === "GRADIENT_RADIAL" || f.type === "GRADIENT_ANGULAR") {
-            fd.gradientStops = f.gradientStops ? f.gradientStops.map(function(gs) {
-              var sc = rgbToHex(gs.color, gs.color ? gs.color.a : 1);
-              if (tokenCollector && sc) tokenCollector.colors.add(sc);
-              return { color: sc, position: Math.round(gs.position * 100) / 100 };
-            }) : [];
-            // Extract gradient angle from gradientTransform matrix
-            try {
-              if (f.gradientTransform && f.type === "GRADIENT_LINEAR") {
-                var gt = f.gradientTransform;
-                var angle = Math.round(Math.atan2(gt[1][0], gt[0][0]) * 180 / Math.PI);
-                fd.gradientAngle = ((angle % 360) + 360) % 360;
-              }
-            } catch(e2) {}
-          } else if (f.type === "IMAGE") {
-            fd.scaleMode = f.scaleMode || "FILL";
-            fd.imageHash = f.imageHash || null;
-          }
+          var fd = serializePaint(f);
+          if (tokenCollector && fd.color) tokenCollector.colors.add(fd.color);
+          if (tokenCollector && fd.gradientStops) fd.gradientStops.forEach(function(stop) { tokenCollector.colors.add(stop.color); });
           info.fills.push(fd);
         }
       }
@@ -756,7 +737,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   try { if ("rotation" in node && node.rotation !== 0) info.rotation = Math.round(node.rotation * 100) / 100; } catch(e) {}
 
   // ── Opacity, visibility, blend mode, clip ──
-  try { if ("opacity" in node && node.opacity !== 1) info.opacity = Math.round(node.opacity * 100) / 100; } catch(e) {}
+  try { if ("opacity" in node && node.opacity !== 1) info.opacity = node.opacity; } catch(e) {}
   try { if ("visible" in node && !node.visible) info.visible = false; } catch(e) {}
   try { if ("blendMode" in node && node.blendMode !== "NORMAL" && node.blendMode !== "PASS_THROUGH") info.blendMode = node.blendMode; } catch(e) {}
   try { if ("clipsContent" in node && node.clipsContent) info.clipsContent = true; } catch(e) {}
@@ -806,6 +787,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   // ── Effects (shadows, blurs) — full only ──
   if (isFull) try {
     if ("effects" in node && node.effects && node.effects.length) {
+      info.effectData = JSON.parse(JSON.stringify(node.effects));
       var effs = [];
       for (var ei = 0; ei < node.effects.length; ei++) {
         var eff = node.effects[ei];

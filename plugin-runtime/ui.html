@@ -683,7 +683,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma MCP</span>
-            <span class="brand-ver">v3.0.0</span>
+            <span class="brand-ver" id="runtime-version">v3.2.8</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -1457,6 +1457,19 @@
       }, 1500);
     }
 
+    function updateRuntimeVersion(version) {
+      var badge = document.getElementById("runtime-version");
+      if (badge && typeof version === "string" && version.length) {
+        badge.textContent = "v" + version;
+        badge.title = "Connected server v" + version;
+      }
+    }
+    var runtimeCapabilities = null;
+    function sendRuntimeCapabilities() {
+      if (runtimeCapabilities && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(runtimeCapabilities));
+      }
+    }
     function connectWs() {
       if (ws) {
         try { ws.close(); } catch(e) {}
@@ -1481,6 +1494,7 @@
 
       ws.onopen = function() {
         wsConnected = true;
+        sendRuntimeCapabilities();
         consecutiveErrors = 0;
         everConnected = true;
         if (retryTimer) clearTimeout(retryTimer);
@@ -1503,9 +1517,11 @@
           var req = JSON.parse(event.data);
           if (req && req.type === "server-hello") {
             var serverVer = req.version;
+            updateRuntimeVersion(serverVer);
             if (!window.__FIGMA_MCP_VER) {
               window.__FIGMA_MCP_VER = serverVer;
-            } else if (window.__FIGMA_MCP_VER !== serverVer) {
+              window.__FIGMA_MCP_RUNTIME_HASH = req.runtimeHash;
+            } else if (window.__FIGMA_MCP_VER !== serverVer || (req.runtimeHash && window.__FIGMA_MCP_RUNTIME_HASH && req.runtimeHash !== window.__FIGMA_MCP_RUNTIME_HASH)) {
               log("⚡ Server updated to v" + serverVer + " — Hot reloading in 500ms…", "info");
               setTimeout(function() {
                 triggerHotReload(currentPort);
@@ -1783,6 +1799,9 @@
       if (!msg) return;
 
       if (msg.type === "session-info") {
+        runtimeCapabilities = { type: "runtime-capabilities", runtimeVersion: msg.runtimeVersion,
+          protocolVersion: msg.protocolVersion, operations: msg.operations };
+        sendRuntimeCapabilities();
         var prevSid = sessionId;
         sessionId = msg.sessionId || null;
         fileName = msg.fileName || null;
@@ -1981,6 +2000,7 @@
         window.addEventListener("pointerup", onPointerUp);
       });
     })();
+    parent.postMessage({ pluginMessage: { type: "runtime-ready" } }, "*");
   </script>
 </body>
 </html>

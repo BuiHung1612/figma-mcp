@@ -33,7 +33,7 @@ handlers.get_node_detail = async function(params) {
   var detail = {
     id: node.id, name: node.name, type: node.type,
     x: Math.round(node.x), y: Math.round(node.y),
-    width: Math.round(node.width), height: Math.round(node.height),
+    width: node.width, height: node.height,
   };
 
   // clipsContent resolved here so get_css does not need a second node fetch
@@ -46,25 +46,7 @@ handlers.get_node_detail = async function(params) {
       for (var fi = 0; fi < node.fills.length; fi++) {
         var f = node.fills[fi];
         if (f.visible === false) continue;
-        var fd = { type: f.type };
-        if (f.type === "SOLID") {
-          fd.color = rgbToHex(f.color, f.opacity);
-          if (f.opacity !== undefined && f.opacity !== 1) fd.opacity = Math.round(f.opacity * 1000) / 1000;
-        } else if (f.type === "GRADIENT_LINEAR" || f.type === "GRADIENT_RADIAL" || f.type === "GRADIENT_ANGULAR") {
-          fd.gradientStops = f.gradientStops ? f.gradientStops.map(function(gs) {
-            return { color: rgbToHex(gs.color, gs.color ? gs.color.a : 1), position: Math.round(gs.position * 100) / 100 };
-          }) : [];
-          // Extract gradient angle from gradientTransform matrix
-          try {
-            if (f.gradientTransform && f.type === "GRADIENT_LINEAR") {
-              var gt = f.gradientTransform;
-              var angle = Math.round(Math.atan2(gt[1][0], gt[0][0]) * 180 / Math.PI);
-              fd.gradientAngle = ((angle % 360) + 360) % 360;
-            }
-          } catch(e2) {}
-        } else if (f.type === "IMAGE") {
-          fd.scaleMode = f.scaleMode || "FILL";
-        }
+        var fd = serializePaint(f);
 
         // Link bound variable token if present
         try {
@@ -162,33 +144,16 @@ handlers.get_node_detail = async function(params) {
   try { if ("rotation" in node && node.rotation !== 0) detail.rotation = Math.round(node.rotation * 100) / 100; } catch(e) {}
 
   // Opacity, blendMode, visible
-  try { if (node.opacity !== undefined && node.opacity !== 1) detail.opacity = Math.round(node.opacity * 100) / 100; } catch(e) {}
+  try { if (node.opacity !== undefined && node.opacity !== 1) detail.opacity = node.opacity; } catch(e) {}
   try { if (node.blendMode && node.blendMode !== "NORMAL" && node.blendMode !== "PASS_THROUGH") detail.blendMode = node.blendMode; } catch(e) {}
   try { if ("visible" in node && !node.visible) detail.visible = false; } catch(e) {}
 
-  // Effects → CSS boxShadow + filter (blur)
+  // Retain the complete stack even if an effect cannot be expressed in CSS.
   try {
-    if (node.effects && node.effects.length) {
-      var shadows = [];
-      var blurValues = [];
-      for (var ei = 0; ei < node.effects.length; ei++) {
-        var eff = node.effects[ei];
-        if (eff.visible === false) continue;
-        if (eff.type === "DROP_SHADOW" || eff.type === "INNER_SHADOW") {
-          var c = eff.color;
-          var rgba = "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + "," + Math.round(c.b * 255) + "," + (c.a !== undefined ? Math.round(c.a * 100) / 100 : 1) + ")";
-          var prefix = eff.type === "INNER_SHADOW" ? "inset " : "";
-          shadows.push(prefix + (eff.offset ? eff.offset.x : 0) + "px " + (eff.offset ? eff.offset.y : 0) + "px " + (eff.radius || 0) + "px " + (eff.spread || 0) + "px " + rgba);
-        } else if (eff.type === "LAYER_BLUR") {
-          blurValues.push("blur(" + (eff.radius || 0) + "px)");
-        } else if (eff.type === "BACKGROUND_BLUR") {
-          detail.backdropFilter = "blur(" + (eff.radius || 0) + "px)";
-        }
-      }
-      if (shadows.length) detail.boxShadow = shadows.join(", ");
-      if (blurValues.length) detail.filter = blurValues.join(" ");
-    }
-  } catch(e) {}
+    detail.effects = JSON.parse(JSON.stringify(node.effects || []));
+    var effectCss = effectsToCss(detail.effects);
+    Object.keys(effectCss).forEach(function(key) { if (effectCss[key]) detail[key] = effectCss[key]; });
+  } catch(e) { detail.diagnostics = (detail.diagnostics || []).concat([e.message]); }
 
   // Layout / padding
   try {
@@ -393,24 +358,11 @@ handlers.get_css = async function(params) {
     if (c.padding && c.padding !== "0px 0px 0px 0px") lines.push("padding: " + c.padding + ";");
   }
 
-  // Background / fill
-  if (detail.fills && detail.fills.length) {
-    var f = detail.fills[0];
-    if (f.type === "SOLID") {
-      var bg = f.color;
-      if (f.opacity !== undefined && f.opacity !== 1) {
-        // Convert hex + opacity to rgba
-        var r2 = parseInt(bg.slice(1, 3), 16);
-        var g2 = parseInt(bg.slice(3, 5), 16);
-        var b2 = parseInt(bg.slice(5, 7), 16);
-        bg = "rgba(" + r2 + ", " + g2 + ", " + b2 + ", " + f.opacity + ")";
-      }
-      lines.push("background-color: " + bg + ";");
-    } else if (f.type === "GRADIENT_LINEAR" && f.gradientStops) {
-      var stops = f.gradientStops.map(function(s) { return s.color + " " + Math.round(s.position * 100) + "%"; }).join(", ");
-      lines.push("background: linear-gradient(" + (f.gradientAngle || 0) + "deg, " + stops + ");");
-    }
-  }
+  var diagnostics = (detail.diagnostics || []).slice();
+  try {
+    var background = paintsToCss(detail.fills, detail.width, detail.height);
+    if (background) lines.push(background.property + ": " + background.value + ";");
+  } catch(e) { diagnostics.push(e.message); }
 
   // Stroke / border
   if (detail.stroke) {
@@ -463,6 +415,7 @@ handlers.get_css = async function(params) {
   if (detail.clipsContent) lines.push("overflow: hidden;");
 
   return {
+    diagnostics: diagnostics,
     nodeId: detail.id,
     name: detail.name,
     type: detail.type,
@@ -550,7 +503,7 @@ handlers.get_design_context = async function(params) {
     } catch(e) {}
 
     // Size
-    try { ctx.size = { width: Math.round(nd.width), height: Math.round(nd.height) }; } catch(e) {}
+    try { ctx.size = { width: nd.width, height: nd.height }; } catch(e) {}
 
     // Fill (token-resolved)
     var fillVal = resolveFill(nd);
@@ -558,6 +511,14 @@ handlers.get_design_context = async function(params) {
     if (nd.fills && !isMixed(nd.fills) && nd.fills.length && nd.fills[0].type === "SOLID" && nd.fills[0].opacity !== undefined && nd.fills[0].opacity !== 1) {
       ctx.fillOpacity = Math.round(nd.fills[0].opacity * 1000) / 1000;
     }
+
+    try {
+      if (nd.fills && !isMixed(nd.fills)) {
+        ctx.paintData = nd.fills.map(serializePaint);
+        var bg = paintsToCss(ctx.paintData, nd.width, nd.height);
+        if (bg) ctx.backgroundCss = bg;
+      }
+    } catch(e) { ctx.diagnostics = (ctx.diagnostics || []).concat([e.message]); }
 
     // Direct token bindings
     try {
@@ -606,16 +567,9 @@ handlers.get_design_context = async function(params) {
     // Opacity / effects
     try { if (nd.opacity !== undefined && nd.opacity !== 1) ctx.opacity = nd.opacity; } catch(e) {}
     try {
-      if (nd.effects && nd.effects.length) {
-        ctx.effects = nd.effects.filter(function(e) { return e.visible !== false; }).map(function(e) {
-          var ed = { type: e.type };
-          if (e.color) ed.color = "rgba(" + Math.round(e.color.r*255) + "," + Math.round(e.color.g*255) + "," + Math.round(e.color.b*255) + "," + Math.round((e.color.a||1)*100)/100 + ")";
-          if (e.offset) { ed.offsetX = e.offset.x; ed.offsetY = e.offset.y; }
-          if (e.radius) ed.radius = e.radius;
-          return ed;
-        });
-      }
-    } catch(e) {}
+      ctx.effects = JSON.parse(JSON.stringify(nd.effects || []));
+      ctx.effectCss = effectsToCss(ctx.effects);
+    } catch(e) { ctx.diagnostics = (ctx.diagnostics || []).concat([e.message]); }
 
     // Text — resolveTextStyle unwraps figma.mixed on multi-style text
     if (nd.type === "TEXT") {
@@ -837,13 +791,14 @@ handlers.get_styles = async function() {
   var gridStyles = await figma.getLocalGridStylesAsync();
 
   return {
+    schemaVersion: 2,
     paintStyles: paintStyles.map(function(s) {
-      var paints = s.paints || [];
+      var paints = (s.paints || []).map(serializePaint);
       var hex = null;
       if (paints.length > 0 && paints[0].type === "SOLID") {
-        hex = rgbToHex(paints[0].color, paints[0].opacity);
+        hex = paints[0].color;
       }
-      return { id: s.id, name: s.name, hex: hex, type: "PAINT" };
+      return { id: s.id, name: s.name, description: s.description, hex: paints.length === 1 ? hex : null, paints: paints, type: "PAINT" };
     }),
     textStyles: textStyles.map(function(s) {
       return {
@@ -852,11 +807,13 @@ handlers.get_styles = async function() {
         fontFamily: s.fontName ? s.fontName.family : null,
         fontWeight: s.fontName ? s.fontName.style : null,
         lineHeight: s.lineHeight ? s.lineHeight.value : null,
+        lineHeightUnit: s.lineHeight ? s.lineHeight.unit : null,
         letterSpacing: s.letterSpacing ? s.letterSpacing.value : null,
+        letterSpacingUnit: s.letterSpacing ? s.letterSpacing.unit : null,
       };
     }),
     effectStyles: effectStyles.map(function(s) {
-      return { id: s.id, name: s.name, type: "EFFECT", effects: s.effects.length };
+      return { id: s.id, name: s.name, description: s.description, type: "EFFECT", effects: JSON.parse(JSON.stringify(s.effects)) };
     }),
     gridStyles: gridStyles.map(function(s) {
       return { id: s.id, name: s.name, type: "GRID" };
@@ -984,6 +941,8 @@ handlers.get_variables = async function() {
     } catch(e) { /* fall back to per-id lookups */ }
 
     var resolvedTokensMap = {};
+    var diagnostics = [];
+    for (var cacheId in varsById) variableCache.set(cacheId, varsById[cacheId]);
 
     for (var ci = 0; ci < localCollections.length; ci++) {
       var col = localCollections[ci];
@@ -999,10 +958,16 @@ handlers.get_variables = async function() {
             if (val && typeof val === "object" && "r" in val && "g" in val && "b" in val) {
               var hexVal = rgbToHex(val, val.a);
               values[modeId] = hexVal;
-              resolvedTokensMap[v.name] = hexVal;
+              if (modeId === col.defaultModeId) resolvedTokensMap[v.name] = hexVal;
             } else if (val && typeof val === "object" && val.type === "VARIABLE_ALIAS" && val.id) {
-              var resolvedAlias = await resolveVariableValueAsync(val.id, modeId, 1);
-              var finalHexOrVal = resolvedAlias ? (resolvedAlias.resolvedValue || resolvedAlias.hex || resolvedAlias.value) : null;
+              var modeName = col.modes.filter(function(m) { return m.modeId === modeId; })[0];
+              var modeMap = {};
+              localCollections.forEach(function(other) {
+                var matched = other.modes.filter(function(m) { return modeName && m.name === modeName.name; })[0];
+                modeMap[other.id] = other.id === col.id ? modeId : (matched ? matched.modeId : other.defaultModeId);
+              });
+              var resolvedAlias = await resolveVariableValueAsync(val.id, modeMap, 1);
+              var finalHexOrVal = resolvedAlias ? (resolvedAlias.resolvedValue !== undefined && resolvedAlias.resolvedValue !== null ? resolvedAlias.resolvedValue : resolvedAlias.hex) : null;
               values[modeId] = {
                 type: "VARIABLE_ALIAS",
                 aliasId: val.id,
@@ -1010,10 +975,11 @@ handlers.get_variables = async function() {
                 primitiveName: resolvedAlias ? resolvedAlias.primitiveName : null,
                 resolvedValue: finalHexOrVal,
               };
-              if (finalHexOrVal) resolvedTokensMap[v.name] = finalHexOrVal;
+              if (finalHexOrVal === null || finalHexOrVal === undefined) diagnostics.push({ variableId: v.id, modeId: modeId, message: "Unresolved alias " + val.id });
+              if (modeId === col.defaultModeId && finalHexOrVal !== null && finalHexOrVal !== undefined) resolvedTokensMap[v.name] = finalHexOrVal;
             } else {
               values[modeId] = val;
-              if (val !== undefined && val !== null) resolvedTokensMap[v.name] = val;
+              if (modeId === col.defaultModeId && val !== undefined && val !== null) resolvedTokensMap[v.name] = val;
             }
           }
         }
@@ -1021,6 +987,8 @@ handlers.get_variables = async function() {
           id: v.id, name: v.name,
           resolvedType: v.resolvedType,
           values: values,
+          valuesByMode: JSON.parse(JSON.stringify(v.valuesByMode)),
+          scopes: v.scopes,
           description: v.description || "",
         });
 
@@ -1029,7 +997,7 @@ handlers.get_variables = async function() {
         }
       }
       collections.push({
-        id: col.id, name: col.name,
+        id: col.id, name: col.name, defaultModeId: col.defaultModeId,
         modes: col.modes.map(function(m) { return { id: m.modeId, name: m.name }; }),
         variables: variables,
       });
@@ -1038,7 +1006,7 @@ handlers.get_variables = async function() {
   } catch(e) {
     return { error: "Variables API not available: " + e.message, collections: [] };
   }
-  return { collections: collections, resolvedTokens: resolvedTokensMap };
+  return { schemaVersion: 2, collections: collections, resolvedTokens: resolvedTokensMap, diagnostics: diagnostics };
 };
 
 handlers.get_variable_tokens = handlers.get_variables;

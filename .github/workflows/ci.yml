@@ -31,6 +31,12 @@ jobs:
       - name: Build Figma Plugin
         run: node scripts/build-plugin.js
 
+      - name: Test plugin token extraction and version
+        run: node --test scripts/test-plugin-tokens.mjs
+
+      - name: Rust regression tests
+        run: cargo test
+
       - name: Cargo Check
         run: cargo check --verbose
 

@@ -15,7 +15,6 @@ use futures_util::{stream::Stream, SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -169,7 +168,7 @@ impl BridgeState {
     pub async fn send_operation(
         &self,
         operation: &str,
-        params: Value,
+        mut params: Value,
         session_id: Option<&str>,
     ) -> Result<Value, String> {
         if operation.starts_with("figma_") {
@@ -179,6 +178,16 @@ impl BridgeState {
             ));
         }
 
+        // Normalize before queueing so even an older plugin never receives the
+        // unsupported export_node spelling. No unsupported format is discarded.
+        let operation = if operation == "export_node" || operation == "exportNode" {
+            match params["format"].as_str().unwrap_or("PNG").to_uppercase().as_str() {
+                "SVG" => "export_svg",
+                "PNG" => { params["format"] = json!("PNG"); "export_image" }
+                "JPG" | "JPEG" => { params["format"] = json!("JPG"); "export_image" }
+                _ => return Err("export_node supports PNG, JPG/JPEG or SVG".into()),
+            }
+        } else { operation };
         let (rx, op_id, timeout_ms) = {
             let mut inner = self.inner.lock().await;
 
@@ -189,6 +198,24 @@ impl BridgeState {
                 .entry(sid.clone())
                 .or_insert_with(|| Session::new(sid.clone(), None));
 
+            if let Some(operations) = &session.operations {
+                let key = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
+                let canonical = match key(operation).as_str() {
+                    "getnode" | "getnodeinfo" | "nodeinfo" | "nodedetail" => "get_node_detail",
+                    "inspect" | "inspectnode" | "designcontext" => "get_design_context",
+                    "selection" => "get_selection", "pagenodes" => "get_page_nodes",
+                    "styles" => "get_styles", "variables" | "tokens" | "gettokens" => "get_variables",
+                    "components" => "get_local_components",
+                    _ => operation,
+                };
+                if !operations.iter().any(|op| key(op) == key(canonical)) {
+                    return Err(format!("Unsupported operation '{operation}' for session {sid}; runtime {}, protocol {}. No request dispatched. Update/restart the Figma plugin or use an advertised operation.",
+                        session.runtime_version.as_deref().unwrap_or("unknown"), session.protocol_version.unwrap_or(0)));
+                }
+            }
+            if !["get_styles", "get_variables", "get_variable_tokens", "index_scan"].contains(&operation) {
+                if let Some(idx) = &mut session.index { idx.tokens_dirty = true; }
+            }
             if session.queue.len() >= MAX_QUEUE {
                 return Err("Queue full — is the Figma plugin running?".to_string());
             }
@@ -196,6 +223,9 @@ impl BridgeState {
             let timeout_ms = get_op_timeout(operation);
             let op_id = format!("{}-{}", now_ms(), &Uuid::new_v4().to_string()[..5]);
 
+            tracing::debug!(request_id = %op_id, operation, session_id = %sid,
+                runtime_version = ?session.runtime_version, protocol_version = ?session.protocol_version,
+                "Dispatching plugin operation");
             let queued_op = QueuedOp {
                 id: op_id.clone(),
                 operation: operation.to_string(),
@@ -805,6 +835,9 @@ async fn handle_socket(
         }
         let tx_clone = tx.clone();
         session.ws_tx = Some(tx);
+        session.operations = None;
+        session.runtime_version = None;
+        session.protocol_version = None;
         session.last_poll_at = now_ms();
 
         // Send initial handshake with server version
@@ -813,6 +846,8 @@ async fn handle_socket(
             "version": env!("CARGO_PKG_VERSION"),
             "name": "figma-mcp",
             "dynamicRuntime": true,
+            "runtimeHash": env!("FIGMA_RUNTIME_CODE_HASH"),
+            "protocolVersion": 2,
             "connectedAt": now_ms()
         });
         let _ = tx_clone.send(Message::Text(hello.to_string()));
@@ -846,6 +881,16 @@ async fn handle_socket(
             match msg {
                 Message::Text(text) => {
                     if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                        if val["type"] == "runtime-capabilities" {
+                            let mut inner = state_clone.inner.lock().await;
+                            if let Some(s) = inner.sessions.get_mut(&sid_clone) {
+                                s.runtime_version = val["runtimeVersion"].as_str().map(str::to_owned);
+                                s.protocol_version = val["protocolVersion"].as_u64();
+                                s.operations = val["operations"].as_array().map(|ops| ops.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+                                if let Some(idx) = &mut s.index { idx.tokens_dirty = true; }
+                            }
+                            continue;
+                        }
                         if val.get("type").and_then(|v| v.as_str()) == Some("ping") || val.get("ping").is_some() {
                             let mut inner = state_clone.inner.lock().await;
                             if let Some(s) = inner.sessions.get_mut(&sid_clone) {
@@ -1262,13 +1307,11 @@ async fn handle_asset_serve(
 pub const PLUGIN_RUNTIME_CODE_JS: &str = include_str!("../../plugin-runtime/code.js");
 pub const PLUGIN_RUNTIME_UI_HTML: &str = include_str!("../../plugin-runtime/ui.html");
 
-const RUNTIME_UI_ETAG: &str = concat!("\"figma-ui-", env!("CARGO_PKG_VERSION"), "\"");
+const RUNTIME_CODE_ETAG: &str = concat!("\"figma-code-", env!("CARGO_PKG_VERSION"), "-", env!("FIGMA_RUNTIME_CODE_HASH"), "\"");
+const RUNTIME_UI_ETAG: &str = concat!("\"figma-ui-", env!("CARGO_PKG_VERSION"), "-", env!("FIGMA_RUNTIME_UI_HASH"), "\"");
 
-fn runtime_code_hash() -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    PLUGIN_RUNTIME_CODE_JS.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
+#[cfg(test)]
+fn runtime_code_hash() -> String { env!("FIGMA_RUNTIME_CODE_HASH").to_string() }
 
 async fn handle_plugin_version() -> impl IntoResponse {
     (
@@ -1283,13 +1326,14 @@ async fn handle_plugin_version() -> impl IntoResponse {
             "status": "ready",
             "name": "figma-mcp",
             "dynamicRuntime": true,
-            "runtimeHash": runtime_code_hash()
+            "runtimeHash": env!("FIGMA_RUNTIME_CODE_HASH"),
+            "protocolVersion": 2
         })),
     )
 }
 
 async fn handle_plugin_code(headers: HeaderMap) -> impl IntoResponse {
-    let runtime_etag = format!("\"figma-code-{}-{}\"", env!("CARGO_PKG_VERSION"), runtime_code_hash());
+    let runtime_etag = RUNTIME_CODE_ETAG.to_string();
     if let Some(if_none_match) = headers.get(axum::http::header::IF_NONE_MATCH) {
         if let Ok(val) = if_none_match.to_str() {
             if val == runtime_etag || val == "*" {
@@ -1406,5 +1450,93 @@ mod tests {
         state.inner.lock().await.sessions.insert(session.id.clone(), session);
 
         assert_eq!(state.resolved_session_id(Some("checkout")).await, "session-a");
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn served_assets_and_mcp_handshake_match_binary_version() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = create_router(BridgeState::new(port));
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+        let client = reqwest::Client::new();
+        let base = format!("http://127.0.0.1:{port}");
+        let version = env!("CARGO_PKG_VERSION");
+        let root: Value = client.get(format!("{base}/")).send().await.unwrap().json().await.unwrap();
+        let plugin: Value = client.get(format!("{base}/plugin/version")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(root["version"], version);
+        assert_eq!(plugin["version"], version);
+        assert_eq!(plugin["protocolVersion"], 2);
+        let ui = client.get(format!("{base}/plugin/ui.html")).send().await.unwrap();
+        assert_eq!(ui.headers()["etag"], RUNTIME_UI_ETAG);
+        assert!(ui.text().await.unwrap().contains(&format!("id=\"runtime-version\">v{version}</span>")));
+        let code = client.get(format!("{base}/plugin/code.js")).send().await.unwrap();
+        assert_eq!(code.headers()["etag"], RUNTIME_CODE_ETAG);
+        assert!(code.text().await.unwrap().contains(&format!("runtimeVersion: \"{version}\"")));
+        let rpc: Value = client.post(format!("{base}/mcp")).json(&json!({
+            "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{}
+        })).send().await.unwrap().json().await.unwrap();
+        assert_eq!(rpc["result"]["serverInfo"]["version"], version);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unsupported_operation_is_rejected_without_queueing() {
+        let state = BridgeState::new(0);
+        {
+            let mut inner = state.inner.lock().await;
+            let mut session = Session::new("test".into(), None);
+            session.last_poll_at = now_ms();
+            session.operations = Some(vec!["status".into()]);
+            session.runtime_version = Some("old-runtime".into());
+            session.protocol_version = Some(2);
+            inner.sessions.insert("test".into(), session);
+        }
+        let error = state.send_operation("not_an_operation", json!({}), Some("test")).await.unwrap_err();
+        assert!(error.contains("old-runtime"));
+        assert!(error.contains("No request dispatched"));
+        let inner = state.inner.lock().await;
+        assert!(inner.sessions["test"].queue.is_empty());
+        assert!(inner.op_to_session.is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_export_node_is_normalized_before_dispatch() {
+        let state = BridgeState::new(0);
+        {
+            let mut inner = state.inner.lock().await;
+            let mut session = Session::new("test".into(), None);
+            session.last_poll_at = now_ms();
+            inner.sessions.insert("test".into(), session);
+        }
+        let cloned = state.clone();
+        let task = tokio::spawn(async move { cloned.send_operation("export_node", json!({"format":"SVG", "id":"1:2"}), Some("test")).await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !state.inner.lock().await.sessions["test"].queue.is_empty() { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        {
+            let mut inner = state.inner.lock().await;
+            let session = inner.sessions.get_mut("test").unwrap();
+            assert_eq!(session.queue[0].operation, "export_svg");
+            let id = session.queue[0].id.clone();
+            session.pending.remove(&id).unwrap().sender.send(Ok(json!({"svg":"<svg/>"}))).unwrap();
+        }
+        assert_eq!(task.await.unwrap().unwrap()["svg"], "<svg/>");
+        assert!(state.send_operation("export_node", json!({"format":"PDF"}), Some("test")).await.unwrap_err().contains("supports PNG"));
+    }
+
+    #[test]
+    fn bundled_ui_and_runtime_match_binary_version() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(PLUGIN_RUNTIME_CODE_JS.contains(&format!("runtimeVersion: \"{version}\"")));
+        assert!(PLUGIN_RUNTIME_UI_HTML.contains(&format!("id=\"runtime-version\">v{version}</span>")));
+        assert!(PLUGIN_RUNTIME_UI_HTML.contains("updateRuntimeVersion(serverVer)"));
     }
 }

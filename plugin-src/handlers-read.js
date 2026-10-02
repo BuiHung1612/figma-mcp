@@ -858,3 +858,15 @@ handlers.takeScreenshot = handlers.screenshot;
 handlers.exportSvg = handlers.export_svg;
 handlers.exportImage = handlers.export_image;
 handlers.indexScan = handlers.index_scan;
+
+
+// Compatibility adapter for callers using export_node. Validate the format;
+// never silently turn an unsupported requested format into PNG.
+handlers.export_node = async function(params) {
+  params = params || {};
+  var format = String(params.format || "PNG").toUpperCase();
+  if (format === "SVG") return handlers.export_svg(params);
+  if (format !== "PNG" && format !== "JPG" && format !== "JPEG") throw new Error("export_node supports PNG, JPG/JPEG or SVG");
+  return handlers.export_image(Object.assign({}, params, { format: format === "JPEG" ? "JPG" : format }));
+};
+handlers.exportNode = handlers.export_node;

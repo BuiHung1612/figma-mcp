@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.2.8] — 2026-10-02
+
+### Fixed
+- Preserve RGBA alpha, gradient geometry, layered shadows, variable modes and raw token metadata across exports.
+- Normalize legacy export_node requests and report runtime operation capabilities.
+- Keep UI, embedded plugin, MCP handshake and release versions synchronized.
+- Run the Windows desktop bridge in the background with file logging.
+
 ## [3.2.7] — 2026-09-19
 
 ### Fixed — Higher-Fidelity Figma Reads and Asset Export

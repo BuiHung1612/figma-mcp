@@ -1,0 +1,27 @@
+{
+  "styles": {
+    "schemaVersion": 2,
+    "paintStyles": [
+      {"id":"p1","name":"Brand/Overlay","paints":[{"type":"SOLID","rgba":{"r":1,"g":0,"b":0,"a":1},"color":"rgba(255, 0, 0, 0.5)","opacity":0.5,"alphaIncluded":true}]},
+      {"id":"p2","name":"Brand/Fade","paints":[{"type":"GRADIENT_LINEAR","gradientTransform":[[1,0,0],[0,1,0]],"opacity":0.5,"gradientStops":[{"position":0,"rgba":{"r":1,"g":0,"b":0,"a":0.5}},{"position":1,"rgba":{"r":0,"g":0,"b":1,"a":1}}]}]},
+      {"id":"p3","name":"Brand/Diamond","paints":[{"type":"GRADIENT_DIAMOND","gradientTransform":[[1,0,0],[0,1,0]],"gradientStops":[{"position":0,"color":{"r":1,"g":1,"b":1,"a":1}},{"position":1,"color":{"r":0,"g":0,"b":0,"a":0}}]}]}
+    ],
+    "effectStyles": [{"id":"e1","name":"Elevation/Card","type":"EFFECT","effects":[
+      {"type":"DROP_SHADOW","color":{"r":0,"g":0,"b":0,"a":0.125},"radius":6,"offset":{"x":-1,"y":3},"spread":-2},
+      {"type":"INNER_SHADOW","color":{"r":1,"g":0,"b":0,"a":0},"radius":0,"offset":{"x":0,"y":0},"spread":1},
+      {"type":"LAYER_BLUR","radius":8,"visible":false},
+      {"type":"BACKGROUND_BLUR","radius":12}
+    ]}],
+    "textStyles": [{"id":"t1","name":"Text/Body","fontFamily":"Inter","fontWeight":"Semi Bold","fontSize":16,"lineHeight":150,"lineHeightUnit":"PERCENT","letterSpacing":2,"letterSpacingUnit":"PERCENT"}]
+  },
+  "variables": {
+    "schemaVersion": 2,
+    "collections": [{"id":"c1","name":"Semantic","defaultModeId":"z-light","modes":[{"id":"a-dark","name":"Dark"},{"id":"z-light","name":"Light"}],"variables":[
+      {"id":"v1","name":"bg-canvas","resolvedType":"COLOR","values":{"z-light":"rgb(100% 100% 100% / 50%)","a-dark":"#0008"}},
+      {"id":"v2","name":"opacity-disabled","resolvedType":"FLOAT","scopes":["OPACITY"],"values":{"z-light":0,"a-dark":0.5}},
+      {"id":"v3","name":"radius-card","resolvedType":"FLOAT","values":{"z-light":12,"a-dark":8}},
+      {"id":"v4","name":"enabled","resolvedType":"BOOLEAN","values":{"z-light":{"type":"VARIABLE_ALIAS","aliasId":"other","resolvedValue":false},"a-dark":true}}
+    ]}],
+    "resolvedTokens":{"enabled":false}
+  }
+}

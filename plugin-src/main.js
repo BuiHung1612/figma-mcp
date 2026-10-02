@@ -62,7 +62,10 @@ try {
     type: "session-info",
     sessionId: currentSessionId,
     fileName: currentFileName,
-    fileKey: currentFileKey
+    fileKey: currentFileKey,
+    runtimeVersion: "{{PLUGIN_VERSION}}",
+    protocolVersion: 2,
+    operations: Object.keys(handlers)
   });
 } catch (e) {}
 
@@ -108,6 +111,8 @@ var pendingChangedNodeIds = new Set();
 
 function onDocChange(event) {
   try {
+    variableCache.clear();
+    figma.ui.postMessage({ type: "document-change" });
     if (event && event.documentChanges) {
       for (var i = 0; i < event.documentChanges.length; i++) {
         var ch = event.documentChanges[i];
@@ -223,6 +228,13 @@ function stringifyForBridge(data) {
 figma.ui.onmessage = async (request) => {
   if (!request) return;
 
+  if (request.type === "runtime-ready") {
+    figma.ui.postMessage({ type: "session-info", sessionId: currentSessionId,
+      fileName: currentFileName, fileKey: currentFileKey,
+      runtimeVersion: "{{PLUGIN_VERSION}}", protocolVersion: 2, operations: Object.keys(handlers) });
+    return;
+  }
+
   // Handle window resizing from UI drag handle
   if (request.type === "resize") {
     var newW = Math.max(260, Math.min(1000, Math.round(request.width)));
@@ -334,7 +346,7 @@ figma.ui.onmessage = async (request) => {
   if (!handler) {
     figma.ui.postMessage({
       id, operation, success: false,
-      error: `Unknown operation "${operation}". Available: ${Object.keys(handlers).join(", ")}`,
+      error: `Unsupported operation "${operation}" (request ${id}, runtime {{PLUGIN_VERSION}}, protocol 2). Available: ${Object.keys(handlers).join(", ")}`,
     });
     return;
   }

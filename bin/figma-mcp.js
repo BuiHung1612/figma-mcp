@@ -6,7 +6,7 @@
  * caches it locally, and executes it transparently.
  */
 
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 
 // Read package.json version
 const pkgPath = path.resolve(__dirname, '../package.json');
-let pkgVersion = '2.9.5';
+let pkgVersion = null;
 let repoOwner = 'BuiHung1612';
 let repoName = 'figma-mcp';
 
@@ -36,6 +36,7 @@ try {
     }
   }
 } catch (_) {}
+if (!pkgVersion) throw new Error(`Cannot read package version from ${pkgPath}`);
 
 function getPlatformArch() {
   const platform = process.platform;
@@ -293,8 +294,10 @@ WantedBy=default.target
   } else if (platform === 'win32') {
     const taskName = 'FigmaMCPServer';
     // Use schtasks to create a task that runs at login
-    const cmd = `schtasks /Create /F /TN "${taskName}" /TR "${binPath}" /SC ONLOGON /RL HIGHEST`;
-    execSync(cmd, { stdio: 'inherit' });
+    // The native launcher detaches the server and redirects output to a log file.
+    const taskCommand = `"${binPath}" --background`;
+    execFileSync('schtasks', ['/Create', '/F', '/TN', taskName,
+      '/TR', taskCommand, '/SC', 'ONLOGON'], { stdio: 'inherit', windowsHide: true });
 
     // Start it immediately too
     try { execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'pipe' }); } catch (_) {}

@@ -1,4 +1,4 @@
-// ─── FIGMA MCP BRIDGE — DYNAMIC THIN LOADER (v3.0.0) ───────────────────────────
+// ─── FIGMA MCP BRIDGE — DYNAMIC THIN LOADER ───────────────────────────
 // This file is a permanent micro-stub. You never need to reinstall or edit this file.
 // The actual runtime is loaded dynamically from the local figma-mcp Rust engine.
 

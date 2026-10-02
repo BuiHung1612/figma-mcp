@@ -1,4 +1,5 @@
 pub mod codegen;
+pub mod color;
 pub mod component_matcher;
 pub mod design_pack;
 pub mod protocol;

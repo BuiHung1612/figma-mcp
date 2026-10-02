@@ -27,6 +27,13 @@ struct Args {
     #[arg(short, long)]
     server: bool,
 
+    /// Start a detached Windows server with logs in %LOCALAPPDATA%/figma-mcp/logs
+    #[arg(long, conflicts_with = "stdio")]
+    background: bool,
+
+    #[arg(long, hide = true)]
+    background_worker: bool,
+
     /// Force stdio mode for JSON-RPC MCP clients (e.g. spawned subprocesses)
     #[arg(long)]
     stdio: bool,
@@ -138,9 +145,53 @@ fn print_banner(port: u16) {
     eprintln!();
 }
 
+#[cfg(target_os = "windows")]
+fn owns_console() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(processes: *mut u32, count: u32) -> u32;
+    }
+    let mut processes = [0u32; 2];
+    unsafe { GetConsoleProcessList(processes.as_mut_ptr(), 2) == 1 }
+}
+
+#[cfg(target_os = "windows")]
+fn start_background() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let base = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or("LOCALAPPDATA or USERPROFILE is required for background logs")?;
+    let logs = std::path::PathBuf::from(base).join("figma-mcp").join("logs");
+    std::fs::create_dir_all(&logs)?;
+    let log = std::fs::OpenOptions::new().create(true).append(true)
+        .open(logs.join("server.log"))?;
+    let args: Vec<_> = std::env::args_os().skip(1)
+        .filter(|arg| arg != "--background" && arg != "--server").collect();
+    Command::new(std::env::current_exe()?)
+        .args(args).args(["--background-worker", "--server"])
+        .stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log)
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: independent of the launcher console.
+        .creation_flags(0x00000008 | 0x00000200)
+        .spawn()?;
+    println!("[figma-mcp] Background process started. Logs: {}", logs.display());
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    #[cfg(target_os = "windows")]
+    if !args.background_worker
+        && (args.background || (std::env::args_os().len() == 1 && owns_console()))
+    {
+        return start_background();
+    }
+    #[cfg(not(target_os = "windows"))]
+    if args.background {
+        return Err("--background is Windows-only; use --install-service on macOS/Linux".into());
+    }
 
     if args.setup_plugin || args.export_plugin || args.setup {
         setup_thin_plugin(args.plugin_dir.as_deref())?;

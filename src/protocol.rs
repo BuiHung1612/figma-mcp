@@ -119,7 +119,7 @@ fi
 #[cfg(target_os = "windows")]
 fn register_windows(current_exe: &Path) -> Result<(), String> {
     let exe_str = current_exe.to_string_lossy();
-    let command_str = format!("\"{}\" --server", exe_str);
+    let command_str = format!("\"{}\" --background", exe_str);
 
     // Write registry keys using reg.exe
     let _ = Command::new("reg")

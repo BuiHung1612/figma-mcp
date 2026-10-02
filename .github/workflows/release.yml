@@ -61,6 +61,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build and validate plugin bundle
+        run: node scripts/build-plugin.js
+
+      - name: Test plugin token extraction
+        run: node --test scripts/test-plugin-tokens.mjs
+
       - name: Build target binary
         run: cargo build --release --target ${{ matrix.target }}
 

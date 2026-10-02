@@ -37,13 +37,8 @@ async function findVariableAsync(variableId, variableName, collectionId) {
 }
 
 // T-5: hexToRgbA — preserves alpha from 8-char hex (#RRGGBBAA)
-function hexToRgbA(hex) {
-  var rgb = hexToRgb(hex); // existing util: returns {r,g,b} normalized 0-1
-  var a = 1;
-  if (hex && hex.length === 9) { // #RRGGBBAA
-    a = parseInt(hex.slice(7, 9), 16) / 255;
-  }
-  return { r: rgb.r, g: rgb.g, b: rgb.b, a: a };
+function hexToRgbA(value) {
+  return parseColorValue(value);
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

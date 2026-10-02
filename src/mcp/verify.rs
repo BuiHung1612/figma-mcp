@@ -187,27 +187,11 @@ pub fn compare_design_metrics(
     if let Some(hex) = figma_spec.get("fill").and_then(|v| v.as_str()) {
         total_checks += 1;
         let actual_bg = computed_styles.get("background-color").or_else(|| computed_styles.get("backgroundColor")).cloned();
-        let target_hex = hex.trim_start_matches('#').to_lowercase();
-        let is_match = actual_bg.as_ref().is_some_and(|act| {
-            let act_lower = act.to_lowercase();
-            if act_lower.contains(&target_hex) {
-                return true;
+        let is_match = actual_bg.as_ref().is_some_and(|actual| {
+            match (crate::mcp::color::Rgba::parse(&serde_json::json!(hex)), crate::mcp::color::Rgba::parse(&serde_json::json!(actual))) {
+                (Ok(expected), Ok(actual)) => expected.matches(actual),
+                _ => false,
             }
-            // Parse rgb(r, g, b)
-            if let Some(caps) = act_lower.strip_prefix("rgb(")
-                .and_then(|s| s.strip_suffix(")"))
-                .or_else(|| act_lower.strip_prefix("rgba(").and_then(|s| s.strip_suffix(")")))
-            {
-                let parts: Vec<u8> = caps
-                    .split(',')
-                    .filter_map(|p| p.trim().parse::<u8>().ok())
-                    .collect();
-                if parts.len() >= 3 {
-                    let act_hex = format!("{:02x}{:02x}{:02x}", parts[0], parts[1], parts[2]);
-                    return act_hex == target_hex;
-                }
-            }
-            false
         });
 
         if is_match { matched_checks += 1; } else {
@@ -276,6 +260,20 @@ pub fn compare_design_metrics(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn alpha_and_modern_color_syntax_are_compared_numerically() {
+        let spec = json!({"fill":"#ff000080"});
+        let mut styles = HashMap::new();
+        styles.insert("background-color".into(), "rgb(100% 0% 0% / 50%)".into());
+        let (_, differences, _, percentage) = compare_design_metrics(&spec, &styles);
+        assert!(differences.is_empty());
+        assert_eq!(percentage, 100.0);
+        styles.insert("background-color".into(), "rgb(255, 0, 0)".into());
+        let (_, differences, _, percentage) = compare_design_metrics(&spec, &styles);
+        assert!(!differences.is_empty());
+        assert_eq!(percentage, 0.0);
+    }
 
     #[test]
     fn test_compare_design_metrics() {

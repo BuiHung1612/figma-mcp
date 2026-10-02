@@ -107,6 +107,25 @@ npx -y figma-rust-mcp@latest --uninstall-service
 
 ---
 
+### Windows background mode
+
+Double-clicking `figma-mcp.exe` starts the server in a detached process and closes
+its launcher console. From PowerShell or Command Prompt, use:
+
+```powershell
+.\figma-mcp.exe --background
+```
+
+The server keeps running after the terminal closes. Logs are appended to
+`%LOCALAPPDATA%\figma-mcp\logs\server.log`. Use `--server` for the foreground
+terminal dashboard, or `--stdio` for an MCP client subprocess.
+
+`--install-service` through the npm runner configures background startup at login.
+Re-run the installation command to update an existing Windows task. Removing the
+task disables future login startup; stop an already detached server through Task
+Manager (`figma-mcp.exe`). The launcher console may appear briefly when opening
+the executable; the server itself does not retain a console window.
+
 ### 4. Build from Source (Optional)
 
 If you prefer building directly with the [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`):
@@ -214,6 +233,27 @@ Exports Figma Variables (Design Tokens), Color Styles, Typography Styles, and El
 - **`format`**: `"tailwind"` (`tailwind.config.js` theme.extend), `"css"` (`:root` CSS custom properties with light/dark theme modes), `"typescript"` (`tokens.ts`), `"w3c"` (W3C DTCG Token Studio JSON), or `"json"`.
 - **`outputPath`**: Writes directly to disk (e.g. `src/styles/tokens.css` or `tailwind.config.js`).
 - **`collection`** / **`mode`** / **`prefix`**: Optional filters and naming prefixes.
+
+Token exports use schema v2 and preserve full paint/effect stacks, alpha, gradient
+transforms, collection modes and raw alias values. CSS, Tailwind, TypeScript and
+JSON share one normalized model. The `w3c` output uses DTCG 2025.10 color,
+dimension, gradient-stop and shadow values, with Figma-specific geometry and
+unsupported values retained in `$extensions`.
+
+Linear gradients on a node are projected using its actual dimensions. A diagonal
+gradient style has no target aspect ratio: use `get_css` on its consuming node.
+Radial/angular/diamond paints, unsupported blend modes and progressive blurs
+retain their raw data and report diagnostics recommending SVG instead of emitting
+approximate CSS. Unknown modes, unresolved aliases and sanitized name collisions
+fail explicitly. CSS exports include non-default modes under `data-theme`
+selectors; opacity/font-weight variables stay unitless.
+
+The plugin UI badge is stamped from the build version and updated from the
+connected server handshake. Package/Cargo/tag mismatches fail the build pipeline.
+Run `npm run build:plugin` after changing plugin source, and `npm run test:tokens`
+for the token/contract/version regression suite. Existing background servers need
+a restart with the new binary to load the updated runtime.
+
 
 ### 5. `figma_get_selection`
 Token-compressed inspection of currently selected layers/frames on the Figma canvas. Returns compacted layout and typography hierarchy with **60–80% fewer tokens**.

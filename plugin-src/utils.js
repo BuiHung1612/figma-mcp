@@ -9,66 +9,23 @@ var CSS_COLOR_MAP = {
   "navy": "#000080", "brown": "#A52A2A", "silver": "#C0C0C0", "gold": "#FFD700",
 };
 
-function normalizeHex(hex) {
-  if (!hex) return null;
-  var s = String(hex).trim();
-  // CSS color name
-  var mapped = CSS_COLOR_MAP[s.toLowerCase()];
-  if (mapped) s = mapped;
-  // Transparent / none
-  if (s.toUpperCase() === "NONE" || s.toUpperCase() === "TRANSPARENT") return null;
-  // rgba(r,g,b,a) or rgb(r,g,b) → convert to hex (alpha discarded here — use extractColorAlpha for alpha)
-  var rgbaMatch = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (rgbaMatch) {
-    var rr = Math.min(255, Math.max(0, parseInt(rgbaMatch[1])));
-    var gg = Math.min(255, Math.max(0, parseInt(rgbaMatch[2])));
-    var bb = Math.min(255, Math.max(0, parseInt(rgbaMatch[3])));
-    s = "#" + ((1 << 24) + (rr << 16) + (gg << 8) + bb).toString(16).slice(1);
-  }
-  // Strip #
-  s = s.replace(/^#/, "");
-  // 8-char hex with alpha → take first 6 (alpha handled separately by extractColorAlpha)
-  if (s.length === 8 && /^[0-9a-fA-F]{8}$/.test(s)) s = s.slice(0, 6);
-  // 4-char hex shorthand with alpha → take first 3
-  if (s.length === 4 && /^[0-9a-fA-F]{4}$/.test(s)) s = s.slice(0, 3);
-  // Expand 3-char shorthand
-  if (s.length === 3) s = s[0]+s[0]+s[1]+s[1]+s[2]+s[2];
-  // Must be 6 hex chars now
-  if (!/^[0-9a-fA-F]{6}$/.test(s)) {
-    throw new Error("Invalid color value: \"" + hex + "\". Use 6-digit hex like #FF0000, 8-digit #RRGGBBAA, rgba(r,g,b,a), or a CSS name.");
-  }
-  return s;
+function normalizeHex(value) {
+  if (!value || String(value).toLowerCase() === "none" || String(value).toLowerCase() === "transparent") return null;
+  var c = parseColorValue(value);
+  return [c.r, c.g, c.b].map(function(v) { return Math.round(v * 255).toString(16).padStart(2, "0"); }).join("");
 }
 
-// Extract alpha (0..1) from an 8-digit hex "#RRGGBBAA" or rgba(r,g,b,a) string.
-// Returns null when the input has no alpha component.
-function extractColorAlpha(hex) {
-  if (!hex) return null;
-  var s = String(hex).trim();
-  // rgba(r,g,b,a) — capture 4th component
-  var rgbaMatch = s.match(/^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(\d*\.?\d+)\s*\)/i);
-  if (rgbaMatch) return Math.min(1, Math.max(0, parseFloat(rgbaMatch[1])));
-  // #RRGGBBAA → alpha = AA/255
-  var cleaned = s.replace(/^#/, "");
-  if (cleaned.length === 8 && /^[0-9a-fA-F]{8}$/.test(cleaned)) {
-    return parseInt(cleaned.slice(6, 8), 16) / 255;
-  }
-  // #RGBA (4-char shorthand)
-  if (cleaned.length === 4 && /^[0-9a-fA-F]{4}$/.test(cleaned)) {
-    var a4 = cleaned[3];
-    return parseInt(a4 + a4, 16) / 255;
-  }
-  return null;
+function extractColorAlpha(value) {
+  if (!value) return null;
+  var s = String(value).trim().replace(/^#/, "");
+  var explicit = typeof value === "object" ? value.a !== undefined
+    : /^(?:[0-9a-f]{4}|[0-9a-f]{8})$/i.test(s) || /^(?:rgba|hsla)\(/i.test(s) || s.indexOf("/") >= 0 || (/^(?:rgb|hsl)\(/i.test(s) && s.split(",").length === 4) || s.toLowerCase() === "transparent";
+  return explicit ? parseColorValue(value).a : null;
 }
 
-function hexToRgb(hex) {
-  var h = normalizeHex(hex);
-  if (!h) return { r: 0, g: 0, b: 0 };
-  return {
-    r: parseInt(h.slice(0, 2), 16) / 255,
-    g: parseInt(h.slice(2, 4), 16) / 255,
-    b: parseInt(h.slice(4, 6), 16) / 255,
-  };
+function hexToRgb(value) {
+  var c = parseColorValue(value);
+  return { r: c.r, g: c.g, b: c.b };
 }
 
 function colorToCss(color, opacity) {
@@ -77,8 +34,8 @@ function colorToCss(color, opacity) {
   var g = Math.round((color.g !== undefined ? color.g : 0) * 255);
   var b = Math.round((color.b !== undefined ? color.b : 0) * 255);
   var a = opacity !== undefined ? opacity : (color.a !== undefined ? color.a : 1);
-  if (a !== undefined && a < 0.999 && a >= 0) {
-    var aFormatted = Math.round(a * 1000) / 1000;
+  if (a !== undefined && a < 1 && a >= 0) {
+    var aFormatted = Math.round(a * 1000000) / 1000000;
     return "rgba(" + r + ", " + g + ", " + b + ", " + aFormatted + ")";
   }
   return "#" + [r, g, b].map(function(v) { return v.toString(16).padStart(2, "0"); }).join("");
@@ -156,6 +113,12 @@ async function resolveVariableValueAsync(variableOrId, contextNodeOrModeMap, dep
   }
 
   if (!variable || !variable.valuesByMode) return null;
+  // Node consumers have inherited modes across collections. Let Figma resolve
+  // the value; manual mode-id reuse across an alias chain is not valid.
+  var consumerValue;
+  if (contextNodeOrModeMap && contextNodeOrModeMap.resolvedVariableModes && typeof variable.resolveForConsumer === "function") {
+    consumerValue = variable.resolveForConsumer(contextNodeOrModeMap).value;
+  }
 
   // Determine active mode
   var modeId = null;
@@ -171,11 +134,12 @@ async function resolveVariableValueAsync(variableOrId, contextNodeOrModeMap, dep
   }
   var availableModes = Object.keys(variable.valuesByMode);
   if (!modeId || variable.valuesByMode[modeId] === undefined) {
-    modeId = availableModes.length > 0 ? availableModes[0] : null;
+    var collection = await figma.variables.getVariableCollectionByIdAsync(colId);
+    modeId = collection ? collection.defaultModeId : (availableModes.length === 1 ? availableModes[0] : null);
   }
   if (!modeId) return null;
 
-  var rawVal = variable.valuesByMode[modeId];
+  var rawVal = consumerValue !== undefined ? consumerValue : variable.valuesByMode[modeId];
   if (rawVal === undefined || rawVal === null) return null;
 
   // If alias, follow recursively down to primitive token
