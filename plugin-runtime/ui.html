@@ -683,7 +683,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma MCP</span>
-            <span class="brand-ver" id="runtime-version">v3.2.10</span>
+            <span class="brand-ver" id="runtime-version">v3.2.11</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -1887,7 +1887,7 @@
 
       if (msg.type === "node-diff") {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send(JSON.stringify({ type: "node-diff", nodes: msg.nodes })); } catch(e) {}
+          try { ws.send(JSON.stringify({ type: "node-diff", nodes: msg.nodes, deletedIds: msg.deletedIds })); } catch(e) {}
         }
         return;
       }
@@ -1910,7 +1910,7 @@
 
       if (msg.type === "document-change") {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send(JSON.stringify({ type: "document-change" })); } catch(e) {}
+          try { ws.send(JSON.stringify({ type: "document-change", changedNodeIds: msg.changedNodeIds })); } catch(e) {}
         }
         return;
       }

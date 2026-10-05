@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+fn node_snapshot(node: &Value) -> Value {
+    node.as_object().map(|obj| Value::Object(obj.iter().filter(|(key, _)| key.as_str() != "children")
+        .map(|(key, value)| (key.clone(), value.clone())).collect())).unwrap_or(Value::Null)
+}
+
 // ── Index Entry Types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +113,7 @@ pub struct IndexStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct FigmaIndex {
+    pub pending_nodes: std::collections::HashSet<String>,
     pub nodes: HashMap<String, IndexNode>,
     pub components: Vec<IndexComponent>,
     pub styles: Vec<IndexStyle>,
@@ -122,6 +128,35 @@ pub struct FigmaIndex {
 }
 
 impl FigmaIndex {
+    pub fn cache_subtree(&mut self, tree: &Value) {
+        let parent = tree["id"].as_str().and_then(|id| self.nodes.get(id)).and_then(|n| n.parent_id.clone());
+        self.ingest_node(tree, parent.as_deref());
+        self.stats.total_nodes = self.nodes.len();
+    }
+    pub fn related(&self, a: &str, b: &str) -> bool {
+        fn ancestor<'a>(idx: &'a FigmaIndex, root: &str, mut id: &'a str) -> bool {
+            for _ in 0..idx.nodes.len() + 1 {
+                if id == root { return true; }
+                let Some(parent) = idx.nodes.get(id).and_then(|n| n.parent_id.as_deref()) else { return false };
+                id = parent;
+            }
+            true // malformed parent cycle: invalidate conservatively
+        }
+        ancestor(self, a, b) || ancestor(self, b, a) || !self.nodes.contains_key(b)
+    }
+
+    pub fn remove_node(&mut self, id: &str) {
+        let mut stack = vec![id.to_string()];
+        let mut removed = std::collections::HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !removed.insert(id.clone()) { continue; }
+            self.pending_nodes.remove(&id);
+            if let Some(node) = self.nodes.remove(&id) { stack.extend(node.children); }
+            self.top_level_frames.retain(|n| n != &id);
+        }
+        for node in self.nodes.values_mut() { node.children.retain(|id| !removed.contains(id)); }
+        self.stats.total_nodes = self.nodes.len();
+    }
     pub fn cache_components(&mut self, data: &Value) {
         self.components.clear();
         self.ingest_components(data);
@@ -132,14 +167,14 @@ impl FigmaIndex {
 
     pub fn token_snapshot(&self) -> Option<(Value, Value)> {
         let (styles, variables) = (self.raw_styles.as_ref()?, self.raw_variables.as_ref()?);
-        if !self.is_ready() || self.tokens_dirty || styles["schemaVersion"] != 2 || variables["schemaVersion"] != 2 {
+        if self.stats.indexed_at_ms == 0 || self.dirty || self.tokens_dirty || styles["schemaVersion"] != 2 || variables["schemaVersion"] != 2 {
             return None;
         }
         Some((styles.clone(), variables.clone()))
     }
 
     pub fn is_ready(&self) -> bool {
-        self.stats.indexed_at_ms > 0 && !self.dirty
+        self.stats.indexed_at_ms > 0 && !self.dirty && self.pending_nodes.is_empty()
     }
 
     pub fn mark_dirty(&mut self) {
@@ -207,7 +242,6 @@ impl FigmaIndex {
             self.ingest_node(node, None);
         }
         self.stats.total_nodes = self.nodes.len();
-        self.dirty = false;
     }
 
     fn ingest_node(&mut self, node: &Value, parent_id: Option<&str>) {
@@ -233,7 +267,7 @@ impl FigmaIndex {
                 .or_else(|| node.get("absoluteBoundingBox").and_then(|b| b.get("height")).and_then(|v| v.as_f64())),
             x: node.get("x").and_then(|v| v.as_f64()),
             y: node.get("y").and_then(|v| v.as_f64()),
-            characters: node.get("characters").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            characters: node.get("characters").or_else(|| node.get("content")).and_then(|v| v.as_str()).map(|s| s.to_string()),
             visible: node.get("visible").and_then(|v| v.as_bool()),
             layout_mode: node.get("layoutMode").and_then(|v| v.as_str()).map(|s| s.to_string()),
             item_spacing: node.get("itemSpacing").and_then(|v| v.as_f64()),
@@ -260,7 +294,7 @@ impl FigmaIndex {
                 .or_else(|| node.get("cornerRadius").cloned()),
             effects: node.get("effectData").or_else(|| node.get("effects")).cloned(),
             text_style: node.get("textStyle").cloned(),
-            full_data: Some(node.clone()),
+            full_data: Some(node_snapshot(node)),
             children: children_ids,
         };
 
@@ -284,7 +318,8 @@ impl FigmaIndex {
             .map(|arr| arr.iter().filter_map(|c| c.get("id").and_then(|v| v.as_str())).map(|s| s.to_string()).collect())
             .unwrap_or_default();
 
-        let parent_id = node.get("parent").and_then(|p| p.get("id")).and_then(|v| v.as_str()).map(|s| s.to_string())
+        let parent_id = node.get("parentId").and_then(Value::as_str)
+            .or_else(|| node.get("parent").and_then(|p| p.get("id")).and_then(Value::as_str)).map(str::to_owned)
             .or_else(|| self.nodes.get(&id).and_then(|existing| existing.parent_id.clone()));
 
         let entry = IndexNode {
@@ -298,7 +333,7 @@ impl FigmaIndex {
                 .or_else(|| node.get("absoluteBoundingBox").and_then(|b| b.get("height")).and_then(|v| v.as_f64())),
             x: node.get("x").and_then(|v| v.as_f64()),
             y: node.get("y").and_then(|v| v.as_f64()),
-            characters: node.get("characters").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            characters: node.get("characters").or_else(|| node.get("content")).and_then(|v| v.as_str()).map(|s| s.to_string()),
             visible: node.get("visible").and_then(|v| v.as_bool()),
             layout_mode: node.get("layoutMode").and_then(|v| v.as_str()).map(|s| s.to_string()),
             item_spacing: node.get("itemSpacing").and_then(|v| v.as_f64()),
@@ -325,7 +360,7 @@ impl FigmaIndex {
                 .or_else(|| node.get("cornerRadius").cloned()),
             effects: node.get("effectData").or_else(|| node.get("effects")).cloned(),
             text_style: node.get("textStyle").cloned(),
-            full_data: Some(node.clone()),
+            full_data: Some(node_snapshot(node)),
             children: if children_ids.is_empty() {
                 self.nodes.get(&id).map(|e| e.children.clone()).unwrap_or_default()
             } else {
@@ -333,14 +368,33 @@ impl FigmaIndex {
             },
         };
 
-        self.nodes.insert(id, entry);
-        self.dirty = false;
+        self.pending_nodes.remove(&id);
+        let old_parent = self.nodes.get(&id).and_then(|n| n.parent_id.clone());
+        let new_parent = entry.parent_id.clone();
+        let top_level = new_parent.as_ref().is_none_or(|parent| !self.nodes.contains_key(parent));
+        self.top_level_frames.retain(|child| child != &id);
+        if top_level { self.top_level_frames.push(id.clone()); }
+        let mut entry = entry;
+        if let Some(ids) = node.get("childIds").and_then(Value::as_array) {
+            entry.children = ids.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+        }
+        self.nodes.insert(id.clone(), entry);
+        if old_parent != new_parent {
+            if let Some(parent) = old_parent.and_then(|id| self.nodes.get_mut(&id)) { parent.children.retain(|child| child != &id); }
+        }
+        if let Some(parent) = new_parent.and_then(|id| self.nodes.get_mut(&id)) {
+            if !parent.children.contains(&id) { parent.children.push(id); }
+        }
+        self.stats.total_nodes = self.nodes.len();
     }
 
     pub fn apply_delta(&mut self, node_id: &str, delta: &Value) {
         // A node delta cannot establish that catalog styles/variables are fresh.
         self.tokens_dirty = true;
         if let Some(existing) = self.nodes.get_mut(node_id) {
+            if let (Some(raw), Some(delta)) = (existing.full_data.as_mut().and_then(Value::as_object_mut), delta.as_object()) {
+                raw.extend(delta.clone());
+            }
             if let Some(name) = delta.get("name").and_then(|v| v.as_str()) {
                 existing.name = name.to_string();
             }
@@ -374,7 +428,6 @@ impl FigmaIndex {
             if let Some(radius) = delta.get("borderRadius").or_else(|| delta.get("cornerRadius")) {
                 existing.border_radius = Some(radius.clone());
             }
-            self.dirty = false;
         }
     }
 
@@ -608,7 +661,7 @@ impl IndexNode {
                 typography.insert("fontFamily", ff.to_string());
             }
             if let Some(fs) = ts.get("fontSize").and_then(|v| v.as_f64()) {
-                typography.insert("fontSize", format!("{}px", fs.round()));
+                typography.insert("fontSize", format!("{fs}px"));
             }
             if let Some(fw) = ts.get("fontWeight").and_then(|v| v.as_str()) {
                 typography.insert("fontWeight", fw.to_string());
@@ -640,6 +693,10 @@ impl IndexNode {
             "height": self.height,
             "fill": self.full_data.as_ref().and_then(|v| v.get("fill")),
             "typography": if typography.is_empty() { None } else { Some(typography) },
+            "fontSize": self.full_data.as_ref().and_then(|v| v.get("fontSize")),
+            "fontWeight": self.full_data.as_ref().and_then(|v| v.get("fontWeight")),
+            "fontFamily": self.full_data.as_ref().and_then(|v| v.get("fontFamily")),
+            "segments": self.full_data.as_ref().and_then(|v| v.get("segments")),
             "textContent": self.characters,
             "childCount": self.children.len(),
             "childrenIds": self.children
@@ -651,6 +708,29 @@ impl IndexNode {
 mod tests {
     use super::FigmaIndex;
     use serde_json::json;
+
+    #[test]
+    fn incremental_move_delete_and_typography_keep_tree_consistent() {
+        let mut idx = FigmaIndex::from_raw("s","f",&json!([
+            {"id":"a","type":"FRAME","children":[{"id":"t","type":"TEXT","content":"Old","fontSize":14,"fontWeight":"Regular"}]},
+            {"id":"b","type":"FRAME","children":[]}
+        ]),None,None,None,0);
+        idx.pending_nodes.insert("t".into());
+        assert!(!idx.is_ready());
+        idx.upsert_node(&json!({"id":"t","parentId":"b","type":"TEXT","content":"New","fontSize":15.5,"fontWeight":"Semi Bold","childIds":[]}));
+        assert!(idx.is_ready());
+        assert!(idx.nodes["a"].children.is_empty());
+        assert_eq!(idx.nodes["b"].children,vec!["t"]);
+        assert_eq!(idx.nodes["t"].characters.as_deref(),Some("New"));
+        assert_eq!(idx.nodes["t"].to_css_spec()["fontSize"],15.5);
+        assert!(!idx.nodes["a"].full_data.as_ref().unwrap().as_object().unwrap().contains_key("children"));
+        idx.remove_node("b");
+        assert!(!idx.nodes.contains_key("t"));
+        assert_eq!(idx.stats.total_nodes,1);
+        idx.mark_dirty();
+        idx.upsert_node(&json!({"id":"a","type":"FRAME"}));
+        assert!(!idx.is_ready());
+    }
 
     #[test]
     fn deferred_components_are_not_a_complete_empty_catalogue() {

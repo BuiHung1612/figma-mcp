@@ -18,6 +18,37 @@ const gradient = (transform = [[1, 0, 0], [0, 1, 0]]) => ({
 });
 const shadow = type => ({ type, color: { r: 0, g: 0, b: 0, a: .125 }, offset: { x: -1, y: 3 }, radius: 6, spread: -2, visible: true });
 
+test('compact tree and scan preserve mixed typography instead of using the first run', async () => {
+  const mixed = Symbol('mixed');
+  const segments = [
+    { start: 0, end: 5, characters: 'Hello', fontSize: 15.5, fontName: { family: 'Inter', style: 'Regular' } },
+    { start: 5, end: 6, characters: '!', fontSize: 22, fontName: { family: 'Inter', style: 'Semi Bold' } },
+  ];
+  const node = { id: '1:1', name: 'Greeting', type: 'TEXT', characters: 'Hello!',
+    fontSize: mixed, fontName: mixed, visible: true, getStyledTextSegments: () => segments };
+  const r = runtime({ root: { id: '0:0' }, currentPage: { id: '0:1' }, getNodeByIdAsync: async () => node });
+  vm.runInContext(readFileSync('plugin-src/read-helpers.js', 'utf8'), r);
+  for (const detail of ['compact', 'full']) {
+    const tokens = { colors: new Set(), fonts: new Set(), sizes: new Set() };
+    const tree = plain(r.extractDesignTree(node, 0, 10, detail, true, tokens));
+    assert.equal(tree.mixedStyles, true);
+    assert.equal(tree.fontSize, undefined);
+    assert.equal(tree.fontWeight, undefined);
+    assert.equal(tree.fontFamily, 'Inter');
+    assert.deepEqual(tree.segments.map(s => [s.start, s.end, s.fontSize, s.fontWeight]),
+      [[0, 5, 15.5, 'Regular'], [5, 6, 22, 'Semi Bold']]);
+    assert.deepEqual([...tokens.fonts], ['Inter/Regular/15.5px', 'Inter/Semi Bold/22px']);
+  }
+  const scan = plain(await r.handlers.scan_design({ id: '1:1' }));
+  assert.equal(scan.allText[0].fontSize, null);
+  assert.equal(scan.allText[0].fontWeight, null);
+  assert.equal(scan.allText[0].segments.length, 2);
+  assert.deepEqual(scan.allFonts.map(f => f.font).sort(), ['Inter/Regular/15.5px', 'Inter/Semi Bold/22px']);
+  segments[1].fontSize = 15.5;
+  assert.equal(r.resolveTextStyle(node).fontSize, 15.5);
+  assert.equal(r.resolveTextStyle(node).fontWeight, undefined);
+});
+
 test('equivalent CSS syntaxes preserve alpha in reads and writes', () => {
   const r = runtime();
   for (const color of ['rgba(255, 0, 0, .5)', 'rgb(100% 0% 0% / 50%)', 'hsl(0 100% 50% / .5)', 'hsla(0, 100%, 50%, .5)']) {
@@ -241,6 +272,18 @@ test('startup subscribes to active-page changes without loading the whole file',
   pageListener({ nodeChanges: [{ type: 'PROPERTY_CHANGE', node: { id: 'changed:1' } }] });
   assert.ok(r.pendingChangedNodeIds.has('changed:1'));
   assert.ok(messages.some(msg => msg.type === 'document-change'));
+  assert.deepEqual(plain(messages.filter(msg => msg.type === 'document-change').at(-1).changedNodeIds), ['changed:1']);
+  r.findNodeByIdAsync = async id => id === 'changed:1'
+    ? { id, parent: page, type: 'TEXT', fontSize: 15.5, fontWeight: 'Semi Bold' } : null;
+  r.extractDesignTree = node => ({ id: node.id, type: node.type, fontSize: node.fontSize, fontWeight: node.fontWeight });
+  pageListener({ nodeChanges: [{ type: 'DELETE', id: 'deleted:1' }] });
+  await timers.filter(timer => timer.delay === 100).at(-1).callback();
+  const diff = plain(messages.filter(msg => msg.type === 'node-diff').at(-1));
+  assert.deepEqual(diff.deletedIds, ['deleted:1']);
+  assert.equal(diff.nodes[0].fontSize, 15.5);
+  assert.equal(diff.nodes[0].fontWeight, 'Semi Bold');
+  assert.equal(diff.nodes[0].parentId, page.id);
+  assert.deepEqual(diff.nodes[0].childIds, []);
   const next = { id: 'page:2', on: () => {}, off: () => {} };
   r.figma.currentPage = next;
   r.handlers.index_scan = async () => ({ pageId: 'page:1' });

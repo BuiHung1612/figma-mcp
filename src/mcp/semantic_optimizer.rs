@@ -9,13 +9,7 @@ const STYLE_FIELDS: &[&str] = &[
     "stroke",
     "strokes",
     "effects",
-    "typography",
     "layout",
-    "fontFamily",
-    "fontSize",
-    "fontWeight",
-    "lineHeight",
-    "letterSpacing",
     "textAlignHorizontal",
     "textAlignVertical",
     "borderRadius",
@@ -169,5 +163,23 @@ mod tests {
         ] {
             assert_eq!(compress_tree(&raw, true), raw);
         }
+    }
+
+    #[test]
+    fn typography_remains_inline_when_other_styles_are_shared() {
+        let raw = json!({"tree": {"type":"FRAME", "children": (0..50).map(|i| json!({
+            "type":"TEXT", "id":format!("1:{i}"), "content":"Label",
+            "fontSize":15.5, "fontWeight":"Semi Bold", "fontFamily":"Inter",
+            "typography":{"fontSize":15.5,"fontWeight":600},
+            "fill":"#ffffff", "layout":{"padding":"16px 16px 16px 16px", "display":"flex"}
+        })).collect::<Vec<_>>()}});
+        let compact = compress_tree(&raw, true);
+        assert!(compact.get("_compression").is_some());
+        for node in compact["tree"]["children"].as_array().unwrap() {
+            assert_eq!(node["fontSize"], 15.5);
+            assert_eq!(node["fontWeight"], "Semi Bold");
+            assert_eq!(node["typography"]["fontWeight"], 600);
+        }
+        assert_eq!(restore(compact), raw);
     }
 }

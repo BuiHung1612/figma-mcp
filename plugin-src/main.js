@@ -110,67 +110,50 @@ figma.on("selectionchange", function() {
 // Broadcast granular document changes to invalidate or incrementally update index cache
 var docChangeTimer = null;
 var pendingChangedNodeIds = new Set();
+var docChangeGeneration = 0;
 
 function onDocChange(event) {
   try {
+    var generation = ++docChangeGeneration;
     variableCache.clear();
-    figma.ui.postMessage({ type: "document-change" });
     var changes = event && (event.documentChanges || event.nodeChanges);
-    if (changes) {
-      for (var i = 0; i < changes.length; i++) {
-        var ch = changes[i];
-        var changedId = ch && (ch.id || (ch.node && ch.node.id));
-        if (changedId) pendingChangedNodeIds.add(changedId);
+    var ids = [];
+    if (changes) changes.forEach(function(ch) {
+      var id = ch && (ch.id || (ch.node && ch.node.id));
+      if (id) { ids.push(id); pendingChangedNodeIds.add(id); }
+      if (ch && ch.node && ch.node.parent && ch.node.parent.type !== "PAGE") {
+        var parentId = ch.node.parent.id;
+        ids.push(parentId); pendingChangedNodeIds.add(parentId);
       }
-    }
+    });
+    figma.ui.postMessage({ type: "document-change", changedNodeIds: ids });
+    if (!ids.length) return;
     if (docChangeTimer) clearTimeout(docChangeTimer);
+    var changedPage = figma.currentPage;
     docChangeTimer = setTimeout(async function() {
       var ids = Array.from(pendingChangedNodeIds);
       pendingChangedNodeIds.clear();
-
-      if (ids.length === 1) {
+      var nodes = [], deleted = [];
+      for (var id of ids) {
         try {
-          var singleNode = await findNodeByIdAsync(ids[0]);
-          if (singleNode) {
-            figma.ui.postMessage({
-              type: "delta-diff",
-              id: singleNode.id,
-              diff: {
-                name: singleNode.name,
-                characters: "characters" in singleNode ? singleNode.characters : undefined,
-                visible: singleNode.visible,
-                width: singleNode.width,
-                height: singleNode.height,
-                x: singleNode.x,
-                y: singleNode.y
-              }
-            });
-            return;
-          }
-        } catch(e1) {}
+          var node = await findNodeByIdAsync(id);
+          if (!node || node.removed) { deleted.push(id); continue; }
+          var data = extractDesignTree(node, 0, 0, "compact", false);
+          data.parentId = node.parent ? node.parent.id : null;
+          data.childIds = "children" in node ? node.children.map(function(c) { return c.id; }) : [];
+          nodes.push(data);
+        } catch(e) { figma.ui.postMessage({ type: "document-change" }); return; }
       }
-
-      if (ids.length > 0 && ids.length <= 15) {
-        // Incremental micro-diff update for fast real-time editing
-        var diffNodes = [];
-        for (var j = 0; j < ids.length; j++) {
-          try {
-            var n = await findNodeByIdAsync(ids[j]);
-            if (n && typeof nodeToInfo === "function") {
-              diffNodes.push(nodeToInfo(n));
-            }
-          } catch(e2) {}
-        }
-        if (diffNodes.length > 0) {
-          figma.ui.postMessage({ type: "node-diff", nodes: diffNodes });
-          return;
-        }
+      if (figma.currentPage.id !== changedPage.id) return;
+      if (generation !== docChangeGeneration) {
+        onDocChange({ nodeChanges: ids.map(function(id) { return { id: id }; }) });
+        return;
       }
-
-      // Fallback for large batch changes: mark dirty or trigger background sync
-      figma.ui.postMessage({ type: "document-change" });
-    }, 500);
-  } catch (e) {}
+      if (figma.currentPage.id === changedPage.id) {
+        figma.ui.postMessage({ type: "node-diff", nodes: nodes, deletedIds: deleted });
+      }
+    }, 100);
+  } catch(e) { figma.ui.postMessage({ type: "document-change" }); }
 }
 
 // Listen only to the active page: documentchange requires loading the entire

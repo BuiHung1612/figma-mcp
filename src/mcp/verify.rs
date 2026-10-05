@@ -2,6 +2,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+fn css_font_weight(value: &str) -> Option<u16> {
+    let value = value.to_lowercase().replace([' ', '-'], "");
+    let value = value.strip_suffix("italic").unwrap_or(&value);
+    match value {
+        "thin" => Some(100), "extralight" | "ultralight" => Some(200), "light" => Some(300),
+        "regular" | "normal" | "" => Some(400), "medium" => Some(500), "semibold" => Some(600),
+        "bold" => Some(700), "extrabold" | "ultrabold" => Some(800), "black" | "heavy" => Some(900),
+        _ => value.parse::<u16>().ok().filter(|w| (1..=1000).contains(w)),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayoutMetric {
     pub name: String,
@@ -45,6 +56,9 @@ pub fn compare_design_metrics(
     figma_spec: &Value,
     computed_styles: &HashMap<String, String>,
 ) -> (Vec<LayoutMetric>, Vec<LayoutMetric>, Vec<String>, f64) {
+    let figma_spec = figma_spec.get("context").unwrap_or(figma_spec);
+    let typography = figma_spec.get("text").filter(|v| v.is_object())
+        .or_else(|| figma_spec.get("typography")).unwrap_or(figma_spec);
     let mut layout_metrics = Vec::new();
     let mut style_metrics = Vec::new();
     let mut fixes = Vec::new();
@@ -163,12 +177,13 @@ pub fn compare_design_metrics(
     }
 
     // 5. Typography (fontSize, fontWeight)
-    if let Some(font_size) = figma_spec.get("fontSize").and_then(|v| v.as_f64()) {
+    if let Some(font_size) = typography.get("fontSize").and_then(|v| v.as_f64()
+        .or_else(|| v.as_str()?.strip_suffix("px")?.parse::<f64>().ok())) {
         total_checks += 1;
         let actual_fs = computed_styles.get("font-size").or_else(|| computed_styles.get("fontSize")).cloned();
         let is_match = actual_fs.as_ref().is_some_and(|val| {
-            let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
-            (px - font_size).abs() <= 1.0
+            val.strip_suffix("px").and_then(|v| v.trim().parse::<f64>().ok())
+                .is_some_and(|px| (px - font_size).abs() <= 0.01)
         });
 
         if is_match { matched_checks += 1; } else {
@@ -180,6 +195,26 @@ pub fn compare_design_metrics(
                 is_matched: false,
                 difference: Some(format!("Expected {}px font-size", font_size)),
             });
+        }
+    }
+
+    for (field, css) in [("fontWeight", "font-weight"), ("fontFamily", "font-family")] {
+        if let Some(expected) = typography.get(field).filter(|v| !v.is_null()) {
+            let expected = expected.as_str().map(str::to_owned).unwrap_or_else(|| expected.to_string());
+            total_checks += 1;
+            let actual = computed_styles.get(css).or_else(|| computed_styles.get(field)).cloned();
+            let matched = actual.as_ref().is_some_and(|actual| {
+                if field == "fontWeight" {
+                    css_font_weight(&expected).zip(css_font_weight(actual)).is_some_and(|(a,b)| a == b)
+                } else {
+                    actual.split(',').next().unwrap_or("").trim().trim_matches(['\'', '"']).eq_ignore_ascii_case(&expected)
+                }
+            });
+            if matched { matched_checks += 1; } else {
+                fixes.push(format!("Set {css}: {expected}"));
+                style_metrics.push(LayoutMetric { name:field.into(), figma_value:Some(expected), actual_value:actual,
+                    is_matched:false, difference:Some(format!("Typography {field} differs")) });
+            }
         }
     }
 
@@ -245,6 +280,21 @@ pub fn compare_design_metrics(
         }
     }
 
+    if let Some(segments) = typography.get("segments").and_then(Value::as_array) {
+        let actual: Value = computed_styles.get("segments").and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null);
+        for (i, segment) in segments.iter().enumerate() {
+            let styles: HashMap<String, String> = actual.get(i).and_then(Value::as_object).map(|obj| obj.iter()
+                .map(|(key, value)| (key.clone(), value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()))).collect()).unwrap_or_default();
+            // Per-run typography only: do not compare geometry/paint on a text run.
+            let expected = serde_json::json!({"fontSize":segment.get("fontSize"), "fontWeight":segment.get("fontWeight"), "fontFamily":segment.get("fontFamily")});
+            let (_, differences, run_fixes, score) = compare_design_metrics(&expected, &styles);
+            total_checks += 1;
+            if score == 100.0 { matched_checks += 1; }
+            for mut difference in differences { difference.name = format!("segments[{i}].{}", difference.name); style_metrics.push(difference); }
+            fixes.extend(run_fixes.into_iter().map(|fix| format!("Segment {i}: {fix}")));
+        }
+    }
+
     // An empty spec is not a successful verification. Returning 100 here made
     // missing/incomplete Figma payloads look like perfect matches.
     let percentage = if total_checks > 0 {
@@ -260,6 +310,21 @@ pub fn compare_design_metrics(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn verifies_exact_nested_typography_and_mixed_runs() {
+        let spec = json!({"context":{"text":{"fontSize":15.5,"fontWeight":"Semi Bold","fontFamily":"Inter"}}});
+        let mut styles = HashMap::from([("font-size".into(),"15.5px".into()),("font-weight".into(),"600".into()),("font-family".into(),"\"Inter\", sans-serif".into())]);
+        assert_eq!(compare_design_metrics(&spec, &styles).3, 100.0);
+        styles.insert("font-size".into(),"16px".into());
+        assert!(compare_design_metrics(&spec, &styles).1.iter().any(|d| d.name == "fontSize"));
+        styles.insert("font-weight".into(),"400".into());
+        assert!(compare_design_metrics(&spec, &styles).1.iter().any(|d| d.name == "fontWeight"));
+        let mixed = json!({"segments":[{"fontSize":14,"fontWeight":"Regular"},{"fontSize":22,"fontWeight":"Bold"}]});
+        let styles = HashMap::from([("segments".into(),json!([{"font-size":"14px","font-weight":"400"},{"font-size":"22px","font-weight":"700"}]).to_string())]);
+        assert_eq!(compare_design_metrics(&mixed, &styles).3,100.0);
+        assert!(compare_design_metrics(&mixed,&HashMap::new()).1.iter().any(|d| d.name == "segments[1].fontWeight"));
+    }
 
     #[test]
     fn alpha_and_modern_color_syntax_are_compared_numerically() {

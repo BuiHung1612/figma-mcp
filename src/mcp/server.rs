@@ -209,6 +209,21 @@ pub async fn run_mcp_server(bridge: BridgeHandle) -> Result<(), Box<dyn std::err
 }
 
 async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolResult {
+    let name = params.as_ref().and_then(|p| p["name"].as_str()).unwrap_or("invalid").to_string();
+    let start = std::time::Instant::now();
+    let result = handle_tool_call_inner(bridge.clone(), params).await;
+    if let BridgeHandle::Direct(state) = bridge {
+        let mut inner = state.inner.lock().await;
+        if name.starts_with("figma_") && (inner.tool_timings.len() < 64 || inner.tool_timings.contains_key(&name)) {
+            let timing = inner.tool_timings.entry(name).or_default();
+            timing.0 += 1;
+            timing.1 += start.elapsed().as_millis() as u64;
+        }
+    }
+    result
+}
+
+async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> ToolResult {
     if let BridgeHandle::Proxy(proxy) = &bridge {
         return match proxy.call_tool(params.unwrap_or(json!({}))).await {
             Ok(result) => result,
@@ -930,21 +945,66 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
             };
 
             match operation {
+                "subtree" | "typography" => {
+                    let Some(id) = args["nodeId"].as_str() else { return ToolResult::error("nodeId is required; request one frame/section at a time"); };
+                    let mut params = json!({"id":id, "detail":"compact", "depth": if operation == "typography" { json!("full") } else { json!(2) }, "maxNodes":1000});
+                    for key in ["depth", "maxNodes", "includeHidden"] {
+                        if let Some(value) = args.get(key) { params[key] = value.clone(); }
+                    }
+                    if !params["maxNodes"].as_u64().is_some_and(|n| (1..=50000).contains(&n)) {
+                        return ToolResult::error("maxNodes must be an integer from 1 to 50000");
+                    }
+                    if params["depth"] != "full" && !params["depth"].as_u64().is_some_and(|n| n <= 256) {
+                        return ToolResult::error("depth must be full or an integer from 0 to 256");
+                    }
+                    return match bridge.send_operation("get_design", params, session_id).await {
+                        Ok(data) if operation == "typography" => {
+                            let tree = data.get("tree").unwrap_or(&data);
+                            let mut rows = crate::mcp::design_pack::extract_all_text_elements(tree);
+                            let total = rows.len();
+                            let limit = args["limit"].as_u64().unwrap_or(200).min(1000) as usize;
+                            rows.truncate(limit);
+                            let rows: Vec<_> = rows.into_iter().map(|row| json!({"nodeId":row.id,"text":row.text,
+                                "fontFamily":row.font_family,"fontSize":row.font_size,"fontWeight":row.font_weight,
+                                "lineHeight":row.line_height,"segments":row.segments})).collect();
+                            ToolResult::text(json!({"nodeId":id,"typography":rows,"textNodesInPayload":total,
+                                "rowsTruncated":total > limit,"meta":data.get("meta"),
+                                "hint":"null font fields are unknown or mixed; use segments for mixed runs. Read a smaller section if truncated."}).to_string())
+                        }
+                        Ok(data) => ToolResult::text(crate::mcp::semantic_optimizer::compress_tree(&data, true).to_string()),
+                        Err(error) => ToolResult::error(error),
+                    };
+                }
                 "status" => {
                     let stats = bridge.get_index_stats(session_id).await;
                     let connected = bridge.is_plugin_connected(session_id).await;
+                    let cache = if let BridgeHandle::Direct(state) = &bridge {
+                        let inner = state.inner.lock().await;
+                        let sid = crate::bridge::server::BridgeState::resolve_session_id(&inner, session_id);
+                        inner.sessions.get(&sid).map(|s| json!({"hits":s.cache_hits,"misses":s.cache_misses,
+                            "bridgeCalls":s.bridge_calls,"bridgeTimeMs":s.bridge_time_ms,"entries":s.read_cache.len(),
+                            "indexReady":s.index.as_ref().is_some_and(|idx| idx.is_ready())}))
+                    } else { None };
+                    let tool_timings = if let BridgeHandle::Direct(state) = &bridge {
+                        let inner = state.inner.lock().await;
+                        Some(inner.tool_timings.iter().map(|(name,(calls,total))| (name.clone(),json!({"calls":calls,"totalMs":total,"avgMs":total / calls.max(&1)}))).collect::<serde_json::Map<String,Value>>())
+                    } else { None };
                     match stats {
                         Some(st) => {
                             let out = json!({
-                                "status": "ready",
+                                "status": if cache.as_ref().is_some_and(|c| c["indexReady"] == false) { "stale" } else { "ready" },
                                 "pluginConnected": connected,
                                 "stats": st,
+                                "cache": cache,
+                                "toolTimings": tool_timings,
                             });
                             ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
                         }
                         None => {
                             let out = json!({
                                 "status": "not_indexed",
+                                "cache": cache,
+                                "toolTimings": tool_timings,
                                 "pluginConnected": connected,
                                 "hint": "File not yet indexed. Call with operation='refresh' to build index in background."
                             });
@@ -1665,6 +1725,28 @@ async fn handle_tool_call(bridge: BridgeHandle, params: Option<Value>) -> ToolRe
 #[cfg(test)]
 mod tests {
     use super::is_supported_read_operation;
+
+    #[tokio::test]
+    async fn typography_tool_uses_cached_subtree_and_reports_timing() {
+        let state = crate::bridge::server::BridgeState::new(0);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = crate::bridge::session::Session::new("s".into(),None);
+        session.ws_tx = Some(tx);
+        let tree = serde_json::json!({"id":"a","type":"FRAME","children":[{"id":"t","type":"TEXT","content":"Label","fontSize":15.5,"fontWeight":"Semi Bold","fontFamily":"Inter"}]});
+        session.index = Some(crate::bridge::index::FigmaIndex::from_raw("s","f",&serde_json::json!([tree]),None,None,None,0));
+        let params = serde_json::json!({"id":"a","detail":"compact","depth":"full","maxNodes":1000});
+        session.read_cache.insert(format!("get_design:{params}"),serde_json::json!({"tree":tree,"meta":{"nodesTruncated":false}}));
+        state.inner.lock().await.sessions.insert("s".into(),session);
+        let result = super::handle_tool_call(crate::bridge::BridgeHandle::Direct(state.clone()),Some(serde_json::json!({"name":"figma_index","arguments":{"operation":"typography","nodeId":"a"}}))).await;
+        let serialized = serde_json::to_value(result).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(serialized["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["typography"][0]["fontSize"],15.5);
+        assert_eq!(payload["typography"][0]["fontWeight"],"Semi Bold");
+        assert!(rx.try_recv().is_err());
+        let inner = state.inner.lock().await;
+        assert_eq!(inner.sessions["s"].cache_hits,1);
+        assert_eq!(inner.tool_timings["figma_index"].0,1);
+    }
 
     #[test]
     fn read_operation_contract_rejects_unknown_plugin_operations() {

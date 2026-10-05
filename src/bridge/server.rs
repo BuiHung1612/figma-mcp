@@ -56,7 +56,107 @@ fn is_read_operation(operation: &str) -> bool {
         "getcomponentproperties" | "getreactions")
 }
 
+fn read_cache_key(operation: &str, params: &Value) -> Option<String> {
+    // Cache exact live responses, never infer a detail contract from compact nodes.
+    // ponytail: 64 entries per tab; byte-based eviction if large trees dominate memory.
+    if matches!(operation, "get_styles" | "get_variables" | "get_variable_tokens")
+        || (matches!(operation, "get_design" | "get_node_detail" | "get_design_context")
+        && params.get("id").or_else(|| params.get("nodeId")).and_then(Value::as_str).is_some()) {
+        Some(format!("{operation}:{}", params))
+    } else { None }
+}
+
+#[cfg(test)]
+mod read_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cache_keys_preserve_detail_contract_and_exclude_selection_and_exports() {
+        assert_ne!(read_cache_key("get_design", &json!({"id":"1:1", "detail":"full"})),
+            read_cache_key("get_design", &json!({"id":"1:1", "detail":"compact"})));
+        for op in ["get_selection", "export_image", "query", "get_design"] {
+            assert!(read_cache_key(op, &json!({})).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn token_reads_reuse_index_and_live_responses_without_dispatch() {
+        let state = BridgeState::new(0);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = Session::new("s".into(), None);
+        session.ws_tx = Some(tx);
+        let styles = json!({"schemaVersion": 2, "paintStyles": []});
+        session.index = Some(crate::bridge::index::FigmaIndex::from_raw(
+            "s", "f", &json!([]), Some(&styles), None, None, 0));
+        state.inner.lock().await.sessions.insert("s".into(), session);
+        assert_eq!(state.send_operation("get_styles", json!({}), Some("s")).await.unwrap(), styles);
+        assert!(rx.try_recv().is_err());
+
+        state.mark_index_dirty("s").await;
+        let dispatch = state.clone();
+        let read = tokio::spawn(async move { dispatch.send_operation("get_styles", json!({}), Some("s")).await });
+        let Message::Text(request) = rx.recv().await.unwrap() else { panic!("expected request") };
+        let request: Value = serde_json::from_str(&request).unwrap();
+        let mut inner = state.inner.lock().await;
+        let session = inner.sessions.get_mut("s").unwrap();
+        session.pending.remove(request["id"].as_str().unwrap()).unwrap().sender.send(Ok(styles.clone())).unwrap();
+        drop(inner);
+        assert_eq!(read.await.unwrap().unwrap(), styles);
+        assert_eq!(state.send_operation("get_styles", json!({}), Some("s")).await.unwrap(), styles);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(state.inner.lock().await.sessions["s"].read_cache.len(), 1);
+        state.mark_index_dirty("s").await;
+        assert!(state.inner.lock().await.sessions["s"].read_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_cache_is_session_local_and_writes_invalidate_before_dispatch() {
+        let state = BridgeState::new(0);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = Session::new("s".into(), None);
+        session.ws_tx = Some(tx);
+        session.index = Some(crate::bridge::index::FigmaIndex::from_raw(
+            "s", "f", &json!([{"id":"1:1", "name":"Card", "type":"FRAME"}]), None, None, None, 0));
+        let params = json!({"id":"1:1", "detail":"full"});
+        let data = json!({"id":"1:1", "resolvedPaints": []});
+        session.read_cache.insert(read_cache_key("get_design_context", &params).unwrap(), data.clone());
+        state.inner.lock().await.sessions.insert("s".into(), session);
+        assert_eq!(state.send_operation("get_design_context", params, Some("s")).await.unwrap(), data);
+        assert!(rx.try_recv().is_err());
+        let dispatch = state.clone();
+        let write = tokio::spawn(async move { dispatch.send_operation("modify", json!({"id":"1:1", "name":"New"}), Some("s")).await });
+        let Message::Text(request) = rx.recv().await.unwrap() else { panic!("expected request") };
+        let request: Value = serde_json::from_str(&request).unwrap();
+        let mut inner = state.inner.lock().await;
+        let session = inner.sessions.get_mut("s").unwrap();
+        assert!(session.read_cache.is_empty());
+        assert!(session.index.as_ref().unwrap().pending_nodes.contains("1:1"));
+        session.pending.remove(request["id"].as_str().unwrap()).unwrap().sender.send(Ok(json!({}))).unwrap();
+        drop(inner);
+        write.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalidation_during_read_does_not_cache_stale_response() {
+        let state = BridgeState::new(0);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = Session::new("s".into(), None);
+        session.ws_tx = Some(tx);
+        state.inner.lock().await.sessions.insert("s".into(), session);
+        let dispatch = state.clone();
+        let read = tokio::spawn(async move { dispatch.send_operation("get_variables", json!({}), Some("s")).await });
+        let Message::Text(request) = rx.recv().await.unwrap() else { panic!("expected request") };
+        let request: Value = serde_json::from_str(&request).unwrap();
+        state.mark_index_dirty("s").await;
+        state.inner.lock().await.sessions.get_mut("s").unwrap().pending
+            .remove(request["id"].as_str().unwrap()).unwrap().sender.send(Ok(json!({}))).unwrap();
+        read.await.unwrap().unwrap();
+        assert!(state.inner.lock().await.sessions["s"].read_cache.is_empty());
+    }
+}
+
 pub struct BridgeInner {
+    pub tool_timings: HashMap<String, (u64, u64)>,
     pub port: u16,
     pub sessions: HashMap<String, Session>,
     pub op_to_session: HashMap<String, String>,
@@ -85,6 +185,7 @@ impl BridgeState {
     pub fn new(port: u16) -> Self {
         Self {
             inner: Arc::new(Mutex::new(BridgeInner {
+                tool_timings: HashMap::new(),
                 port,
                 sessions: HashMap::new(),
                 op_to_session: HashMap::new(),
@@ -210,7 +311,7 @@ impl BridgeState {
                 _ => return Err("export_node supports PNG, JPG/JPEG or SVG".into()),
             }
         } else { operation };
-        let (rx, op_id, timeout_ms, target_sid) = {
+        let (rx, op_id, timeout_ms, target_sid, cache_key, cache_revision) = {
             let mut inner = self.inner.lock().await;
 
             let sid = Self::checked_session_id(&inner, session_id)?;
@@ -250,9 +351,51 @@ impl BridgeState {
                         session.runtime_version.as_deref().unwrap_or("unknown"), session.protocol_version.unwrap_or(0)));
                 }
             }
-            if !["get_styles", "get_variables", "get_variable_tokens", "get_local_components", "index_scan"].contains(&operation) {
-                if let Some(idx) = &mut session.index { idx.tokens_dirty = true; }
+            // Only cache node reads for indexed active-page nodes: other pages
+            // are not covered by the plugin's nodechange subscription.
+            let node_read = matches!(operation, "get_design" | "get_node_detail" | "get_design_context");
+            let active_node = params.get("id").or_else(|| params.get("nodeId")).and_then(Value::as_str)
+                .is_some_and(|id| session.index.as_ref().is_some_and(|idx| idx.is_ready() && idx.nodes.contains_key(id)));
+            let cache_key = if self.task_scope.is_none() && (!node_read || active_node) {
+                read_cache_key(operation, &params)
+            } else { None };
+            let writes_pending = session.pending.values().any(|p| !is_read_operation(&p.op.operation));
+            if !writes_pending {
+                if let Some(value) = cache_key.as_ref().and_then(|key| session.read_cache.get(key)) {
+                    let value = value.clone();
+                    session.cache_hits += 1;
+                    tracing::debug!(operation, session_id = %sid, "Rust read cache hit");
+                    return Ok(value);
+                }
+                if let Some(idx) = session.index.as_ref().filter(|idx| !idx.tokens_dirty && !idx.dirty && idx.stats.indexed_at_ms > 0) {
+                    let cached = match operation {
+                        "get_styles" => idx.raw_styles.as_ref(),
+                        "get_variables" | "get_variable_tokens" => idx.raw_variables.as_ref(),
+                        _ => None,
+                    };
+                    if cache_key.is_some() {
+                        if let Some(value) = cached.filter(|v| v["schemaVersion"] == 2) {
+                            let value = value.clone();
+                            session.cache_hits += 1;
+                            return Ok(value);
+                        }
+                    }
+                }
             }
+            if !is_read_operation(operation) {
+                if operation == "modify" {
+                    if let Some(id) = params["id"].as_str() {
+                        session.invalidate_nodes(&[id.to_string()]);
+                        if let Some(idx) = &mut session.index { idx.pending_nodes.insert(id.to_string()); }
+                    } else { session.invalidate_reads(); if let Some(idx) = &mut session.index { idx.mark_dirty(); } }
+                } else {
+                    session.invalidate_reads();
+                    if let Some(idx) = &mut session.index { idx.mark_dirty(); }
+                }
+            }
+            let cache_revision = session.cache_revision;
+            if cache_key.is_some() { session.cache_misses += 1; }
+            session.bridge_calls += 1;
             if session.queue.len() >= MAX_QUEUE {
                 return Err("Queue full — is the Figma plugin running?".to_string());
             }
@@ -314,12 +457,38 @@ impl BridgeState {
             }
 
             inner.op_to_session.insert(op_id.clone(), sid.clone());
-            (rx, op_id, timeout_ms, sid)
+            (rx, op_id, timeout_ms, sid, cache_key, cache_revision)
         };
 
         // Await with timeout
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
+        let started = std::time::Instant::now();
+        let response = tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await;
+        if let Some(session) = self.inner.lock().await.sessions.get_mut(&target_sid) {
+            session.bridge_time_ms += started.elapsed().as_millis() as u64;
+        }
+        match response {
             Ok(Ok(val)) => {
+                if operation == "get_design" && cache_key.is_some() {
+                    if let Ok(data) = &val {
+                        let mut inner = self.inner.lock().await;
+                        if let Some(session) = inner.sessions.get_mut(&target_sid) {
+                            if session.cache_revision == cache_revision {
+                                if let Some(idx) = &mut session.index {
+                                    if let Some(tree) = data.get("tree").filter(|v| v.is_object()) { idx.cache_subtree(tree); }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let (Some(key), Ok(data)) = (cache_key, &val) {
+                    let mut inner = self.inner.lock().await;
+                    if let Some(session) = inner.sessions.get_mut(&target_sid) {
+                        if session.cache_revision == cache_revision && !session.pending.values().any(|p| !is_read_operation(&p.op.operation)) {
+                            if session.read_cache.len() >= 64 { session.read_cache.clear(); }
+                            session.read_cache.insert(key, data.clone());
+                        }
+                    }
+                }
                 if operation == "get_local_components" {
                     if let Ok(data) = &val {
                         let mut inner = self.inner.lock().await;
@@ -348,6 +517,7 @@ impl BridgeState {
     pub async fn update_index(&self, session_id: &str, index: crate::bridge::index::FigmaIndex) {
         let mut inner = self.inner.lock().await;
         if let Some(session) = inner.sessions.get_mut(session_id) {
+            session.invalidate_reads();
             session.index = Some(index);
         }
     }
@@ -355,8 +525,35 @@ impl BridgeState {
     pub async fn mark_index_dirty(&self, session_id: &str) {
         let mut inner = self.inner.lock().await;
         if let Some(session) = inner.sessions.get_mut(session_id) {
+            session.invalidate_reads();
             if let Some(ref mut idx) = session.index {
                 idx.mark_dirty();
+            }
+        }
+    }
+
+    async fn invalidate_changed_nodes(&self, sid: &str, ids: &[String]) {
+        let mut inner = self.inner.lock().await;
+        if let Some(session) = inner.sessions.get_mut(sid) {
+            session.invalidate_nodes(ids);
+            if let Some(idx) = &mut session.index {
+                idx.pending_nodes.extend(ids.iter().cloned());
+                idx.stats.components_indexed = false;
+                idx.raw_components = None;
+            }
+        }
+    }
+
+    async fn update_changed_nodes(&self, sid: &str, nodes: &[Value], deleted: &[String]) {
+        let mut inner = self.inner.lock().await;
+        if let Some(session) = inner.sessions.get_mut(sid) {
+            let ids: Vec<_> = nodes.iter().flat_map(|n| [n["id"].as_str(),n["parentId"].as_str()])
+                .flatten().filter(|id| session.index.as_ref().is_some_and(|idx| idx.nodes.contains_key(*id)))
+                .map(str::to_owned).chain(deleted.iter().cloned()).collect();
+            session.invalidate_nodes(&ids);
+            if let Some(idx) = &mut session.index {
+                for id in deleted { idx.remove_node(id); }
+                for node in nodes { idx.upsert_node(node); }
             }
         }
     }
@@ -372,7 +569,7 @@ impl BridgeState {
         let inner = self.inner.lock().await;
         let sid = Self::resolve_session_id(&inner, session_id);
 
-        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().and_then(|idx| idx.get_node(node_id).cloned()))
+        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().filter(|idx| idx.is_ready()).and_then(|idx| idx.get_node(node_id).cloned()))
     }
 
     pub async fn search_index_nodes(
@@ -386,7 +583,7 @@ impl BridgeState {
         let sid = Self::resolve_session_id(&inner, session_id);
 
         inner.sessions.get(&sid).and_then(|s| {
-            s.index.as_ref().map(|idx| {
+            s.index.as_ref().filter(|idx| idx.is_ready()).map(|idx| {
                 idx.search_nodes(query, node_type, limit)
                     .into_iter()
                     .cloned()
@@ -468,6 +665,7 @@ impl BridgeState {
     pub async fn apply_delta(&self, session_id: &str, node_id: &str, delta: &Value) {
         let mut inner = self.inner.lock().await;
         if let Some(session) = inner.sessions.get_mut(session_id) {
+            session.invalidate_reads();
             if let Some(ref mut idx) = session.index {
                 idx.apply_delta(node_id, delta);
             }
@@ -888,6 +1086,8 @@ async fn handle_socket(
             session.file_name = fn_name;
         }
         let tx_clone = tx.clone();
+        session.invalidate_reads();
+        if let Some(idx) = &mut session.index { idx.mark_dirty(); }
         session.ws_tx = Some(tx);
         session.operations = None;
         session.runtime_version = None;
@@ -955,6 +1155,7 @@ async fn handle_socket(
                                 s.runtime_version = val["runtimeVersion"].as_str().map(str::to_owned);
                                 s.protocol_version = val["protocolVersion"].as_u64();
                                 s.operations = val["operations"].as_array().map(|ops| ops.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+                                s.invalidate_reads();
                                 if let Some(idx) = &mut s.index { idx.tokens_dirty = true; }
                             }
                             continue;
@@ -1012,21 +1213,17 @@ async fn handle_socket(
                         // "node-diff" = incremental update of specific nodes
                         if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
-                                let mut inner = state_clone.inner.lock().await;
-                                if let Some(session) = inner.sessions.get_mut(&sid_clone) {
-                                    if let Some(ref mut idx) = session.index {
-                                        for n in nodes {
-                                            idx.upsert_node(n);
-                                        }
-                                    }
-                                }
+                                let deleted: Vec<String> = val["deletedIds"].as_array().map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+                                state_clone.update_changed_nodes(&sid_clone, nodes, &deleted).await;
                             }
                             continue;
                         }
 
                         // "document-change" = canvas modified in Figma, mark index dirty
                         if val.get("type").and_then(|v| v.as_str()) == Some("document-change") {
-                            state_clone.mark_index_dirty(&sid_clone).await;
+                            let ids: Vec<String> = val["changedNodeIds"].as_array().map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+                            if ids.is_empty() { state_clone.mark_index_dirty(&sid_clone).await; }
+                            else { state_clone.invalidate_changed_nodes(&sid_clone, &ids).await; }
                             continue;
                         }
 
@@ -1067,6 +1264,7 @@ async fn handle_socket(
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
                                 let mut inner = state_clone.inner.lock().await;
                                 if let Some(session) = inner.sessions.get_mut(&sid_clone) {
+                                    session.invalidate_reads();
                                     if let Some(ref mut idx) = session.index {
                                         idx.merge_chunk(nodes);
                                     }
@@ -1125,19 +1323,14 @@ async fn handle_socket(
                             }
                         } else if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
-                                let mut inner = state_clone.inner.lock().await;
-                                if let Some(session) = inner.sessions.get_mut(&sid_clone) {
-                                    if let Some(ref mut idx) = session.index {
-                                        for n in nodes {
-                                            idx.upsert_node(n);
-                                        }
-                                    }
-                                }
+                                let deleted: Vec<String> = val["deletedIds"].as_array().map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+                                state_clone.update_changed_nodes(&sid_clone, nodes, &deleted).await;
                             }
                         } else if val.get("type").and_then(|v| v.as_str()) == Some("index-chunk") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
                                 let mut inner = state_clone.inner.lock().await;
                                 if let Some(session) = inner.sessions.get_mut(&sid_clone) {
+                                    session.invalidate_reads();
                                     if let Some(ref mut idx) = session.index {
                                         idx.merge_chunk(nodes);
                                     }

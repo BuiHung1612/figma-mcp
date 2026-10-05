@@ -194,8 +194,8 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["status", "search_nodes", "get_node", "search_components", "search_styles", "search_variables", "refresh"],
-                        "description": "Index operation to perform."
+                        "enum": ["status", "search_nodes", "get_node", "search_components", "search_styles", "search_variables", "refresh", "subtree", "typography"],
+                        "description": "subtree: read/cache one frame (default depth 2); typography: compact text/font table computed in Rust with mixed runs preserved; status: includes Rust cache hits/misses and bridge latency totals."
                     },
                     "query": {
                         "type": "string",
@@ -222,6 +222,9 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                         "type": "number",
                         "description": "Max results to return (default 30)."
                     },
+                    "depth": { "description": "subtree/typography depth: a number or full", "oneOf": [{"type":"number"},{"type":"string","enum":["full"]}] },
+                    "maxNodes": { "type":"integer", "minimum":1, "maximum":50000, "description":"Node budget for subtree/typography; default 1000. Inspect meta for truncation." },
+                    "includeHidden": { "type":"boolean", "description":"Include hidden nodes for subtree/typography." },
                     "sessionId": {
                         "type": "string",
                         "description": "Target a specific Figma file/tab. Omit to auto-select."
@@ -346,7 +349,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     },
                     "computedStyles": {
                         "type": "object",
-                        "description": "Computed CSS key-value pairs from the browser (e.g. width, height, padding, gap, borderRadius, fontSize, backgroundColor)."
+                        "description": "Computed CSS from the browser: font-size in px, font-weight numeric, font-family, plus layout/paint properties. For mixed text provide segments as an ordered array of CSS objects matching the Figma segments. Typography is checked per node/run without rounding to standard sizes."
                     },
                     "url": {
                         "type": "string",

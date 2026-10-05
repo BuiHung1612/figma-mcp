@@ -246,7 +246,10 @@ handlers.scan_design = async function(params) {
         textInfo.fontSize = textStyle.fontSize !== undefined ? textStyle.fontSize : null;
         textInfo.fontFamily = textStyle.fontFamily || null;
         textInfo.fontWeight = textStyle.fontWeight || null;
-        if (textStyle.mixed) textInfo.mixedStyles = true;
+        if (textStyle.mixed) {
+          textInfo.mixedStyles = true;
+          if (textStyle.segments) textInfo.segments = textStyle.segments;
+        }
       }
       if (summary.allText.length < SCAN_LIMITS.text) summary.allText.push(textInfo);
 
@@ -258,10 +261,14 @@ handlers.scan_design = async function(params) {
       }
 
       // Count font usage
-      if (textInfo.fontFamily) {
-        var fontKey = textInfo.fontFamily + "/" + (textInfo.fontWeight || "Regular") + "/" + (textInfo.fontSize || "?") + "px";
-        summary.allFonts[fontKey] = (summary.allFonts[fontKey] || 0) + 1;
-      }
+      var fontRuns = textInfo.segments || [textInfo];
+      var nodeFonts = new Set();
+      fontRuns.forEach(function(run) {
+        if (run.fontFamily && run.fontWeight && typeof run.fontSize === "number") {
+          nodeFonts.add(run.fontFamily + "/" + run.fontWeight + "/" + run.fontSize + "px");
+        }
+      });
+      nodeFonts.forEach(function(fontKey) { summary.allFonts[fontKey] = (summary.allFonts[fontKey] || 0) + 1; });
     }
 
     // Collect colors
@@ -463,10 +470,12 @@ handlers.search_nodes = async function(params) {
         try { info.fill = getFillHex(node); } catch(e) {}
         if (node.type === "TEXT") {
           try {
-            info.content = node.characters;
-            info.fontSize = node.fontSize;
-            info.fontFamily = node.fontName ? node.fontName.family : null;
-            info.fontWeight = node.fontName ? node.fontName.style : null;
+            var style = resolveTextStyle(node);
+            info.content = style.content;
+            if (style.fontSize !== undefined) info.fontSize = style.fontSize;
+            if (style.fontFamily) info.fontFamily = style.fontFamily;
+            if (style.fontWeight) info.fontWeight = style.fontWeight;
+            if (style.mixed) { info.mixedStyles = true; info.segments = style.segments; }
           } catch(e) { try { info.content = node.characters; } catch(e2) {} }
         }
         // Find page path for context

@@ -77,7 +77,6 @@ function collectIconNames(node, maxItems) {
 //   letterSpacing, textDecoration, mixed, segments? }
 function resolveTextStyle(node, opts) {
   if (!node || node.type !== "TEXT") return null;
-  var withSegments = !opts || opts.segments !== false;
   var out = { mixed: false };
 
   try { out.content = node.characters; } catch(e) {}
@@ -124,7 +123,7 @@ function resolveTextStyle(node, opts) {
 
   if (segs && segs.length) {
     var mapped = segs.map(function(s) {
-      var seg = { text: s.characters };
+      var seg = { text: s.characters, start: s.start, end: s.end };
       if (typeof s.fontSize === "number") seg.fontSize = s.fontSize;
       if (s.fontName) {
         seg.fontFamily = s.fontName.family;
@@ -139,26 +138,21 @@ function resolveTextStyle(node, opts) {
       if (s.textCase && s.textCase !== "ORIGINAL") seg.textCase = s.textCase;
       return seg;
     });
-    if (withSegments) out.segments = mapped;
-    // Representative values = first segment, so consumers that only read the
-    // flat fields still get real numbers rather than "mixed".
+    // Mixed runs are essential even in compact/scan output. Flat fields only
+    // describe values shared by every run, never a guess from the first run.
+    out.segments = mapped;
     var head = mapped[0];
-    if (head.fontSize !== undefined)     out.fontSize = head.fontSize;
-    if (head.fontFamily !== undefined)   out.fontFamily = head.fontFamily;
-    if (head.fontWeight !== undefined)   out.fontWeight = head.fontWeight;
-    if (head.fill !== undefined)         out.fill = head.fill;
-    if (head.lineHeight !== undefined)   out.lineHeight = head.lineHeight;
-    if (head.letterSpacing !== undefined) out.letterSpacing = head.letterSpacing;
-    if (head.textDecoration !== undefined) out.textDecoration = head.textDecoration;
-    if (head.textCase !== undefined) {
-      out.textCase = head.textCase;
-      if (head.textCase === "UPPER") {
+    ["fontSize", "fontFamily", "fontWeight", "fill", "lineHeight", "letterSpacing", "textDecoration", "textCase"].forEach(function(key) {
+      if (head[key] !== undefined && mapped.every(function(seg) { return seg[key] === head[key]; })) out[key] = head[key];
+    });
+    if (out.textCase !== undefined) {
+      if (out.textCase === "UPPER") {
         out.textTransform = "uppercase";
         if (out.content) out.renderedContent = out.content.toUpperCase();
-      } else if (head.textCase === "LOWER") {
+      } else if (out.textCase === "LOWER") {
         out.textTransform = "lowercase";
         if (out.content) out.renderedContent = out.content.toLowerCase();
-      } else if (head.textCase === "TITLE") {
+      } else if (out.textCase === "TITLE") {
         out.textTransform = "capitalize";
       }
     }
@@ -447,7 +441,8 @@ function applyStrokeWeight(node, info) {
 // Detail levels: "minimal" | "compact" | "full"
 // minimal: id, name, type, position, size, childCount — ~5% token cost
 // compact: + fill, stroke, cornerRadius, layout, text content — ~30% token cost
-// full:    + effects, segments, gradient details, boundVariables, inline SVG — 100% token cost
+// full:    + effects, gradient details, boundVariables, inline SVG — 100% token cost
+// Mixed text runs are preserved in both compact and full output.
 // filterInvisible: true (default) = skip nodes with visible:false | false = include all nodes
 // instanceCollector: optional array — INSTANCE nodes are pushed as { info, node }
 //   for the caller to resolve via resolveInstanceComponents (mainComponent is
@@ -654,7 +649,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   // Per-segment properties come back as figma.mixed (a Symbol) on multi-style
   // text, so everything typographic goes through resolveTextStyle.
   if (node.type === "TEXT") {
-    // Segments are verbose — only worth their tokens at detail "full".
+    // Mixed typography remains explicit at every non-minimal detail level.
     var text = resolveTextStyle(node, { segments: isFull });
     if (text) {
       info.content = text.content;
@@ -669,9 +664,12 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         info.mixedStyles = true;
         if (text.segments) info.segments = text.segments;
       }
-      if (tokenCollector && info.fontFamily) {
-        var fontW = info.fontWeight || "Regular";
-        tokenCollector.fonts.add(info.fontFamily + "/" + fontW + "/" + (info.fontSize || 14) + "px");
+      if (tokenCollector) {
+        (text.segments || [text]).forEach(function(run) {
+          if (run.fontFamily && run.fontWeight && typeof run.fontSize === "number") {
+            tokenCollector.fonts.add(run.fontFamily + "/" + run.fontWeight + "/" + run.fontSize + "px");
+          }
+        });
       }
     }
     // Node-level text properties — never mixed.

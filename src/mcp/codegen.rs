@@ -305,25 +305,32 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
     }
 
     // 7. Typography (For TEXT nodes)
-    if let Some(typo) = node.get("typography") {
-        if let Some(size) = typo.get("fontSize").and_then(|v| v.as_f64()) {
-            if size <= 12.0 { classes.push("text-xs".to_string()); }
-            else if size <= 14.0 { classes.push("text-sm".to_string()); }
-            else if size <= 16.0 { classes.push("text-base".to_string()); }
-            else if size <= 18.0 { classes.push("text-lg".to_string()); }
-            else if size <= 20.0 { classes.push("text-xl".to_string()); }
-            else if size <= 24.0 { classes.push("text-2xl".to_string()); }
-            else if size <= 30.0 { classes.push("text-3xl".to_string()); }
-            else if size <= 36.0 { classes.push("text-4xl".to_string()); }
-            else { classes.push(format!("text-[{}px]", size as i64)); }
+    if let Some(typo) = node.get("typography")
+        .or_else(|| node.get("text").filter(|v| v.is_object()))
+        .or_else(|| (node["type"] == "TEXT").then_some(node)) {
+        if let Some(size) = typo.get("fontSize").and_then(|v| v.as_f64()
+            .or_else(|| v.as_str()?.strip_suffix("px")?.parse::<f64>().ok())) {
+            classes.push(format!("text-[{size}px]"));
         }
 
-        if let Some(weight) = typo.get("fontWeight").and_then(|v| v.as_str()) {
-            match weight.to_lowercase().as_str() {
+        if let Some(weight) = typo.get("fontWeight") {
+            let weight = weight.as_str().map(str::to_owned).unwrap_or_else(|| weight.to_string());
+            let normalized = weight.to_lowercase().replace([' ', '-'], "");
+            let normalized = if let Some(weight) = normalized.strip_suffix("italic") {
+                classes.push("italic".to_string());
+                if weight.is_empty() { "regular" } else { weight }
+            } else { normalized.as_str() };
+            match normalized {
+                "thin" | "100" => classes.push("font-thin".to_string()),
+                "extralight" | "ultralight" | "200" => classes.push("font-extralight".to_string()),
                 "bold" | "700" => classes.push("font-bold".to_string()),
                 "semibold" | "600" => classes.push("font-semibold".to_string()),
                 "medium" | "500" => classes.push("font-medium".to_string()),
                 "light" | "300" => classes.push("font-light".to_string()),
+                "regular" | "normal" | "400" => classes.push("font-normal".to_string()),
+                "extrabold" | "ultrabold" | "800" => classes.push("font-extrabold".to_string()),
+                "black" | "heavy" | "900" => classes.push("font-black".to_string()),
+                _ if normalized.parse::<u16>().is_ok_and(|w| (1..=1000).contains(&w)) => classes.push(format!("font-[{normalized}]")),
                 _ => {}
             }
         }
@@ -871,6 +878,18 @@ fn render_swiftui_node(node: &Value, out: &mut String, indent_level: usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typography_keeps_exact_sizes_and_explicit_weights() {
+        for (node, expected) in [
+            (serde_json::json!({"type":"TEXT", "fontSize":15.5, "fontWeight":"Semi Bold"}), vec!["text-[15.5px]", "font-semibold"]),
+            (serde_json::json!({"type":"TEXT", "text":{"fontSize":13, "fontWeight":"Regular"}}), vec!["text-[13px]", "font-normal"]),
+            (serde_json::json!({"typography":{"fontSize":"17.25px", "fontWeight":650}}), vec!["text-[17.25px]", "font-[650]"]),
+            (serde_json::json!({"typography":{"fontSize":22, "fontWeight":"Extra Bold Italic"}}), vec!["text-[22px]", "font-extrabold", "italic"]),
+        ] {
+            let classes = super::node_to_tailwind_classes(&node);
+            for class in expected { assert!(classes.iter().any(|c| c == class), "{classes:?}"); }
+        }
+    }
     #[test]
     fn exact_shadow_and_alpha_classes_are_preserved() {
         let node = serde_json::json!({"type":"FRAME", "fill":"rgb(100% 0% 0% / 50%)", "fillOpacity":0.5,

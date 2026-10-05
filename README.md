@@ -295,6 +295,12 @@ Instant `< 1ms` in-memory queries against pre-indexed Figma file structures.
   - `"search_styles"`: Find paint, text, and effect styles.
   - `"search_variables"`: Find design token variables by name or collection.
   - `"refresh"`: Trigger full background re-indexing of the canvas.
+  - `"subtree"`: Read/cache one `nodeId`, default depth 2 and 1000 nodes. Increase `depth` or `maxNodes` only for the section you need; check `meta` for truncation.
+  - `"typography"`: Rust-generated text/font table for one `nodeId`, with mixed-style runs preserved. Default limit 200 rows. Null font fields mean unknown/mixed, not a guessed default.
+
+`status` includes per-tab dispatch cache hits/misses, bridge calls and total bridge wait time, plus process-wide tool call counts and total/average milliseconds. Node changes invalidate related subtrees; style changes, unknown events and global writes invalidate the whole cache. Detailed subtree data is loaded on demand. The initial index remains shallow.
+
+For typography verification, call `figma_verify_ui` with a text `nodeId` and browser `computedStyles` (`font-size` in px, numeric `font-weight`, `font-family`). Mixed text accepts `computedStyles.segments`, an ordered array of CSS objects matching the Figma runs. Size checks preserve fractional pixels.
 
 ### 9. `figma_read`
 Universal reader for advanced queries:

@@ -7,8 +7,11 @@ pub struct TextElement {
     pub id: String,
     pub name: String,
     pub text: String,
-    pub font_size: f64,
-    pub font_weight: String,
+    pub font_size: Option<f64>,
+    pub font_weight: Option<String>,
+    pub font_family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segments: Option<Value>,
     pub color: String,
     pub line_height: Option<String>,
 }
@@ -100,15 +103,15 @@ fn traverse_text(node: &Value, out: &mut Vec<TextElement>) {
                 .and_then(|v| v.get("fontSize"))
                 .or_else(|| node.get("typography").and_then(|t| t.get("fontSize")))
                 .or_else(|| node.get("fontSize"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(14.0);
+                .and_then(|v| v.as_f64()
+                    .or_else(|| v.as_str()?.strip_suffix("px")?.parse::<f64>().ok()));
 
             let font_weight = text_obj
                 .and_then(|v| v.get("fontWeight"))
                 .or_else(|| node.get("typography").and_then(|t| t.get("fontWeight")))
-                .and_then(|v| v.as_str())
-                .unwrap_or("Regular")
-                .to_string();
+                .or_else(|| node.get("fontWeight"))
+                .filter(|v| !v.is_null())
+                .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()));
 
             let color = text_obj
                 .and_then(|v| v.get("color"))
@@ -128,6 +131,10 @@ fn traverse_text(node: &Value, out: &mut Vec<TextElement>) {
                 text: text_content.to_string(),
                 font_size,
                 font_weight,
+                font_family: text_obj.and_then(|v| v.get("fontFamily"))
+                    .or_else(|| node.get("typography").and_then(|t| t.get("fontFamily")))
+                    .or_else(|| node.get("fontFamily")).and_then(Value::as_str).map(str::to_owned),
+                segments: text_obj.and_then(|v| v.get("segments")).or_else(|| node.get("segments")).cloned(),
                 color,
                 line_height,
             });
@@ -191,6 +198,21 @@ fn sanitize_svg_component_name(name: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn text_pack_preserves_flat_weights_and_mixed_runs_without_guessed_defaults() {
+        let texts = extract_all_text_elements(&json!({"type":"FRAME", "children":[
+            {"type":"TEXT", "content":"Title", "fontSize":15.5,"fontWeight":"Semi Bold"},
+            {"type":"TEXT", "text":{"content":"Mixed", "segments":[
+                {"text":"Mix", "fontSize":14,"fontWeight":"Regular"},
+                {"text":"ed", "fontSize":22,"fontWeight":"Bold"}]}}
+        ]}));
+        assert_eq!(texts[0].font_size, Some(15.5));
+        assert_eq!(texts[0].font_weight.as_deref(), Some("Semi Bold"));
+        assert!(texts[1].font_size.is_none());
+        assert!(texts[1].font_weight.is_none());
+        assert_eq!(texts[1].segments.as_ref().unwrap()[1]["fontSize"], 22);
+    }
 
     #[test]
     fn test_extract_all_text_elements() {
@@ -267,7 +289,7 @@ mod tests {
         let texts = extract_all_text_elements(&context);
         assert_eq!(texts.len(), 1);
         assert_eq!(texts[0].text, "Hello");
-        assert_eq!(texts[0].font_size, 24.0);
+        assert_eq!(texts[0].font_size, Some(24.0));
         assert_eq!(texts[0].color, "#123456");
     }
 }

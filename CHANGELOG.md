@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.11] ? 2026-10-05
+
+- Cache exact reads in Rust and update/invalidate related node subtrees on canvas changes.
+- Add on-demand subtree reads, compact typography tables, cache counters and tool timings.
+- Preserve mixed text runs and exact fractional font sizes; verify font family and weight.
+- Keep typography inline in compact output and stop guessing missing font defaults.
+
 ## [3.2.10] — 2026-10-05
 
 ### Fixed
