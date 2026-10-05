@@ -358,3 +358,35 @@ test('old UI socket callbacks cannot clear or dispatch through a replacement soc
   replacement.onmessage({ data: JSON.stringify({ id: 'new', operation: 'modify' }) });
   assert.equal(dispatched[0].id, 'new');
 });
+
+test('tree reads preserve Regular font weight, collect Regular font tokens, and resolve textStyle', async () => {
+  const figma = {
+    getLocalPaintStylesAsync: async () => [{ id: 'S:paint-1', name: 'Brand/Primary' }],
+    getLocalTextStylesAsync: async () => [{ id: 'S:text-1', name: 'Lato/18px/regular' }],
+    getLocalEffectStylesAsync: async () => [],
+  };
+  const context = vm.createContext({ figma, handlers: {}, console, setTimeout, Map, Set, Uint8Array });
+  for (const file of ['utils', 'svg-path-helpers', 'paint-and-effects', 'token-helpers', 'read-helpers', 'handlers-read-detail', 'handlers-read']) {
+    vm.runInContext(readFileSync(`plugin-src/${file}.js`, 'utf8'), context, { filename: file });
+  }
+
+  const walkState = await context.makeWalkStateAsync();
+  const tokenCollector = { colors: new Set(), fonts: new Set(), sizes: new Set() };
+  const textNode = {
+    id: '3139:247224',
+    name: 'Header',
+    type: 'TEXT',
+    characters: 'Shipping address',
+    fontSize: 18,
+    fontName: { family: 'Lato', style: 'Regular' },
+    textStyleId: 'S:text-1',
+    visible: true,
+  };
+  const tree = context.extractDesignTree(textNode, 0, 15, 'full', true, tokenCollector, null, walkState);
+  assert.equal(tree.fontWeight, 'Regular');
+  assert.equal(tree.fontFamily, 'Lato');
+  assert.equal(tree.fontSize, 18);
+  assert.equal(tree.textStyleId, 'S:text-1');
+  assert.equal(tree.textStyle, 'Lato/18px/regular');
+  assert.ok(tokenCollector.fonts.has('Lato/Regular/18px'));
+});

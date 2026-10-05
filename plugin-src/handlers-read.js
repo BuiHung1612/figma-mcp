@@ -18,7 +18,34 @@ async function makeWalkStateAsync(params) {
       varMap = await buildVariableResolverMapAsync();
     }
   } catch(e) {}
-  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true, precise: precise, variableMap: varMap };
+  var styleMap = {};
+  if (typeof figma !== "undefined" && figma) {
+    try {
+      if (typeof figma.getLocalPaintStylesAsync === "function") {
+        var pStyles = await figma.getLocalPaintStylesAsync();
+        for (var pi = 0; pi < pStyles.length; pi++) if (pStyles[pi]) styleMap[pStyles[pi].id] = pStyles[pi].name;
+      }
+    } catch(e) {}
+    try {
+      if (typeof figma.getLocalTextStylesAsync === "function") {
+        var tStyles = await figma.getLocalTextStylesAsync();
+        for (var ti = 0; ti < tStyles.length; ti++) if (tStyles[ti]) styleMap[tStyles[ti].id] = tStyles[ti].name;
+      }
+    } catch(e) {}
+    try {
+      if (typeof figma.getLocalEffectStylesAsync === "function") {
+        var eStyles = await figma.getLocalEffectStylesAsync();
+        for (var ei = 0; ei < eStyles.length; ei++) if (eStyles[ei]) styleMap[eStyles[ei].id] = eStyles[ei].name;
+      }
+    } catch(e) {}
+    try {
+      if (typeof figma.getLocalGridStylesAsync === "function") {
+        var gStyles = await figma.getLocalGridStylesAsync();
+        for (var gi = 0; gi < gStyles.length; gi++) if (gStyles[gi]) styleMap[gStyles[gi].id] = gStyles[gi].name;
+      }
+    } catch(e) {}
+  }
+  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true, precise: precise, variableMap: varMap, styleMap: styleMap };
 }
 
 function walkStateMeta(walkState) {

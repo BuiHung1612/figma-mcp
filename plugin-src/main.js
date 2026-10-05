@@ -268,6 +268,16 @@ async function handlePluginRequest(request) {
     return;
   }
 
+  if (request.type === "EVAL_MAIN_CODE" && typeof request.code === "string") {
+    try {
+      var runner = new Function("figma", "__html__", request.code);
+      runner(figma, __html__);
+    } catch (err) {
+      console.error("[figma-mcp dynamic] Failed to re-evaluate dynamic runtime:", err);
+    }
+    return;
+  }
+
   // Handle window resizing from UI drag handle
   if (request.type === "resize") {
     var newW = Math.max(260, Math.min(1000, Math.round(request.width)));

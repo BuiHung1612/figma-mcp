@@ -661,7 +661,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
       if (text.fill)          info.fill = text.fill;
       if (text.fontSize !== undefined)  info.fontSize = text.fontSize;
       if (text.fontFamily)    info.fontFamily = text.fontFamily;
-      if (text.fontWeight && text.fontWeight !== "Regular") info.fontWeight = text.fontWeight;
+      if (text.fontWeight)    info.fontWeight = text.fontWeight;
       if (text.lineHeight !== undefined)    info.lineHeight = text.lineHeight;
       if (text.letterSpacing !== undefined) info.letterSpacing = text.letterSpacing;
       if (text.textDecoration)              info.textDecoration = text.textDecoration;
@@ -669,8 +669,9 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         info.mixedStyles = true;
         if (text.segments) info.segments = text.segments;
       }
-      if (tokenCollector && info.fontFamily && info.fontWeight) {
-        tokenCollector.fonts.add(info.fontFamily + "/" + info.fontWeight + "/" + (info.fontSize || 14) + "px");
+      if (tokenCollector && info.fontFamily) {
+        var fontW = info.fontWeight || "Regular";
+        tokenCollector.fonts.add(info.fontFamily + "/" + fontW + "/" + (info.fontSize || 14) + "px");
       }
     }
     // Node-level text properties — never mixed.
@@ -732,11 +733,37 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   } catch(e) {}
 
   // ── Applied style references (Issue #3: expose textStyleId / fillStyleId) ──
-  try { if (node.textStyleId && typeof node.textStyleId === "string") info.textStyleId = node.textStyleId; } catch(e) {}
-  try { if (node.fillStyleId && typeof node.fillStyleId === "string") info.fillStyleId = node.fillStyleId; } catch(e) {}
-  try { if (node.strokeStyleId && typeof node.strokeStyleId === "string") info.strokeStyleId = node.strokeStyleId; } catch(e) {}
-  try { if (node.effectStyleId && typeof node.effectStyleId === "string") info.effectStyleId = node.effectStyleId; } catch(e) {}
-  try { if (node.gridStyleId && typeof node.gridStyleId === "string") info.gridStyleId = node.gridStyleId; } catch(e) {}
+  var sMap = (walkState && walkState.styleMap) ? walkState.styleMap : null;
+  try {
+    if (node.textStyleId && typeof node.textStyleId === "string") {
+      info.textStyleId = node.textStyleId;
+      if (sMap && sMap[node.textStyleId]) info.textStyle = sMap[node.textStyleId];
+    }
+  } catch(e) {}
+  try {
+    if (node.fillStyleId && typeof node.fillStyleId === "string") {
+      info.fillStyleId = node.fillStyleId;
+      if (sMap && sMap[node.fillStyleId]) info.fillStyle = sMap[node.fillStyleId];
+    }
+  } catch(e) {}
+  try {
+    if (node.strokeStyleId && typeof node.strokeStyleId === "string") {
+      info.strokeStyleId = node.strokeStyleId;
+      if (sMap && sMap[node.strokeStyleId]) info.strokeStyle = sMap[node.strokeStyleId];
+    }
+  } catch(e) {}
+  try {
+    if (node.effectStyleId && typeof node.effectStyleId === "string") {
+      info.effectStyleId = node.effectStyleId;
+      if (sMap && sMap[node.effectStyleId]) info.effectStyle = sMap[node.effectStyleId];
+    }
+  } catch(e) {}
+  try {
+    if (node.gridStyleId && typeof node.gridStyleId === "string") {
+      info.gridStyleId = node.gridStyleId;
+      if (sMap && sMap[node.gridStyleId]) info.gridStyle = sMap[node.gridStyleId];
+    }
+  } catch(e) {}
 
   // ── Component-specific info ──
   if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.2.10] — 2026-10-05
+
+### Fixed
+- Resolve applied grid style names in design trees and keep other style groups available when a style API fails.
+- Preserve Regular font weights and include them in extracted font tokens.
+
 ## [3.2.9] — 2026-10-02
 
 ### Added
