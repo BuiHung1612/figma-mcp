@@ -260,7 +260,11 @@ test('startup subscribes to active-page changes without loading the whole file',
   });
   r.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
   r.clearTimeout = () => {};
+  r.__html__ = '<html>thin loader</html>';
+  let reopenedUi = 0;
+  r.figma.showUI = () => { reopenedUi++; };
   vm.runInContext(readFileSync('plugin-src/main.js', 'utf8'), r);
+  assert.equal(reopenedUi, 0, 'dynamic runtime must not replace the loader iframe');
   assert.ok(pageListener);
   assert.ok(events.has('stylechange'));
   assert.ok(!events.has('documentchange'));

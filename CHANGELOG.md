@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.2.12] — 2026-10-06
+
+- Fix dynamic runtime bootstrap reopening the thin-loader iframe and interrupting UI loading.
+- Keep UI ownership in the thin loader; add a regression check for iframe replacement.
+
 ## [3.2.11] ? 2026-10-05
 
 - Cache exact reads in Rust and update/invalidate related node subtrees on canvas changes.
