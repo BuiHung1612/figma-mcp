@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
+import { configureAgent, detectAgents } from '../bin/agent-config.js';
+import { parse as parseJsonc } from 'jsonc-parser';
 
 function runtime(figma = {}) {
   const context = vm.createContext({ figma, handlers: {}, console, setTimeout, Map, Set, Uint8Array });
@@ -183,6 +187,53 @@ test('setup command prints scriptable choices when no terminal is attached', () 
   assert.match(result.stdout, /--install-service/);
   assert.match(result.stdout, /--setup-plugin/);
   assert.match(result.stdout, /--service-status/);
+});
+
+test('agent setup detects installed clients and preserves existing JSONC and TOML config', () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), 'figma-rust-mcp-'));
+  try {
+    const env = { PATH: '' };
+    for (const dir of ['.codex', '.claude', '.antigravity-ide', '.cursor', '.codeium/windsurf', '.copilot', '.config/zed']) {
+      mkdirSync(path.join(home, dir), { recursive: true });
+    }
+    const agents = detectAgents({ home, env, platform: 'linux' });
+    assert.deepEqual(agents.map(agent => agent.id), ['codex', 'claude', 'antigravity', 'cursor', 'windsurf', 'vscode', 'zed']);
+
+    for (const id of ['claude', 'antigravity', 'windsurf', 'vscode']) {
+      const agent = agents.find(candidate => candidate.id === id);
+      configureAgent(agent);
+      const config = parseJsonc(readFileSync(agent.configPath, 'utf8')).mcpServers['figma-rust-mcp'];
+      assert.ok(config);
+      if (id === 'antigravity') assert.equal(config.serverUrl, 'http://127.0.0.1:38451/sse');
+      else assert.equal(config.url, 'http://127.0.0.1:38451/mcp');
+    }
+
+    const cursor = agents.find(agent => agent.id === 'cursor');
+    writeFileSync(cursor.configPath, '{\n  // keep this note\n  "mcpServers": { "other": { "url": "http://example.test" } }\n}\n');
+    assert.equal(configureAgent(cursor), true);
+    const cursorText = readFileSync(cursor.configPath, 'utf8');
+    const cursorConfig = parseJsonc(cursorText);
+    assert.match(cursorText, /keep this note/);
+    assert.equal(cursorConfig.mcpServers.other.url, 'http://example.test');
+    assert.equal(cursorConfig.mcpServers['figma-rust-mcp'].url, 'http://127.0.0.1:38451/mcp');
+    assert.equal(configureAgent(cursor), false);
+
+    const zed = agents.find(agent => agent.id === 'zed');
+    writeFileSync(zed.configPath, '{\n  "theme": "One Dark",\n}\n');
+    configureAgent(zed);
+    assert.equal(parseJsonc(readFileSync(zed.configPath, 'utf8')).theme, 'One Dark');
+    assert.equal(parseJsonc(readFileSync(zed.configPath, 'utf8')).context_servers['figma-rust-mcp'].url, 'http://127.0.0.1:38451/mcp');
+
+    const codex = agents.find(agent => agent.id === 'codex');
+    writeFileSync(codex.configPath, '[mcp_servers.other]\nurl = "http://other.test"\n');
+    configureAgent(codex);
+    const codexText = readFileSync(codex.configPath, 'utf8');
+    assert.match(codexText, /\[mcp_servers\.other\]/);
+    assert.match(codexText, /\[mcp_servers\.figma-rust-mcp\]\nurl = "http:\/\/127\.0\.0\.1:38451\/mcp"/);
+    assert.equal(configureAgent(codex), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 

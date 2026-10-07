@@ -6,12 +6,12 @@
     "url": "https://github.com/BuiHung1612/figma-mcp",
     "source": "github"
   },
-  "version": "3.2.14",
+  "version": "3.2.15",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "figma-rust-mcp",
-      "version": "3.2.14",
+      "version": "3.2.15",
       "transport": {
         "type": "stdio"
       }

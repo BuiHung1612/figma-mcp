@@ -14,6 +14,7 @@ import https from 'node:https';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
+import { configureAgent, detectAgents } from './agent-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -499,27 +500,61 @@ async function setupMenu() {
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const agents = detectAgents();
   try {
-    console.log(`\n\x1b[1mFigma Rust MCP setup\x1b[0m  v${pkgVersion}\n\n  1) Quick setup — install plugin + start in background at login\n  2) Install/update Figma plugin only\n  3) Start server in this terminal\n  4) Check background service\n  5) Upgrade package and refresh setup\n  6) Remove background service\n  0) Exit\n`);
+    console.log(`\n\x1b[1mFigma Rust MCP setup\x1b[0m  v${pkgVersion}\n\n  1) Quick setup — plugin + background service + detected agents\n  2) Install/update Figma plugin only\n  3) Start server in this terminal\n  4) Configure detected agents\n  5) Check background service\n  6) Upgrade package and refresh setup\n  7) Remove background service\n  0) Exit\n`);
     const choice = (await rl.question('Choose an option [1]: ')).trim() || '1';
     switch (choice) {
       case '1': {
         setupPlugin();
         const binPath = await findOrDownloadBinary();
         await installService(binPath);
+        await configureDetectedAgents(rl, agents);
         break;
       }
       case '2': setupPlugin(); break;
       case '3': await runBinary(['--server']); break;
-      case '4': console.log(isServiceInstalled() ? '✓ Background service is installed.' : '✗ Background service is not installed.'); break;
-      case '5': await upgrade(); break;
-      case '6': await uninstallService(); break;
+      case '4': await configureDetectedAgents(rl, agents); break;
+      case '5': console.log(isServiceInstalled() ? '✓ Background service is installed.' : '✗ Background service is not installed.'); break;
+      case '6': await upgrade(); break;
+      case '7': await uninstallService(); break;
       case '0': break;
       default: console.log('Unknown option. Run --init to try again.');
     }
   } finally {
     rl.close();
   }
+}
+
+async function configureDetectedAgents(rl, agents) {
+  if (!agents.length) {
+    console.log('No supported AI coding agents were detected. Install an agent and rerun --init.');
+    return;
+  }
+
+  console.log('\nDetected agents:');
+  agents.forEach((agent, index) => console.log(`  ${index + 1}) ${agent.label} — ${agent.configPath}`));
+  const answer = (await rl.question('Configure which agents? Enter numbers separated by commas, a=all, Enter=skip [a]: ')).trim().toLowerCase();
+  if (answer === '') return;
+  const selected = answer === 'a'
+    ? agents
+    : [...new Set(answer.split(',').map(value => Number(value.trim()) - 1))]
+      .filter(index => Number.isInteger(index) && index >= 0 && index < agents.length)
+      .map(index => agents[index]);
+  if (!selected.length) {
+    console.log('No valid agent selection; MCP configuration was not changed.');
+    return;
+  }
+
+  for (const agent of selected) {
+    try {
+      const changed = configureAgent(agent);
+      console.log(`  ${changed ? '✓ Configured' : '✓ Already configured'} ${agent.label}`);
+    } catch (err) {
+      console.error(`  ✗ Could not configure ${agent.label}: ${err.message}`);
+    }
+  }
+  console.log('Restart or reload the selected agent to connect it to Figma Rust MCP.');
 }
 
 function runBinary(args) {

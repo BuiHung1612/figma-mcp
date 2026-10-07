@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.2.15] — 2026-10-07
+
+### Added
+- Detect installed coding agents and configure their local MCP connection from the setup menu.
+- Preserve existing JSON/JSONC and TOML client configuration when adding the server.
+
+### Changed
+- Include agent setup in the one-command quick setup and document supported clients.
+
 ## [3.2.14] — 2026-10-07
 
 ### Changed

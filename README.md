@@ -63,22 +63,26 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 ```bash
 npx -y figma-rust-mcp@latest --init
 ```
-Choose an action from the menu:
+The setup detects installed Codex, Claude Code, Antigravity, Cursor, Windsurf,
+VS Code/Copilot, and Zed clients. Choose an action from the menu:
 
 ```text
-1) Quick setup — install plugin + start in background at login
+1) Quick setup — plugin + background service + detected agents
 2) Install/update Figma plugin only
 3) Start server in this terminal
-4) Check background service
-5) Upgrade package and refresh setup
-6) Remove background service
+4) Configure detected agents
+5) Check background service
+6) Upgrade package and refresh setup
+7) Remove background service
 0) Exit
 ```
 
 Choose **1** for the recommended setup. It downloads the platform binary,
-installs the permanent plugin loader, and starts the background service at
-login. Then import the manifest into Figma once: open **Plugins → Development
-→ Import plugin from manifest...**, select
+installs the permanent plugin loader, starts the background service at login,
+then lets you select detected agents (`a` for all, or comma-separated numbers)
+and writes each client's MCP config while preserving existing servers. Restart
+or reload those clients afterward. Then import the manifest into Figma once:
+open **Plugins → Development → Import plugin from manifest...**, select
 `~/.figma-rust-mcp/plugin/manifest.json`, and run **Figma Rust MCP Bridge**. Future
 updates are streamed to the plugin automatically.
 
@@ -135,6 +139,9 @@ cargo build --release
 
 ### 3. Configure Your MCP Client
 
+The `--init` quick setup can add the local server to detected clients. To
+configure one manually, use the matching section below.
+
 #### Codex and clients using Streamable HTTP (Recommended)
 
 Use the `/mcp` endpoint. It accepts `POST` JSON-RPC requests directly:
@@ -164,23 +171,19 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 
 #### Claude Code / Cursor / Windsurf / VS Code / Zed
 
-**Option A: SSE Transport (for clients that require SSE)**
+These clients can use the Streamable HTTP `/mcp` endpoint:
 ```json
 {
   "mcpServers": {
     "figma-rust-mcp": {
-      "url": "http://127.0.0.1:38451/sse"
+      "url": "http://127.0.0.1:38451/mcp"
     }
   }
 }
 ```
 
-The SSE transport uses `GET /sse` to open the event stream and `POST /message`
-(or `/messages`) for JSON-RPC messages. Do not configure a Streamable HTTP
-client such as Codex against `/sse`: that endpoint does not accept `POST`, so
-the initialize request will return HTTP 405. Use `/mcp` instead.
-
-**Option B: Stdio Subprocess (via NPX)**
+For Zed, place the server entry under `context_servers` in `settings.json`.
+Alternatively, configure a stdio subprocess via NPX:
 ```json
 {
   "mcpServers": {
