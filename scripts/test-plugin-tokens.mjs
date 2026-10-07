@@ -177,6 +177,14 @@ test('build rejects wrong release tags and checked-in bundle matches source', ()
   assert.match(rejected.stderr, /does not match build version/);
 });
 
+test('setup command prints scriptable choices when no terminal is attached', () => {
+  const result = spawnSync(process.execPath, ['bin/figma-rust-mcp.js', '--init'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--install-service/);
+  assert.match(result.stdout, /--setup-plugin/);
+  assert.match(result.stdout, /--service-status/);
+});
+
 
 test('tree reads preserve same-size screens and all repeated siblings', () => {
   const r = runtime();

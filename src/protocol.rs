@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use std::process::Command;
 
-/// Registers custom URL scheme (figma-mcp://) across macOS, Windows, and Linux
-/// so that clicking a button in Figma Plugin or browser can automatically launch figma-mcp.
+/// Registers custom URL scheme (figma-rust-mcp://) across macOS, Windows, and Linux
+/// so that clicking a button in Figma Plugin or browser can automatically launch figma-rust-mcp.
 pub fn register_url_scheme() -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Failed to get current exe path: {}", e))?;
@@ -35,8 +35,8 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
     let app_dir = PathBuf::from(home)
         .join("Library")
         .join("Application Support")
-        .join("figma-mcp")
-        .join("FigmaMCP.app");
+        .join("figma-rust-mcp")
+        .join("FigmaRustMCP.app");
 
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
@@ -47,9 +47,9 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>io.github.BuiHung1612.figma-mcp</string>
+    <string>io.github.BuiHung1612.figma-rust-mcp</string>
     <key>CFBundleName</key>
-    <string>Figma MCP</string>
+    <string>Figma Rust MCP</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -60,10 +60,10 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>Figma MCP Protocol</string>
+            <string>Figma Rust MCP Protocol</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>figma-mcp</string>
+                <string>figma-rust-mcp</string>
             </array>
         </dict>
     </array>
@@ -83,10 +83,10 @@ fi
 
 BIN="{}"
 if [ ! -f "$BIN" ]; then
-    BIN="$HOME/Library/Caches/figma-mcp/v{}/figma-mcp"
+    BIN="$HOME/Library/Caches/figma-rust-mcp/v{}/figma-rust-mcp"
 fi
 if [ ! -f "$BIN" ]; then
-    BIN="$HOME/.cargo/bin/figma-mcp"
+    BIN="$HOME/.cargo/bin/figma-rust-mcp"
 fi
 
 if [ -f "$BIN" ]; then
@@ -97,7 +97,7 @@ fi
         env!("CARGO_PKG_VERSION")
     );
 
-    let launcher_path = macos_dir.join("FigmaMCP");
+    let launcher_path = macos_dir.join("FigmaRustMCP");
     fs::write(&launcher_path, launcher_script).map_err(|e| format!("Failed to write launcher script: {}", e))?;
 
     #[cfg(unix)]
@@ -123,13 +123,13 @@ fn register_windows(current_exe: &Path) -> Result<(), String> {
 
     // Write registry keys using reg.exe
     let _ = Command::new("reg")
-        .args(["add", r"HKCU\Software\Classes\figma-mcp", "/ve", "/d", "URL:Figma MCP Protocol", "/f"])
+        .args(["add", r"HKCU\Software\Classes\figma-rust-mcp", "/ve", "/d", "URL:Figma Rust MCP Protocol", "/f"])
         .output();
     let _ = Command::new("reg")
-        .args(["add", r"HKCU\Software\Classes\figma-mcp", "/v", "URL Protocol", "/d", "", "/f"])
+        .args(["add", r"HKCU\Software\Classes\figma-rust-mcp", "/v", "URL Protocol", "/d", "", "/f"])
         .output();
     let _ = Command::new("reg")
-        .args(["add", r"HKCU\Software\Classes\figma-mcp\shell\open\command", "/ve", "/d", &command_str, "/f"])
+        .args(["add", r"HKCU\Software\Classes\figma-rust-mcp\shell\open\command", "/ve", "/d", &command_str, "/f"])
         .output();
 
     Ok(())
@@ -148,21 +148,21 @@ fn register_linux(current_exe: &Path) -> Result<(), String> {
     let exe_str = current_exe.to_string_lossy();
     let desktop_content = format!(
         r#"[Desktop Entry]
-Name=Figma MCP
+Name=Figma Rust MCP
 Exec="{}" --server %u
 Type=Application
 Terminal=false
 NoDisplay=true
-MimeType=x-scheme-handler/figma-mcp;
+MimeType=x-scheme-handler/figma-rust-mcp;
 "#,
         exe_str
     );
 
-    let desktop_file = app_dir.join("figma-mcp.desktop");
+    let desktop_file = app_dir.join("figma-rust-mcp.desktop");
     fs::write(&desktop_file, desktop_content).map_err(|e| format!("Failed to write desktop file: {}", e))?;
 
     let _ = Command::new("xdg-mime")
-        .args(["default", "figma-mcp.desktop", "x-scheme-handler/figma-mcp"])
+        .args(["default", "figma-rust-mcp.desktop", "x-scheme-handler/figma-rust-mcp"])
         .output();
 
     Ok(())

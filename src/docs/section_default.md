@@ -1,5 +1,5 @@
 
-# figma-mcp — Quick-Start & Critical Rules
+# figma-rust-mcp — Quick-Start & Critical Rules
 
 ---
 

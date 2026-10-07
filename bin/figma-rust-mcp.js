@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Figma MCP - NPX Binary Runner
+ * Figma Rust MCP - NPX Binary Runner
  * Automatically detects platform/arch, downloads prebuilt Rust binary from GitHub Releases,
  * caches it locally, and executes it transparently.
  */
@@ -13,6 +13,7 @@ import os from 'node:os';
 import https from 'node:https';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +22,7 @@ const __dirname = path.dirname(__filename);
 const pkgPath = path.resolve(__dirname, '../package.json');
 let pkgVersion = null;
 let repoOwner = 'BuiHung1612';
-let repoName = 'figma-mcp';
+let repoName = 'figma-rust-mcp';
 
 try {
   if (fs.existsSync(pkgPath)) {
@@ -45,7 +46,7 @@ function getPlatformArch() {
   let osName = '';
   let archName = '';
   let ext = 'tar.gz';
-  let binName = 'figma-mcp';
+  let binName = 'figma-rust-mcp';
 
   if (platform === 'darwin') {
     osName = 'macos';
@@ -57,12 +58,12 @@ function getPlatformArch() {
     osName = 'windows';
     archName = 'x86_64';
     ext = 'zip';
-    binName = 'figma-mcp.exe';
+    binName = 'figma-rust-mcp.exe';
   } else {
     throw new Error(`Unsupported operating system: ${platform}`);
   }
 
-  const assetName = `figma-mcp-${osName}-${archName}.${ext}`;
+  const assetName = `figma-rust-mcp-${osName}-${archName}.${ext}`;
   return { osName, archName, ext, binName, assetName };
 }
 
@@ -78,7 +79,7 @@ function getCacheDir(version) {
     baseCache = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   }
 
-  return path.join(baseCache, 'figma-mcp', `v${version}`);
+  return path.join(baseCache, 'figma-rust-mcp', `v${version}`);
 }
 
 function downloadFile(url, destPath) {
@@ -90,7 +91,7 @@ function downloadFile(url, destPath) {
       }
 
       const client = currentUrl.startsWith('https') ? https : http;
-      client.get(currentUrl, { headers: { 'User-Agent': 'figma-mcp-npx' } }, (res) => {
+      client.get(currentUrl, { headers: { 'User-Agent': 'figma-rust-mcp-npx' } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           followRedirects(res.headers.location, redirectCount + 1);
           return;
@@ -138,12 +139,12 @@ function extractArchive(archivePath, targetDir, ext) {
 }
 
 async function findOrDownloadBinary() {
-  if (process.env.FIGMA_MCP_BIN && fs.existsSync(process.env.FIGMA_MCP_BIN)) {
-    return process.env.FIGMA_MCP_BIN;
+  if (process.env.FIGMA_RUST_MCP_BIN && fs.existsSync(process.env.FIGMA_RUST_MCP_BIN)) {
+    return process.env.FIGMA_RUST_MCP_BIN;
   }
 
-  const localRelease = path.resolve(__dirname, '../target/release/figma-mcp' + (process.platform === 'win32' ? '.exe' : ''));
-  const localDebug = path.resolve(__dirname, '../target/debug/figma-mcp' + (process.platform === 'win32' ? '.exe' : ''));
+  const localRelease = path.resolve(__dirname, '../target/release/figma-rust-mcp' + (process.platform === 'win32' ? '.exe' : ''));
+  const localDebug = path.resolve(__dirname, '../target/debug/figma-rust-mcp' + (process.platform === 'win32' ? '.exe' : ''));
 
   if (fs.existsSync(localRelease)) return localRelease;
   if (fs.existsSync(localDebug)) return localDebug;
@@ -165,16 +166,16 @@ async function findOrDownloadBinary() {
   const releaseUrl = `https://github.com/${repoOwner}/${repoName}/releases/download/v${pkgVersion}/${info.assetName}`;
   const latestUrl = `https://github.com/${repoOwner}/${repoName}/releases/latest/download/${info.assetName}`;
 
-  process.stderr.write(`\x1b[36m[figma-mcp]\x1b[0m Downloading binary for ${info.osName}-${info.archName} (v${pkgVersion})...\n`);
+  process.stderr.write(`\x1b[36m[figma-rust-mcp]\x1b[0m Downloading binary for ${info.osName}-${info.archName} (v${pkgVersion})...\n`);
 
   try {
     await downloadFile(releaseUrl, archivePath);
   } catch (err) {
-    process.stderr.write(`\x1b[33m[figma-mcp]\x1b[0m Release v${pkgVersion} not found, trying latest release...\n`);
+    process.stderr.write(`\x1b[33m[figma-rust-mcp]\x1b[0m Release v${pkgVersion} not found, trying latest release...\n`);
     try {
       await downloadFile(latestUrl, archivePath);
     } catch (fallbackErr) {
-      throw new Error(`Failed to download figma-mcp prebuilt binary:\n  - ${err.message}\n  - ${fallbackErr.message}\n\nPlease verify your internet connection or build from source: cargo build --release`);
+      throw new Error(`Failed to download figma-rust-mcp prebuilt binary:\n  - ${err.message}\n  - ${fallbackErr.message}\n\nPlease verify your internet connection or build from source: cargo build --release`);
     }
   }
 
@@ -199,31 +200,30 @@ async function findOrDownloadBinary() {
     fs.chmodSync(cachedBin, 0o755);
   }
 
-  process.stderr.write(`\x1b[32m[figma-mcp]\x1b[0m Ready! (cached in ${cacheDir})\n\n`);
+  process.stderr.write(`\x1b[32m[figma-rust-mcp]\x1b[0m Ready! (cached in ${cacheDir})\n\n`);
   return cachedBin;
 }
 
 // ─── SERVICE MANAGEMENT ───────────────────────────────────────────────────────
 
 /**
- * Install figma-mcp as a background service that auto-starts on login.
- * - macOS: LaunchAgent plist (~/.config/figma-mcp/launchd.plist → ~/Library/LaunchAgents/)
- * - Linux: systemd user service (~/.config/systemd/user/figma-mcp.service)
+ * Install figma-rust-mcp as a background service that auto-starts on login.
+ * - macOS: LaunchAgent plist (~/.config/figma-rust-mcp/launchd.plist → ~/Library/LaunchAgents/)
+ * - Linux: systemd user service (~/.config/systemd/user/figma-rust-mcp.service)
  * - Windows: Task Scheduler XML via schtasks
  */
 async function installService(binPath) {
+  removeLegacyService();
   const platform = process.platform;
-  const nodeExec = process.execPath;
-  const scriptPath = path.resolve(__filename);
 
   if (platform === 'darwin') {
-    const plistLabel = 'io.github.figma-mcp.server';
+    const plistLabel = 'io.github.figma-rust-mcp.server';
     const plistDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
     const plistPath = path.join(plistDir, `${plistLabel}.plist`);
 
     fs.mkdirSync(plistDir, { recursive: true });
 
-    const logDir = path.join(os.homedir(), 'Library', 'Logs', 'figma-mcp');
+    const logDir = path.join(os.homedir(), 'Library', 'Logs', 'figma-rust-mcp');
     fs.mkdirSync(logDir, { recursive: true });
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -256,20 +256,20 @@ async function installService(binPath) {
     try { execSync(`launchctl unload "${plistPath}" 2>/dev/null`, { stdio: 'pipe' }); } catch (_) {}
     execSync(`launchctl load -w "${plistPath}"`, { stdio: 'inherit' });
 
-    console.log(`\x1b[32m✓ figma-mcp service installed!\x1b[0m`);
+    console.log(`\x1b[32m✓ figma-rust-mcp service installed!\x1b[0m`);
     console.log(`  Plist: ${plistPath}`);
     console.log(`  Logs:  ${logDir}/stdout.log`);
     console.log(`\n\x1b[36mThe server will now start automatically on every login.\x1b[0m`);
-    console.log(`\x1b[36mTo uninstall: npx figma-mcp --uninstall-service\x1b[0m`);
+    console.log(`\x1b[36mTo uninstall: npx figma-rust-mcp --uninstall-service\x1b[0m`);
 
   } else if (platform === 'linux') {
     const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
-    const servicePath = path.join(serviceDir, 'figma-mcp.service');
+    const servicePath = path.join(serviceDir, 'figma-rust-mcp.service');
 
     fs.mkdirSync(serviceDir, { recursive: true });
 
     const unit = `[Unit]
-Description=Figma MCP Bridge Server
+Description=Figma Rust MCP Bridge Server
 After=network.target
 
 [Service]
@@ -284,15 +284,15 @@ WantedBy=default.target
 
     fs.writeFileSync(servicePath, unit, 'utf8');
     execSync(`systemctl --user daemon-reload`, { stdio: 'inherit' });
-    execSync(`systemctl --user enable --now figma-mcp`, { stdio: 'inherit' });
+    execSync(`systemctl --user enable --now figma-rust-mcp`, { stdio: 'inherit' });
 
-    console.log(`\x1b[32m✓ figma-mcp systemd user service installed!\x1b[0m`);
+    console.log(`\x1b[32m✓ figma-rust-mcp systemd user service installed!\x1b[0m`);
     console.log(`  Service: ${servicePath}`);
     console.log(`\n\x1b[36mThe server will now start automatically on every login.\x1b[0m`);
-    console.log(`\x1b[36mTo uninstall: npx figma-mcp --uninstall-service\x1b[0m`);
+    console.log(`\x1b[36mTo uninstall: npx figma-rust-mcp --uninstall-service\x1b[0m`);
 
   } else if (platform === 'win32') {
-    const taskName = 'FigmaMCPServer';
+    const taskName = 'FigmaRustMCPServer';
     // Use schtasks to create a task that runs at login
     // The native launcher detaches the server and redirects output to a log file.
     const taskCommand = `"${binPath}" --background`;
@@ -320,31 +320,31 @@ async function uninstallService() {
   const platform = process.platform;
 
   if (platform === 'darwin') {
-    const plistLabel = 'io.github.figma-mcp.server';
+    const plistLabel = 'io.github.figma-rust-mcp.server';
     const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${plistLabel}.plist`);
 
-    if (!fs.existsSync(plistPath)) {
-      console.log(`\x1b[33mService not found at ${plistPath}\x1b[0m`);
-      process.exit(0);
+    if (fs.existsSync(plistPath)) {
+      try { execSync(`launchctl unload -w "${plistPath}"`, { stdio: 'inherit' }); } catch (_) {}
+      try { execSync(`pkill -f figma-rust-mcp 2>/dev/null`, { stdio: 'pipe' }); } catch (_) {}
+      fs.unlinkSync(plistPath);
     }
-
-    try { execSync(`launchctl unload -w "${plistPath}"`, { stdio: 'inherit' }); } catch (_) {}
-    try { execSync(`pkill -f figma-mcp 2>/dev/null`, { stdio: 'pipe' }); } catch (_) {}
-    fs.unlinkSync(plistPath);
+    removeLegacyService();
 
     console.log(`\x1b[32m✓ figma-rust-mcp service uninstalled.\x1b[0m`);
 
   } else if (platform === 'linux') {
-    try { execSync(`systemctl --user disable --now figma-mcp`, { stdio: 'inherit' }); } catch (_) {}
-    const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-mcp.service');
+    try { execSync(`systemctl --user disable --now figma-rust-mcp`, { stdio: 'inherit' }); } catch (_) {}
+    const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-rust-mcp.service');
     if (fs.existsSync(servicePath)) fs.unlinkSync(servicePath);
     try { execSync(`systemctl --user daemon-reload`, { stdio: 'inherit' }); } catch (_) {}
+    removeLegacyService();
 
     console.log(`\x1b[32m✓ figma-rust-mcp service uninstalled.\x1b[0m`);
 
   } else if (platform === 'win32') {
-    const taskName = 'FigmaMCPServer';
+    const taskName = 'FigmaRustMCPServer';
     try { execSync(`schtasks /Delete /F /TN "${taskName}"`, { stdio: 'inherit' }); } catch (_) {}
+    removeLegacyService();
 
     console.log(`\x1b[32m✓ figma-rust-mcp Windows Task removed.\x1b[0m`);
 
@@ -354,28 +354,52 @@ async function uninstallService() {
   }
 }
 
+function removeLegacyService() {
+  if (process.platform === 'darwin') {
+    const legacyPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', 'io.github.figma-mcp.server.plist');
+    if (fs.existsSync(legacyPlist)) {
+      try { execSync(`launchctl unload -w "${legacyPlist}"`, { stdio: 'pipe' }); } catch (_) {}
+      try { execSync('pkill -x figma-mcp', { stdio: 'pipe' }); } catch (_) {}
+      fs.unlinkSync(legacyPlist);
+    }
+  } else if (process.platform === 'linux') {
+    const legacyUnit = path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-mcp.service');
+    if (fs.existsSync(legacyUnit)) {
+      try { execSync('systemctl --user disable --now figma-mcp', { stdio: 'pipe' }); } catch (_) {}
+      fs.unlinkSync(legacyUnit);
+      try { execSync('systemctl --user daemon-reload', { stdio: 'pipe' }); } catch (_) {}
+    }
+  } else if (process.platform === 'win32') {
+    try { execSync('schtasks /End /TN "FigmaMCPServer"', { stdio: 'pipe' }); } catch (_) {}
+    try { execSync('schtasks /Delete /F /TN "FigmaMCPServer"', { stdio: 'pipe' }); } catch (_) {}
+  }
+}
+
 /**
  * Check if the service is currently installed.
  */
 function isServiceInstalled() {
   const platform = process.platform;
   if (platform === 'darwin') {
-    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'io.github.figma-mcp.server.plist');
-    return fs.existsSync(plistPath);
+    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'io.github.figma-rust-mcp.server.plist');
+    return fs.existsSync(plistPath) || fs.existsSync(path.join(os.homedir(), 'Library', 'LaunchAgents', 'io.github.figma-mcp.server.plist'));
   } else if (platform === 'linux') {
-    const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-mcp.service');
-    return fs.existsSync(servicePath);
+    const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-rust-mcp.service');
+    return fs.existsSync(servicePath) || fs.existsSync(path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-mcp.service'));
   } else if (platform === 'win32') {
     try {
-      execSync('schtasks /Query /TN "FigmaMCPServer"', { stdio: 'pipe' });
+      execSync('schtasks /Query /TN "FigmaRustMCPServer"', { stdio: 'pipe' });
       return true;
-    } catch (_) { return false; }
+    } catch (_) {
+      try { execSync('schtasks /Query /TN "FigmaMCPServer"', { stdio: 'pipe' }); return true; }
+      catch (_) { return false; }
+    }
   }
   return false;
 }
 
 function setupPlugin(customDir) {
-  const pluginDir = customDir || path.join(os.homedir(), '.figma-mcp', 'plugin');
+  const pluginDir = customDir || path.join(os.homedir(), '.figma-rust-mcp', 'plugin');
   const sourcePluginDir = path.resolve(__dirname, '../plugin');
 
   fs.mkdirSync(pluginDir, { recursive: true });
@@ -390,13 +414,13 @@ function setupPlugin(customDir) {
   }
 
   const manifestPath = path.join(pluginDir, 'manifest.json');
-  console.log(`\n\x1b[32m✓ Figma MCP Dynamic Thin Plugin installed to:\x1b[0m`);
+  console.log(`\n\x1b[32m✓ Figma Rust MCP Dynamic Thin Plugin installed to:\x1b[0m`);
   console.log(`  \x1b[36m${manifestPath}\x1b[0m\n`);
   console.log(`\x1b[1mTo connect Figma (Do this ONCE forever):\x1b[0m`);
   console.log(`  1. Open Figma Desktop`);
   console.log(`  2. Go to Plugins → Development → Import plugin from manifest...`);
   console.log(`  3. Select: ${manifestPath}`);
-  console.log(`  4. Done! All future updates load dynamically from figma-mcp without file re-imports.\n`);
+  console.log(`  4. Done! All future updates load dynamically from figma-rust-mcp without file re-imports.\n`);
   return manifestPath;
 }
 
@@ -411,7 +435,7 @@ function isNewer(latest, current) {
 }
 
 function checkForUpdatesAsync() {
-  const updateStateFile = path.join(os.homedir(), '.figma-mcp', 'update-check.json');
+  const updateStateFile = path.join(os.homedir(), '.figma-rust-mcp', 'update-check.json');
   try {
     if (fs.existsSync(updateStateFile)) {
       const state = JSON.parse(fs.readFileSync(updateStateFile, 'utf8'));
@@ -426,7 +450,7 @@ function checkForUpdatesAsync() {
   } catch (_) {}
 
   const req = https.get('https://registry.npmjs.org/figma-rust-mcp/latest', {
-    headers: { 'User-Agent': 'figma-mcp-updater' },
+    headers: { 'User-Agent': 'figma-rust-mcp-updater' },
     timeout: 2000
   }, (res) => {
     let data = '';
@@ -436,7 +460,7 @@ function checkForUpdatesAsync() {
         if (res.statusCode === 200) {
           const json = JSON.parse(data);
           const latest = json.version;
-          fs.mkdirSync(path.join(os.homedir(), '.figma-mcp'), { recursive: true });
+          fs.mkdirSync(path.join(os.homedir(), '.figma-rust-mcp'), { recursive: true });
           fs.writeFileSync(updateStateFile, JSON.stringify({
             lastChecked: Date.now(),
             latestVersion: latest
@@ -453,7 +477,7 @@ function checkForUpdatesAsync() {
 }
 
 async function upgrade() {
-  console.log('\x1b[36m[figma-mcp]\x1b[0m Checking for updates and upgrading figma-rust-mcp...');
+  console.log('\x1b[36m[figma-rust-mcp]\x1b[0m Checking for updates and upgrading figma-rust-mcp...');
   try {
     execSync('npm install -g figma-rust-mcp@latest', { stdio: 'inherit' });
     console.log('\x1b[32m✓ Upgraded figma-rust-mcp to latest version.\x1b[0m');
@@ -468,6 +492,45 @@ async function upgrade() {
   }
 }
 
+async function setupMenu() {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.log(`Figma Rust MCP setup options:\n  npx -y figma-rust-mcp@latest --install-service  Install plugin and background service\n  npx -y figma-rust-mcp@latest --setup-plugin     Install/update plugin only\n  npx -y figma-rust-mcp@latest --service-status    Check background service`);
+    return;
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log(`\n\x1b[1mFigma Rust MCP setup\x1b[0m  v${pkgVersion}\n\n  1) Quick setup — install plugin + start in background at login\n  2) Install/update Figma plugin only\n  3) Start server in this terminal\n  4) Check background service\n  5) Upgrade package and refresh setup\n  6) Remove background service\n  0) Exit\n`);
+    const choice = (await rl.question('Choose an option [1]: ')).trim() || '1';
+    switch (choice) {
+      case '1': {
+        setupPlugin();
+        const binPath = await findOrDownloadBinary();
+        await installService(binPath);
+        break;
+      }
+      case '2': setupPlugin(); break;
+      case '3': await runBinary(['--server']); break;
+      case '4': console.log(isServiceInstalled() ? '✓ Background service is installed.' : '✗ Background service is not installed.'); break;
+      case '5': await upgrade(); break;
+      case '6': await uninstallService(); break;
+      case '0': break;
+      default: console.log('Unknown option. Run --init to try again.');
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+function runBinary(args) {
+  return findOrDownloadBinary().then(binPath => new Promise((resolve, reject) => {
+    const child = spawn(binPath, args, { stdio: 'inherit', env: process.env });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => signal ? process.kill(process.pid, signal) : resolve(code ?? 0));
+    for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => child.kill(sig));
+  }));
+}
+
 function setupAlias() {
   const platform = process.platform;
   if (platform === 'win32') {
@@ -479,14 +542,14 @@ function setupAlias() {
     ? path.join(os.homedir(), '.zshrc')
     : path.join(os.homedir(), '.bashrc');
 
-  const aliasLine = "alias figma-mcp='npx figma-rust-mcp'";
+  const aliasLine = "alias figma-rust-mcp='npx figma-rust-mcp'";
   try {
     let content = fs.existsSync(shellRc) ? fs.readFileSync(shellRc, 'utf8') : '';
-    if (!content.includes('alias figma-mcp=')) {
-      fs.appendFileSync(shellRc, `\n# Figma MCP alias\n${aliasLine}\n`);
+    if (!content.includes('alias figma-rust-mcp=')) {
+      fs.appendFileSync(shellRc, `\n# Figma Rust MCP alias\n${aliasLine}\n`);
       console.log(`\x1b[32m✓ Added alias to ${shellRc}:\x1b[0m`);
       console.log(`  ${aliasLine}`);
-      console.log(`\nRun \x1b[36msource ${shellRc}\x1b[0m to start using \x1b[1mfigma-mcp\x1b[0m command directly!`);
+      console.log(`\nRun \x1b[36msource ${shellRc}\x1b[0m to start using \x1b[1mfigma-rust-mcp\x1b[0m command directly!`);
     } else {
       console.log(`\x1b[32m✓ Alias already exists in ${shellRc}\x1b[0m`);
     }
@@ -499,6 +562,12 @@ function setupAlias() {
 
 async function main() {
   const args = process.argv.slice(2);
+
+  if (args.includes('--init') || args.includes('--configure')) {
+    try { await setupMenu(); }
+    catch (err) { console.error(`\x1b[31m[figma-rust-mcp error]\x1b[0m ${err.message}`); process.exit(1); }
+    return;
+  }
 
   if (args.includes('--upgrade') || args.includes('--update')) {
     await upgrade();
@@ -554,36 +623,9 @@ async function main() {
   checkForUpdatesAsync();
 
   try {
-    const binPath = await findOrDownloadBinary();
-
-    const child = spawn(binPath, args, {
-      stdio: 'inherit',
-      env: process.env,
-    });
-
-    child.on('error', (err) => {
-      console.error(`[figma-mcp] Failed to start binary: ${err.message}`);
-      process.exit(1);
-    });
-
-    child.on('exit', (code, signal) => {
-      if (signal) {
-        process.kill(process.pid, signal);
-      } else {
-        process.exit(code ?? 0);
-      }
-    });
-
-    const forwardSignal = (sig) => {
-      if (child && !child.killed) {
-        child.kill(sig);
-      }
-    };
-
-    process.on('SIGINT', () => forwardSignal('SIGINT'));
-    process.on('SIGTERM', () => forwardSignal('SIGTERM'));
+    process.exit(await runBinary(args));
   } catch (err) {
-    console.error(`\x1b[31m[figma-mcp error]\x1b[0m ${err.message}`);
+    console.error(`\x1b[31m[figma-rust-mcp error]\x1b[0m ${err.message}`);
     process.exit(1);
   }
 }

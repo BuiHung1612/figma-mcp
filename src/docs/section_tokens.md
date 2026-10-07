@@ -1,5 +1,5 @@
 
-# figma-mcp — Design Tokens & Variables
+# figma-rust-mcp — Design Tokens & Variables
 
 ---
 

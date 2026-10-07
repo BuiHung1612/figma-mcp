@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Figma MCP</title>
+  <title>Figma Rust MCP</title>
   <style>
     /* ── GHOSTTY DESIGN SYSTEM (High-Performance Native Terminal Aesthetic) ── */
     :root {
@@ -701,8 +701,8 @@
         </div>
         <div class="brand-info">
           <div class="brand-title-row">
-            <span class="brand-name">Figma MCP</span>
-            <span class="brand-ver" id="runtime-version">v3.2.13</span>
+            <span class="brand-name">Figma Rust MCP</span>
+            <span class="brand-ver" id="runtime-version">v3.2.14</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -719,7 +719,7 @@
         </button>
 
         <!-- Reconnect / Probe Bridge Port Button -->
-        <button class="header-icon-btn" id="reconnect-btn" onclick="reconnect()" title="Reconnect" aria-label="Reconnect to Figma MCP">
+        <button class="header-icon-btn" id="reconnect-btn" onclick="reconnect()" title="Reconnect" aria-label="Reconnect to Figma Rust MCP">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
           </svg>
@@ -1261,17 +1261,17 @@
         '<div style="width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#4f46e5,#06b6d4);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(99,102,241,0.4),0 8px 24px rgba(79,70,229,0.4);margin-bottom:2px">',
           '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
         '</div>',
-        '<div style="font-size:13px;font-weight:700;color:#f8fafc;letter-spacing:-0.2px">Start Figma MCP Server</div>',
+        '<div style="font-size:13px;font-weight:700;color:#f8fafc;letter-spacing:-0.2px">Start Figma Rust MCP Server</div>',
         '<div style="font-size:10px;color:#94a3b8;text-align:center;max-width:240px;line-height:1.5">Run command in your project terminal:</div>',
 
         '<div style="width:100%;background:#0f1118;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:3px">',
           '<div style="font-size:8px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#475569">Option A · Run once</div>',
-          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#38bdf8;user-select:text">npx figma-mcp</div>',
+          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#38bdf8;user-select:text">npx figma-rust-mcp</div>',
         '</div>',
 
         '<div style="width:100%;background:#0f1118;border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:3px">',
           '<div style="font-size:8px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#475569">Option B · Auto-start ✦ Recommended</div>',
-          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#10b981;user-select:text">npx figma-mcp --install-service</div>',
+          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#10b981;user-select:text">npx figma-rust-mcp --install-service</div>',
           '<div style="font-size:8.5px;color:#475569">Background service for Claude / IDE</div>',
         '</div>',
 
@@ -1551,7 +1551,7 @@
         if (retryTimer) clearTimeout(retryTimer);
         lastSuccessfulPollAt = Date.now();
         setStatus("green", "Connected");
-        log("Connected to Figma MCP · port " + currentPort, "ok");
+        log("Connected to Figma Rust MCP · port " + currentPort, "ok");
 
         if (pingTimer) clearInterval(pingTimer);
         pingTimer = setInterval(function() {
@@ -1571,10 +1571,10 @@
             if (Array.isArray(req.activeTaskIds)) dispatchToMain({ type: "task-sync", taskIds: req.activeTaskIds });
             var serverVer = req.version;
             updateRuntimeVersion(serverVer);
-            if (!window.__FIGMA_MCP_VER) {
-              window.__FIGMA_MCP_VER = serverVer;
-              window.__FIGMA_MCP_RUNTIME_HASH = req.runtimeHash;
-            } else if (window.__FIGMA_MCP_VER !== serverVer || (req.runtimeHash && window.__FIGMA_MCP_RUNTIME_HASH && req.runtimeHash !== window.__FIGMA_MCP_RUNTIME_HASH)) {
+            if (!window.__FIGMA_RUST_MCP_VER) {
+              window.__FIGMA_RUST_MCP_VER = serverVer;
+              window.__FIGMA_RUST_MCP_RUNTIME_HASH = req.runtimeHash;
+            } else if (window.__FIGMA_RUST_MCP_VER !== serverVer || (req.runtimeHash && window.__FIGMA_RUST_MCP_RUNTIME_HASH && req.runtimeHash !== window.__FIGMA_RUST_MCP_RUNTIME_HASH)) {
               log("⚡ Server updated to v" + serverVer + " — Hot reloading in 500ms…", "info");
               setTimeout(function() {
                 triggerHotReload(currentPort);
@@ -1615,7 +1615,7 @@
             document.close();
           }
         } catch (err) {
-          console.error("[figma-mcp hot-reload error]", err);
+          console.error("[figma-rust-mcp hot-reload error]", err);
         }
       }
 

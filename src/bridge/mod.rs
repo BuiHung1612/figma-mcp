@@ -159,7 +159,7 @@ pub async fn start_bridge_server(port: u16) -> Result<(BridgeState, u16), String
                 let app_v4 = app.clone();
                 tokio::spawn(async move {
                     if let Err(e) = axum::serve(listener_v4, app_v4).await {
-                        eprintln!("[figma-mcp bridge] Server error: {}", e);
+                        eprintln!("[figma-rust-mcp bridge] Server error: {}", e);
                     }
                 });
 
@@ -175,7 +175,7 @@ pub async fn start_bridge_server(port: u16) -> Result<(BridgeState, u16), String
             }
             Err(_) => {
                 eprintln!(
-                    "[figma-mcp] Port {} in use — trying {}...",
+                    "[figma-rust-mcp] Port {} in use — trying {}...",
                     current_port,
                     current_port + 1
                 );

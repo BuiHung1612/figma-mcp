@@ -127,7 +127,7 @@ pub async fn handle_jsonrpc_request(
                     "tools": {}
                 },
                 "serverInfo": {
-                    "name": "figma-mcp",
+                    "name": "figma-rust-mcp",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             }),
@@ -156,7 +156,7 @@ pub async fn handle_jsonrpc_request(
             let elapsed = start.elapsed();
 
             eprintln!(
-                "[figma-mcp] ⚡ Tool '{}' executed in {:.1}ms",
+                "[figma-rust-mcp] ⚡ Tool '{}' executed in {:.1}ms",
                 tool_name,
                 elapsed.as_secs_f64() * 1000.0
             );
@@ -293,7 +293,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             let hint = if connected {
                 "CONNECTED. BEFORE drawing anything: call figma_docs to load mandatory design rules (token system, component-first, icon sizing, layer order). Skipping figma_docs causes incorrect, hardcoded, low-quality UI."
             } else {
-                "Plugin not connected. In Figma Desktop: Plugins → Development → Figma MCP Bridge → Run"
+                "Plugin not connected. In Figma Desktop: Plugins → Development → Figma Rust MCP Bridge → Run"
             };
 
             let out = json!({
@@ -382,7 +382,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             }
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             let detail = args.get("detail").and_then(|v| v.as_str()).unwrap_or("compact");
@@ -425,7 +425,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
         "figma_inspect_node" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             let mut node_id = args.get("nodeId")
@@ -468,7 +468,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
         "figma_export_asset" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
             let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("png").to_lowercase();
             let mut op_params = json!({});
@@ -530,7 +530,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
 
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             // Forward every argument through to the handler (nodeId/nodeName are
@@ -699,7 +699,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
         "figma_write" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             let code = match args.get("code")
@@ -732,7 +732,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
         "figma_rules" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             // Fast-path: If index is cached and ready, build rules directly from memory (< 1ms!)
@@ -803,7 +803,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                             }
 
                             lines.push("---".to_string());
-                            lines.push("_Generated by figma-mcp figma_rules (in-memory cached)._".to_string());
+                            lines.push("_Generated by figma-rust-mcp figma_rules (in-memory cached)._".to_string());
                             return ToolResult::text(lines.join("\n"));
                         }
                     }
@@ -932,7 +932,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             }
 
             lines.push("---".to_string());
-            lines.push("_Generated by figma-mcp figma_rules. Re-run when design system changes._".to_string());
+            lines.push("_Generated by figma-rust-mcp figma_rules. Re-run when design system changes._".to_string());
 
             ToolResult::text(lines.join("\n"))
         }
@@ -1182,7 +1182,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
         "figma_get_tokens" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("css");
@@ -1241,7 +1241,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
         "figma_to_code" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             let framework = args.get("framework").and_then(|v| v.as_str()).unwrap_or("react-tailwind");
@@ -1300,7 +1300,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
         "figma_export_assets" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             let icon_dir = args.get("iconDir").and_then(|v| v.as_str());
@@ -1563,7 +1563,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             let project_dir = args.get("projectDir").and_then(|v| v.as_str()).unwrap_or(".");
 
             if !bridge.is_plugin_connected(session_id).await {
-                return ToolResult::error("Figma plugin not connected. Run the 'Figma MCP Bridge' plugin in Figma Desktop first.");
+                return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
             }
 
             // 1. Fetch deep design context

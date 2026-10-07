@@ -1,5 +1,5 @@
 
-# figma-mcp — API Reference
+# figma-rust-mcp — API Reference
 
 Call \`figma_docs\` with a \`section\` param to load a specific part:
 

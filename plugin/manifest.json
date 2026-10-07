@@ -1,5 +1,5 @@
 {
-  "name": "Figma MCP Bridge",
+  "name": "Figma Rust MCP Bridge",
   "id": "1614927480683426278",
   "api": "1.0.0",
   "main": "code.js",
@@ -19,7 +19,7 @@
       "ws://localhost:38454",
       "ws://localhost:38455"
     ],
-    "reasoning": "Thin loader connecting dynamically to the local figma-mcp Rust engine on ports 38451-38455."
+    "reasoning": "Thin loader connecting dynamically to the local figma-rust-mcp Rust engine on ports 38451-38455."
   }
 }
 

@@ -19,38 +19,38 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: figma-mcp-linux-x86_64
-            binary_path: target/x86_64-unknown-linux-gnu/release/figma-mcp
-            compress_cmd: tar -czf figma-mcp-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release figma-mcp
-            asset_name: figma-mcp-linux-x86_64.tar.gz
+            artifact_name: figma-rust-mcp-linux-x86_64
+            binary_path: target/x86_64-unknown-linux-gnu/release/figma-rust-mcp
+            compress_cmd: tar -czf figma-rust-mcp-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release figma-rust-mcp
+            asset_name: figma-rust-mcp-linux-x86_64.tar.gz
 
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact_name: figma-mcp-linux-arm64
-            binary_path: target/aarch64-unknown-linux-gnu/release/figma-mcp
-            compress_cmd: tar -czf figma-mcp-linux-arm64.tar.gz -C target/aarch64-unknown-linux-gnu/release figma-mcp
-            asset_name: figma-mcp-linux-arm64.tar.gz
+            artifact_name: figma-rust-mcp-linux-arm64
+            binary_path: target/aarch64-unknown-linux-gnu/release/figma-rust-mcp
+            compress_cmd: tar -czf figma-rust-mcp-linux-arm64.tar.gz -C target/aarch64-unknown-linux-gnu/release figma-rust-mcp
+            asset_name: figma-rust-mcp-linux-arm64.tar.gz
 
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: figma-mcp-macos-arm64
-            binary_path: target/aarch64-apple-darwin/release/figma-mcp
-            compress_cmd: tar -czf figma-mcp-macos-arm64.tar.gz -C target/aarch64-apple-darwin/release figma-mcp
-            asset_name: figma-mcp-macos-arm64.tar.gz
+            artifact_name: figma-rust-mcp-macos-arm64
+            binary_path: target/aarch64-apple-darwin/release/figma-rust-mcp
+            compress_cmd: tar -czf figma-rust-mcp-macos-arm64.tar.gz -C target/aarch64-apple-darwin/release figma-rust-mcp
+            asset_name: figma-rust-mcp-macos-arm64.tar.gz
 
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: figma-mcp-macos-x86_64
-            binary_path: target/x86_64-apple-darwin/release/figma-mcp
-            compress_cmd: tar -czf figma-mcp-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release figma-mcp
-            asset_name: figma-mcp-macos-x86_64.tar.gz
+            artifact_name: figma-rust-mcp-macos-x86_64
+            binary_path: target/x86_64-apple-darwin/release/figma-rust-mcp
+            compress_cmd: tar -czf figma-rust-mcp-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release figma-rust-mcp
+            asset_name: figma-rust-mcp-macos-x86_64.tar.gz
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: figma-mcp-windows-x86_64
-            binary_path: target/x86_64-pc-windows-msvc/release/figma-mcp.exe
-            compress_cmd: Compress-Archive -Path target/x86_64-pc-windows-msvc/release/figma-mcp.exe -DestinationPath figma-mcp-windows-x86_64.zip
-            asset_name: figma-mcp-windows-x86_64.zip
+            artifact_name: figma-rust-mcp-windows-x86_64
+            binary_path: target/x86_64-pc-windows-msvc/release/figma-rust-mcp.exe
+            compress_cmd: Compress-Archive -Path target/x86_64-pc-windows-msvc/release/figma-rust-mcp.exe -DestinationPath figma-rust-mcp-windows-x86_64.zip
+            asset_name: figma-rust-mcp-windows-x86_64.zip
 
     steps:
       - name: Checkout repository

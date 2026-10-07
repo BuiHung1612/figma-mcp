@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.2.14] — 2026-10-07
+
+### Changed
+- Standardize the product, package, executable, service and MCP configuration name as `figma-rust-mcp`.
+- Keep the existing Figma plugin loader compatible while updating its displayed name and runtime identity.
+
 ## [3.2.13] — 2026-10-07
 
 ### Added
@@ -1598,7 +1604,7 @@ createVariableCollection("Colors")
 ## [1.0.0] — 2026-03-14
 
 ### Added
-- Initial release — bidirectional Figma MCP server
+- Initial release — bidirectional Figma Rust MCP server
 - **MCP Server** (`server/`) — 4 tools: `figma_status`, `figma_write`, `figma_read`, `figma_docs`
 - **HTTP Bridge** (`server/bridge-server.js`) — polling-based, localhost:38451 only, 500KB body limit, 50-request queue cap
 - **VM Sandbox** (`server/code-executor.js`) — `vm.runInContext()` blocks `require`, `process`, `fs`, `fetch`; 10s timeout

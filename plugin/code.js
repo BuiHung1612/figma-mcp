@@ -1,8 +1,8 @@
-// ─── FIGMA MCP BRIDGE — DYNAMIC THIN LOADER ───────────────────────────
+// ─── FIGMA RUST MCP BRIDGE — DYNAMIC THIN LOADER ──────────────────────
 // This file is a permanent micro-stub. You never need to reinstall or edit this file.
-// The actual runtime is loaded dynamically from the local figma-mcp Rust engine.
+// The actual runtime is loaded dynamically from the local figma-rust-mcp Rust engine.
 
-figma.showUI(__html__, { width: 340, height: 480, title: "Figma MCP Bridge", themeColors: true });
+figma.showUI(__html__, { width: 340, height: 480, title: "Figma Rust MCP Bridge", themeColors: true });
 
 // Restore window size if saved
 figma.clientStorage.getAsync("mcp_window_size").then(function(saved) {
@@ -26,7 +26,7 @@ figma.ui.onmessage = async function(msg) {
       var runner = new Function("figma", "__html__", msg.code);
       runner(figma, __html__);
     } catch (err) {
-      console.error("[figma-mcp stub] Failed to evaluate dynamic runtime:", err);
+      console.error("[figma-rust-mcp stub] Failed to evaluate dynamic runtime:", err);
       try {
         figma.notify("MCP Runtime Error: " + (err && err.message ? err.message : String(err)), { error: true });
       } catch(e) {}

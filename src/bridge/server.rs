@@ -755,7 +755,7 @@ async fn handle_root(State(state): State<BridgeState>) -> impl IntoResponse {
     let (sessions, connected, queue_len, mcp_clients, port) = state.get_status_snapshot().await;
 
     Json(json!({
-        "server": "figma-mcp",
+        "server": "figma-rust-mcp",
         "version": env!("CARGO_PKG_VERSION"),
         "port": port,
         "pluginConnected": connected,
@@ -1098,7 +1098,7 @@ async fn handle_socket(
         let hello = json!({
             "type": "server-hello",
             "version": env!("CARGO_PKG_VERSION"),
-            "name": "figma-mcp",
+            "name": "figma-rust-mcp",
             "dynamicRuntime": true,
             "runtimeHash": env!("FIGMA_RUNTIME_CODE_HASH"),
             "protocolVersion": 2,
@@ -1284,7 +1284,7 @@ async fn handle_socket(
                                     drop(inner);
                                 }
                                 eprintln!(
-                                    "[figma-mcp] ⚡ Pre-indexed {} nodes, {} components, {} styles, {} variables in {}ms",
+                                    "[figma-rust-mcp] ⚡ Pre-indexed {} nodes, {} components, {} styles, {} variables in {}ms",
                                     idx.stats.total_nodes,
                                     idx.stats.total_components,
                                     idx.stats.total_styles,
@@ -1456,7 +1456,7 @@ async fn handle_socket(
 
         if !requeued.is_empty() {
             eprintln!(
-                "[figma-mcp] ↻ WebSocket closed with {} unacknowledged op(s) — re-queued",
+                "[figma-rust-mcp] ↻ WebSocket closed with {} unacknowledged op(s) — re-queued",
                 requeued.len()
             );
             s.queue.extend(requeued.clone());
@@ -1511,7 +1511,7 @@ impl Drop for McpSseStream {
         let sid = self.session_id.clone();
         tokio::spawn(async move {
             state.remove_mcp_client(&sid).await;
-            eprintln!("[figma-mcp] 🤖 MCP Client disconnected (Session: {})", sid);
+            eprintln!("[figma-rust-mcp] 🤖 MCP Client disconnected (Session: {})", sid);
         });
     }
 }
@@ -1523,7 +1523,7 @@ async fn handle_mcp_sse(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JsonRpcResponse>();
 
     state.register_mcp_client(&session_id, tx).await;
-    eprintln!("[figma-mcp] 🤖 MCP Client connected via SSE (Session: {})", session_id);
+    eprintln!("[figma-rust-mcp] 🤖 MCP Client connected via SSE (Session: {})", session_id);
 
     let stream = McpSseStream {
         session_id,
@@ -1586,7 +1586,7 @@ async fn handle_asset_serve(
     if clean_path.contains("..") {
         return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
     }
-    let base_cache = std::env::temp_dir().join("figma-mcp").join("assets");
+    let base_cache = std::env::temp_dir().join("figma-rust-mcp").join("assets");
     let asset_path = base_cache.join(clean_path);
 
     if let Ok(bytes) = tokio::fs::read(&asset_path).await {
@@ -1629,7 +1629,7 @@ async fn handle_plugin_version() -> impl IntoResponse {
         Json(json!({
             "version": env!("CARGO_PKG_VERSION"),
             "status": "ready",
-            "name": "figma-mcp",
+            "name": "figma-rust-mcp",
             "dynamicRuntime": true,
             "runtimeHash": env!("FIGMA_RUNTIME_CODE_HASH"),
             "protocolVersion": 2

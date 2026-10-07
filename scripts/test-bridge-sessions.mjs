@@ -23,8 +23,8 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
-  const binary = process.env.FIGMA_TEST_BINARY || 'target/debug/figma-mcp';
-  const server = spawn(binary, ['--server', '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, FIGMA_MCP_PORT: String(port) } });
+  const binary = process.env.FIGMA_TEST_BINARY || 'target/debug/figma-rust-mcp';
+  const server = spawn(binary, ['--server', '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, FIGMA_RUST_MCP_PORT: String(port) } });
   let stderr = ''; server.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-4000); });
   const processes = [server], sockets = [], latest = new Map(), actions = [];
   t.after(() => { for (const socket of sockets) socket.close(); for (const process of processes) process.kill(); });
@@ -37,7 +37,7 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
     return (await response.json()).result;
   }
   function agent() {
-    const process = spawn(binary, ['--stdio', '--port', String(port)], { env: { ...globalThis.process.env, FIGMA_MCP_PORT: String(port) } });
+    const process = spawn(binary, ['--stdio', '--port', String(port)], { env: { ...globalThis.process.env, FIGMA_RUST_MCP_PORT: String(port) } });
     processes.push(process); process.stderr.resume();
     let id = 0;
     const pending = new Map();

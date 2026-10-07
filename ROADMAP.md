@@ -1,6 +1,6 @@
-# 🗺️ Figma MCP Roadmap (v2.9.0 → v3.0.0)
+# 🗺️ Figma Rust MCP Roadmap (v2.9.0 → v3.0.0)
 
-> Strategic optimization roadmap for **figma-mcp** focusing on **Workflow Ergonomics**, **Rust Engine Performance**, and **AI / LLM Context Intelligence**.
+> Strategic optimization roadmap for **figma-rust-mcp** focusing on **Workflow Ergonomics**, **Rust Engine Performance**, and **AI / LLM Context Intelligence**.
 
 ---
 
@@ -8,7 +8,7 @@
 
 ```mermaid
 gantt
-    title Figma MCP Strategic Roadmap
+    title Figma Rust MCP Strategic Roadmap
     dateFormat  YYYY-MM-DD
     section Phase 1 (v2.9.0)
     Semantic AST Token Pruner        :active, 2026-08-26, 7d

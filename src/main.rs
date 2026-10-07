@@ -14,7 +14,7 @@ const LOADER_UI: &str = include_str!("../plugin/ui.html");
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "figma-mcp",
+    name = "figma-rust-mcp",
     version = env!("CARGO_PKG_VERSION"),
     about = "High-performance Rust MCP bridge & server for Figma"
 )]
@@ -27,7 +27,7 @@ struct Args {
     #[arg(short, long)]
     server: bool,
 
-    /// Start a detached Windows server with logs in %LOCALAPPDATA%/figma-mcp/logs
+    /// Start a detached Windows server with logs in %LOCALAPPDATA%/figma-rust-mcp/logs
     #[arg(long, conflicts_with = "stdio")]
     background: bool,
 
@@ -38,15 +38,15 @@ struct Args {
     #[arg(long)]
     stdio: bool,
 
-    /// Register figma-mcp:// URL protocol scheme with the OS
+    /// Register figma-rust-mcp:// URL protocol scheme with the OS
     #[arg(long)]
     register_scheme: bool,
 
-    /// Setup permanent Figma thin plugin in ~/.figma-mcp/plugin
+    /// Setup permanent Figma thin plugin in ~/.figma-rust-mcp/plugin
     #[arg(long)]
     setup_plugin: bool,
 
-    /// Export/setup permanent Figma thin plugin in ~/.figma-mcp/plugin
+    /// Export/setup permanent Figma thin plugin in ~/.figma-rust-mcp/plugin
     #[arg(long)]
     export_plugin: bool,
 
@@ -62,11 +62,11 @@ struct Args {
     #[arg(long)]
     service_status: bool,
 
-    /// Upgrade figma-mcp
+    /// Upgrade figma-rust-mcp
     #[arg(long)]
     upgrade: bool,
 
-    /// Update figma-mcp
+    /// Update figma-rust-mcp
     #[arg(long)]
     update: bool,
 
@@ -82,7 +82,7 @@ struct Args {
     #[arg(long)]
     uninstall_service: bool,
 
-    /// URL or argument passed by OS protocol handler (e.g. figma-mcp://start)
+    /// URL or argument passed by OS protocol handler (e.g. figma-rust-mcp://start)
     #[arg(hide = true)]
     protocol_url: Option<String>,
 }
@@ -93,7 +93,7 @@ fn setup_thin_plugin(custom_dir: Option<&str>) -> Result<(), Box<dyn std::error:
         .unwrap_or_else(|_| ".".to_string());
     let target_dir = match custom_dir {
         Some(d) => std::path::PathBuf::from(d),
-        None => std::path::PathBuf::from(home).join(".figma-mcp").join("plugin"),
+        None => std::path::PathBuf::from(home).join(".figma-rust-mcp").join("plugin"),
     };
     std::fs::create_dir_all(&target_dir)?;
 
@@ -106,14 +106,14 @@ fn setup_thin_plugin(custom_dir: Option<&str>) -> Result<(), Box<dyn std::error:
     std::fs::write(&ui_path, LOADER_UI)?;
 
     println!();
-    println!("\x1b[32m✓ Figma MCP Dynamic Thin Plugin installed to:\x1b[0m");
+    println!("\x1b[32m✓ Figma Rust MCP Dynamic Thin Plugin installed to:\x1b[0m");
     println!("  \x1b[36m{}\x1b[0m", manifest_path.display());
     println!();
     println!("\x1b[1mTo connect Figma (Do this ONCE forever):\x1b[0m");
     println!("  1. Open Figma Desktop");
     println!("  2. Go to Plugins → Development → Import plugin from manifest...");
     println!("  3. Select: {}", manifest_path.display());
-    println!("  4. Run plugin: Plugins → Development → Figma MCP Bridge");
+    println!("  4. Run plugin: Plugins → Development → Figma Rust MCP Bridge");
     println!("  5. Done! All future updates load dynamically without re-importing.\n");
 
     Ok(())
@@ -121,7 +121,7 @@ fn setup_thin_plugin(custom_dir: Option<&str>) -> Result<(), Box<dyn std::error:
 
 fn print_banner(port: u16) {
     let ver = env!("CARGO_PKG_VERSION");
-    let title = format!("🎨 Figma MCP Server & Bridge v{}", ver);
+    let title = format!("🎨 Figma Rust MCP Server & Bridge v{}", ver);
     eprintln!();
     eprintln!("╔══════════════════════════════════════════════════════════════════╗");
     eprintln!("║ {:^64} ║", title);
@@ -133,12 +133,12 @@ fn print_banner(port: u16) {
     eprintln!("║  Status: 🚀 Server running. Ready for Figma & AI connections!    ║");
     eprintln!("║                                                                  ║");
     eprintln!("║  💡 Antigravity Setup (~/.gemini/config/mcp_config.json):        ║");
-    eprintln!("║     \"figma-mcp\": {{                                              ║");
+    eprintln!("║     \"figma-rust-mcp\": {{                                              ║");
     eprintln!("║       \"serverUrl\": \"http://127.0.0.1:{:<5}/sse\"                 ║", port);
     eprintln!("║     }}                                                            ║");
     eprintln!("║                                                                  ║");
     eprintln!("║  💡 Figma Desktop:                                               ║");
-    eprintln!("║     Plugins → Development → Figma MCP Bridge → Run               ║");
+    eprintln!("║     Plugins → Development → Figma Rust MCP Bridge → Run               ║");
     eprintln!("║                                                                  ║");
     eprintln!("║  Press Ctrl+C to stop server.                                    ║");
     eprintln!("╚══════════════════════════════════════════════════════════════════╝");
@@ -162,7 +162,7 @@ fn start_background() -> Result<(), Box<dyn std::error::Error>> {
     let base = std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .ok_or("LOCALAPPDATA or USERPROFILE is required for background logs")?;
-    let logs = std::path::PathBuf::from(base).join("figma-mcp").join("logs");
+    let logs = std::path::PathBuf::from(base).join("figma-rust-mcp").join("logs");
     std::fs::create_dir_all(&logs)?;
     let log = std::fs::OpenOptions::new().create(true).append(true)
         .open(logs.join("server.log"))?;
@@ -174,7 +174,7 @@ fn start_background() -> Result<(), Box<dyn std::error::Error>> {
         // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: independent of the launcher console.
         .creation_flags(0x00000008 | 0x00000200)
         .spawn()?;
-    println!("[figma-mcp] Background process started. Logs: {}", logs.display());
+    println!("[figma-rust-mcp] Background process started. Logs: {}", logs.display());
     Ok(())
 }
 
@@ -199,31 +199,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.upgrade || args.update {
-        println!("\x1b[36m[figma-mcp]\x1b[0m To upgrade to the latest version, run:");
+        println!("\x1b[36m[figma-rust-mcp]\x1b[0m To upgrade to the latest version, run:");
         println!("  \x1b[32mnpx -y figma-rust-mcp@latest --upgrade\x1b[0m\n");
         return Ok(());
     }
 
     if args.alias {
-        println!("\x1b[36m[figma-mcp]\x1b[0m To configure shell alias, run:");
+        println!("\x1b[36m[figma-rust-mcp]\x1b[0m To configure shell alias, run:");
         println!("  \x1b[32mnpx -y figma-rust-mcp@latest --alias\x1b[0m\n");
         return Ok(());
     }
 
     if args.install_service {
-        println!("\x1b[36m[figma-mcp]\x1b[0m To install auto-start background service, run:");
+        println!("\x1b[36m[figma-rust-mcp]\x1b[0m To install auto-start background service, run:");
         println!("  \x1b[32mnpx -y figma-rust-mcp@latest --install-service\x1b[0m\n");
         return Ok(());
     }
 
     if args.uninstall_service {
-        println!("\x1b[36m[figma-mcp]\x1b[0m To uninstall background service, run:");
+        println!("\x1b[36m[figma-rust-mcp]\x1b[0m To uninstall background service, run:");
         println!("  \x1b[32mnpx -y figma-rust-mcp@latest --uninstall-service\x1b[0m\n");
         return Ok(());
     }
 
     if args.service_status {
-        println!("\x1b[36m[figma-mcp]\x1b[0m Checking service status via NPX runner...");
+        println!("\x1b[36m[figma-rust-mcp]\x1b[0m Checking service status via NPX runner...");
         println!("  \x1b[32mnpx -y figma-rust-mcp@latest --service-status\x1b[0m\n");
         return Ok(());
     }
@@ -231,11 +231,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.register_scheme {
         match protocol::register_url_scheme() {
             Ok(_) => {
-                eprintln!("[figma-mcp] ✓ Successfully registered figma-mcp:// URL scheme!");
+                eprintln!("[figma-rust-mcp] ✓ Successfully registered figma-rust-mcp:// URL scheme!");
                 return Ok(());
             }
             Err(e) => {
-                eprintln!("[figma-mcp] ⚠️ Failed to register URL scheme: {}", e);
+                eprintln!("[figma-rust-mcp] ⚠️ Failed to register URL scheme: {}", e);
                 std::process::exit(1);
             }
         }
@@ -244,7 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-register URL scheme in background on startup
     let _ = protocol::register_url_scheme();
 
-    let port = std::env::var("FIGMA_MCP_PORT")
+    let port = std::env::var("FIGMA_RUST_MCP_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(args.port);
@@ -256,13 +256,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let proxy = HttpProxy::new(port);
         if proxy.is_running().await {
             eprintln!(
-                "[figma-mcp] ⚠️ Server already running on port {}. Attached to active instance.",
+                "[figma-rust-mcp] ⚠️ Server already running on port {}. Attached to active instance.",
                 port
             );
             print_banner(port);
             if std::io::stdin().is_terminal() {
                 tokio::signal::ctrl_c().await?;
-                eprintln!("[figma-mcp] Exiting.");
+                eprintln!("[figma-rust-mcp] Exiting.");
             } else {
                 std::future::pending::<()>().await;
             }
@@ -275,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Keep server process alive
                 if std::io::stdin().is_terminal() {
                     tokio::signal::ctrl_c().await?;
-                    eprintln!("\n[figma-mcp] Server stopped cleanly. Goodbye!");
+                    eprintln!("\n[figma-rust-mcp] Server stopped cleanly. Goodbye!");
                 } else {
                     // Daemon mode (LaunchAgent / systemd / background daemon): run indefinitely
                     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -283,7 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(e) => {
-                eprintln!("[figma-mcp] Failed to start server on port {}: {}", port, e);
+                eprintln!("[figma-rust-mcp] Failed to start server on port {}: {}", port, e);
                 std::process::exit(1);
             }
         }
@@ -293,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if proxy.is_running().await {
             eprintln!(
-                "[figma-mcp] Existing bridge detected on port {}, using HTTP proxy",
+                "[figma-rust-mcp] Existing bridge detected on port {}, using HTTP proxy",
                 port
             );
             let bridge = BridgeHandle::Proxy(proxy);
@@ -301,13 +301,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             match start_bridge_server(port).await {
                 Ok((state, actual_port)) => {
-                    eprintln!("[figma-mcp] Bridge started on port {}", actual_port);
+                    eprintln!("[figma-rust-mcp] Bridge started on port {}", actual_port);
                     let bridge = BridgeHandle::Direct(state);
                     mcp::run_mcp_server(bridge).await?;
                 }
                 Err(e) => {
                     eprintln!(
-                        "[figma-mcp] Bridge failed ({}), connecting via proxy on port {}",
+                        "[figma-rust-mcp] Bridge failed ({}), connecting via proxy on port {}",
                         e, port
                     );
                     let bridge = BridgeHandle::Proxy(proxy);

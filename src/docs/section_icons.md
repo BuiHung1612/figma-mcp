@@ -1,5 +1,5 @@
 
-# figma-mcp — Images & Icons
+# figma-rust-mcp — Images & Icons
 
 ---
 

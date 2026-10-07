@@ -1,7 +1,7 @@
-name: figma-mcp
-display_name: Figma MCP
+name: figma-rust-mcp
+display_name: Figma Rust MCP
 description: >
-  Bidirectional Figma MCP bridge — AI draws UI on Figma canvas and reads
+  Bidirectional Figma Rust MCP bridge — AI draws UI on Figma canvas and reads
   designs back as structured data. Works with Claude, Cursor, VS Code,
   Windsurf, Antigravity. No API key needed.
 version: 2.6.0

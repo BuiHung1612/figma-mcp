@@ -1,8 +1,8 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "name": "figma-mcp",
-  "display_name": "Figma MCP",
-  "description": "Bidirectional Figma MCP bridge — AI draws UI on Figma canvas and reads designs back. No API key needed.",
+  "name": "figma-rust-mcp",
+  "display_name": "Figma Rust MCP",
+  "description": "Bidirectional Figma Rust MCP bridge — AI draws UI on Figma canvas and reads designs back. No API key needed.",
   "version": "2.6.0",
   "repository": "https://github.com/BuiHung1612/figma-mcp",
   "homepage": "https://github.com/BuiHung1612/figma-mcp#readme",

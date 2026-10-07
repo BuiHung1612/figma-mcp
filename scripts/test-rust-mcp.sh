@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-BIN_PATH="target/release/figma-mcp"
+BIN_PATH="target/release/figma-rust-mcp"
 if [ ! -f "$BIN_PATH" ]; then
-  BIN_PATH="target/debug/figma-mcp"
+  BIN_PATH="target/debug/figma-rust-mcp"
 fi
 
 echo "Testing binary: $BIN_PATH"
@@ -33,6 +33,6 @@ done
 
 # Test 4: Node/NPX wrapper test
 echo "--- Test 4: NPX Wrapper ---"
-node bin/figma-mcp.js --version
+node bin/figma-rust-mcp.js --version
 
 echo "--- All Tests completed successfully! ---"

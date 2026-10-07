@@ -1,5 +1,5 @@
 
-# figma-mcp — Design Rules 10–20 + Component Reuse
+# figma-rust-mcp — Design Rules 10–20 + Component Reuse
 
 ---
 

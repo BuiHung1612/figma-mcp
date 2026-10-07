@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Figma MCP Loader</title>
+  <title>Figma Rust MCP Loader</title>
   <style>
     :root {
       --bg: #0d0e12;
@@ -122,7 +122,7 @@
       <div class="radar-ring"></div>
       <div class="radar-core"></div>
     </div>
-    <div class="title">Connecting to figma-mcp</div>
+    <div class="title">Connecting to figma-rust-mcp</div>
     <div id="status" class="status-text">Scanning local ports (38451-38455)...</div>
     <div class="badge">
       <span>●</span> <span id="port-label">localhost:38451</span>
@@ -179,7 +179,7 @@
         document.write(uiHtml);
         document.close();
       } catch (err) {
-        console.error("[figma-mcp stub]", err);
+        console.error("[figma-rust-mcp stub]", err);
         if (statusEl) statusEl.textContent = "Failed to load: " + err.message + ". Retrying...";
         setTimeout(findAndConnect, 1500);
       }

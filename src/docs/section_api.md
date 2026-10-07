@@ -1,5 +1,5 @@
 
-# figma-mcp — API Reference (Create / Modify / Read / Ops)
+# figma-rust-mcp — API Reference (Create / Modify / Read / Ops)
 
 ---
 

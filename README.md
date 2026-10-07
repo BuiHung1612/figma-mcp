@@ -1,4 +1,4 @@
-# figma-mcp (figma-rust-mcp)
+# figma-rust-mcp
 
 High-performance, bidirectional Model Context Protocol (MCP) server written in **Rust** connecting AI coding assistants directly to **Figma Desktop**.
 
@@ -27,7 +27,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │                      Terminal / Background Service                     │
-│                       figma-mcp (Pure Rust Engine)                     │
+│                       figma-rust-mcp (Pure Rust Engine)                     │
 │  • MCP Streamable HTTP (/mcp) & legacy SSE (/sse, /message)             │
 │  • Dynamic Runtime Server (/plugin/code.js, /plugin/ui.html)           │
 │  • In-Memory Fast Index (<1ms Lookups & Incremental Diffs)             │
@@ -49,7 +49,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 ```
 
 ### 🔌 How the Zero-Touch Connection Works:
-1. **Permanent Thin Loader**: You only import the Figma plugin **once** (`~/.figma-mcp/plugin/manifest.json`).
+1. **Permanent Thin Loader**: You only import the Figma plugin **once** (`~/.figma-rust-mcp/plugin/manifest.json`).
 2. **Dynamic Runtime Streaming**: Upon launch, the Thin Loader contacts `http://127.0.0.1:38451/plugin/code.js` to fetch and execute the latest runtime in memory.
 3. **Live WebSocket Hot-Reload**: The plugin connects to `ws://127.0.0.1:38451/ws`. When you upgrade `figma-rust-mcp` or restart the daemon, the plugin automatically detects the new server version and hot-reloads seamlessly — **no need to re-import or restart the plugin in Figma**.
 4. **Auto-Reconnect & Offline Buffer**: If Figma is opened before the Rust service starts, the plugin displays a waiting screen and connects automatically the instant the service is up.
@@ -58,102 +58,96 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 ## 🚀 Quick Start
 
-### 1. One-Line Setup & Launch with NPX (No Rust toolchain needed)
+### 1. One-command setup with NPX (No Rust toolchain needed)
 
 ```bash
-# Launch interactive MCP server
-npx -y figma-rust-mcp@latest
+npx -y figma-rust-mcp@latest --init
 ```
-*(Automatically downloads precompiled native binary for macOS Apple Silicon/Intel, Linux, or Windows).*
+Choose an action from the menu:
 
----
-
-### 2. Install the Figma Plugin (Permanent One-Time Setup)
-
-Create the permanent Thin Loader folder in your home directory:
-
-```bash
-npx -y figma-rust-mcp@latest --setup-plugin
+```text
+1) Quick setup — install plugin + start in background at login
+2) Install/update Figma plugin only
+3) Start server in this terminal
+4) Check background service
+5) Upgrade package and refresh setup
+6) Remove background service
+0) Exit
 ```
 
-1. Open **Figma Desktop**.
-2. Go to **Plugins** → **Development** → **Import plugin from manifest...**
-3. Select `~/.figma-mcp/plugin/manifest.json` (or `plugin/manifest.json` inside this repository).
-4. Run the plugin: **Plugins** → **Development** → **Figma MCP Bridge**.
-5. **Done!** Future updates to `figma-rust-mcp` will stream to Figma automatically.
+Choose **1** for the recommended setup. It downloads the platform binary,
+installs the permanent plugin loader, and starts the background service at
+login. Then import the manifest into Figma once: open **Plugins → Development
+→ Import plugin from manifest...**, select
+`~/.figma-rust-mcp/plugin/manifest.json`, and run **Figma Rust MCP Bridge**. Future
+updates are streamed to the plugin automatically.
 
----
+The runner automatically downloads the precompiled native binary for macOS
+(Apple Silicon or Intel), Linux, or Windows. Use `--configure` as an alias for
+`--init`.
 
-### 3. Run as Auto-Start Background Service (Recommended)
-
-Run `figma-rust-mcp` seamlessly in the background across all your AI editors without keeping a terminal open:
+For scripts and direct use, the individual options remain available:
 
 ```bash
-# Install and start background service (macOS LaunchAgent, Linux systemd, Windows Task)
-npx -y figma-rust-mcp@latest --install-service
-
-# Check live background service status & bridge health
+npx -y figma-rust-mcp@latest --setup-plugin      # install/update plugin
+npx -y figma-rust-mcp@latest --install-service   # plugin + background service
 npx -y figma-rust-mcp@latest --service-status
-
-# One-command upgrade to latest version & auto-restart background service
 npx -y figma-rust-mcp@latest --upgrade
-
-# Add convenient 'figma-mcp' alias to your shell profile (~/.zshrc, ~/.bashrc)
 npx -y figma-rust-mcp@latest --alias
-
-# Stop and remove background service
 npx -y figma-rust-mcp@latest --uninstall-service
 ```
+
+Run `npx -y figma-rust-mcp@latest` to launch the interactive server directly.
 
 ---
 
 ### Windows background mode
 
-Double-clicking `figma-mcp.exe` starts the server in a detached process and closes
+Double-clicking `figma-rust-mcp.exe` starts the server in a detached process and closes
 its launcher console. From PowerShell or Command Prompt, use:
 
 ```powershell
-.\figma-mcp.exe --background
+.\figma-rust-mcp.exe --background
 ```
 
 The server keeps running after the terminal closes. Logs are appended to
-`%LOCALAPPDATA%\figma-mcp\logs\server.log`. Use `--server` for the foreground
+`%LOCALAPPDATA%\figma-rust-mcp\logs\server.log`. Use `--server` for the foreground
 terminal dashboard, or `--stdio` for an MCP client subprocess.
 
 `--install-service` through the npm runner configures background startup at login.
 Re-run the installation command to update an existing Windows task. Removing the
 task disables future login startup; stop an already detached server through Task
-Manager (`figma-mcp.exe`). The launcher console may appear briefly when opening
+Manager (`figma-rust-mcp.exe`). The launcher console may appear briefly when opening
 the executable; the server itself does not retain a console window.
 
-### 4. Build from Source (Optional)
+### 2. Build from Source (Optional)
 
 If you prefer building directly with the [Rust toolchain](https://rustup.rs/) (`cargo >= 1.80`):
 
 ```bash
 git clone https://github.com/BuiHung1612/figma-mcp.git
-cd figma-mcp
+cd figma-rust-mcp
 cargo build --release
-./target/release/figma-mcp
+./target/release/figma-rust-mcp
 ```
 
 ---
 
-### 5. Configure Your MCP Client
+### 3. Configure Your MCP Client
 
 #### Codex and clients using Streamable HTTP (Recommended)
 
 Use the `/mcp` endpoint. It accepts `POST` JSON-RPC requests directly:
 
 ```toml
-[mcp_servers.figma-mcp]
+[mcp_servers.figma-rust-mcp]
 url = "http://127.0.0.1:38451/mcp"
 ```
 
 For Codex CLI, the equivalent command is:
 
 ```bash
-codex mcp add figma-mcp --url http://127.0.0.1:38451/mcp
+codex mcp add figma-rust-mcp --url http://127.0.0.1:38451/mcp
 ```
 
 #### Google Antigravity (SSE Transport)
@@ -161,7 +155,7 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 ```json
 {
   "mcpServers": {
-    "figma-mcp": {
+    "figma-rust-mcp": {
       "serverUrl": "http://127.0.0.1:38451/sse"
     }
   }
@@ -174,7 +168,7 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 ```json
 {
   "mcpServers": {
-    "figma-mcp": {
+    "figma-rust-mcp": {
       "url": "http://127.0.0.1:38451/sse"
     }
   }
@@ -214,7 +208,7 @@ Figma plugin only if the reported hash does not change.
 
 ## 🛠️ MCP Tools Reference
 
-`figma-mcp` provides **15 first-class MCP tools**:
+`figma-rust-mcp` provides **15 first-class MCP tools**:
 
 ### 1. `figma_status`
 Checks live bridge connection status, connected Figma tabs/files, in-memory index health, queue length, and latency statistics.

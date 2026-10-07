@@ -248,7 +248,7 @@ async function handlePluginRequest(request) {
       var runner = new Function("figma", "__html__", request.code);
       runner(figma, __html__);
     } catch (err) {
-      console.error("[figma-mcp dynamic] Failed to re-evaluate dynamic runtime:", err);
+      console.error("[figma-rust-mcp dynamic] Failed to re-evaluate dynamic runtime:", err);
     }
     return;
   }

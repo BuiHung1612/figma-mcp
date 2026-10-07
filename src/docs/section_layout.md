@@ -1,5 +1,5 @@
 
-# figma-mcp — Layout Rules
+# figma-rust-mcp — Layout Rules
 
 ---
 

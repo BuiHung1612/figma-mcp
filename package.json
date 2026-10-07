@@ -1,12 +1,11 @@
 {
   "name": "figma-rust-mcp",
-  "version": "3.2.13",
-  "description": "Claude Code to Figma \u2014 Bidirectional MCP bridge. AI draws UI on Figma canvas, reads designs back. Works with Claude, Cursor, VS Code, Windsurf, Antigravity. No API key needed.",
-  "mcpName": "io.github.BuiHung1612/figma-mcp",
+  "version": "3.2.14",
+  "description": "Claude Code to Figma — Bidirectional MCP bridge. AI draws UI on Figma canvas, reads designs back. Works with Claude, Cursor, VS Code, Windsurf, Antigravity. No API key needed.",
+  "mcpName": "io.github.BuiHung1612/figma-rust-mcp",
   "type": "module",
   "bin": {
-    "figma-rust-mcp": "bin/figma-mcp.js",
-    "figma-mcp": "bin/figma-mcp.js"
+    "figma-rust-mcp": "bin/figma-rust-mcp.js"
   },
   "files": [
     "bin",
@@ -41,7 +40,7 @@
     "plugin",
     "figma-plugin",
     "ui-generation",
-    "figma-mcp",
+    "figma-rust-mcp",
     "ai-to-figma",
     "claude-to-figma",
     "code-to-figma",
