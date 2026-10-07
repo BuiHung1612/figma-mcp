@@ -49,7 +49,7 @@
       font-family: var(--font-ui);
       background: var(--bg);
       color: var(--text-primary);
-      font-size: 11px;
+      font-size: 12px;
       line-height: 1.4;
       -webkit-font-smoothing: antialiased;
       user-select: none;
@@ -175,9 +175,9 @@
     .brand-info { display: flex; flex-direction: column; min-width: 0; }
     .brand-title-row { display: flex; align-items: baseline; gap: 5px; }
     .brand-name { font-size: 11px; font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary); line-height: 1; }
-    .brand-ver { font-size: 8px; font-weight: 600; color: var(--text-muted); font-family: var(--font-mono); }
+    .brand-ver { font-size: 9px; font-weight: 600; color: var(--text-muted); font-family: var(--font-mono); }
     .brand-file {
-      font-size: 9px;
+      font-size: 10px;
       color: var(--text-secondary);
       font-weight: 500;
       line-height: 1.2;
@@ -196,8 +196,8 @@
     }
 
     .header-icon-btn {
-      width: 22px;
-      height: 22px;
+      width: 28px;
+      height: 28px;
       padding: 0;
       border-radius: var(--radius-xs);
       background: var(--surface-card);
@@ -214,6 +214,7 @@
       border-color: var(--border-light);
       color: var(--text-primary);
     }
+    button:disabled { cursor: wait; opacity: 0.55; }
     .header-icon-btn:active { transform: scale(0.94); }
     .header-icon-btn.indexing svg {
       animation: spin 1s linear infinite;
@@ -221,12 +222,14 @@
     }
 
     .status-pill {
+      appearance: none;
       display: flex; align-items: center; gap: 5px;
       background: var(--surface-card);
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-full);
-      padding: 2.5px 7px 2.5px 5px;
-      font-size: 9px; font-weight: 600;
+      min-height: 28px;
+      padding: 4px 9px 4px 7px;
+      font-size: 10px; font-weight: 600;
       color: var(--text-secondary);
       transition: all var(--transition);
       cursor: pointer;
@@ -285,6 +288,12 @@
       min-width: 0;
       flex: 1;
       cursor: pointer;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      font: inherit;
     }
 
     .selection-icon-wrap {
@@ -335,10 +344,10 @@
       align-items: center;
       justify-content: center;
       gap: 4px;
-      height: 22px;
+      min-height: 28px;
       padding: 0 6px;
       border-radius: var(--radius-xs);
-      font-size: 8.5px;
+      font-size: 10px;
       font-weight: 600;
       font-family: var(--font-mono);
       background: var(--surface-base);
@@ -354,7 +363,7 @@
       color: var(--text-primary);
     }
     .act-btn:active { transform: scale(0.95); }
-    .act-btn.icon-only { width: 22px; padding: 0; }
+    .act-btn.icon-only { width: 28px; padding: 0; }
     .act-btn.badge-btn {
       background: rgba(147, 129, 255, 0.12);
       border-color: rgba(147, 129, 255, 0.28);
@@ -397,7 +406,7 @@
     .telemetry-cell:hover { background: rgba(255, 255, 255, 0.02); }
 
     .telemetry-label {
-      font-size: 7.5px;
+      font-size: 9px;
       font-weight: 700;
       letter-spacing: 0.6px;
       text-transform: uppercase;
@@ -414,7 +423,7 @@
       align-items: baseline;
       gap: 1.5px;
     }
-    .telemetry-unit { font-size: 7.5px; font-weight: 600; color: var(--text-muted); }
+    .telemetry-unit { font-size: 9px; font-weight: 600; color: var(--text-muted); }
 
     .telemetry-cell.writes .telemetry-value { color: var(--ghost-lavender); }
     .telemetry-cell.reads  .telemetry-value { color: var(--ghost-cyan); }
@@ -443,11 +452,12 @@
     .terminal-tabs { display: flex; align-items: center; gap: 3px; }
 
     .t-tab {
-      font-size: 8.5px;
+      font-size: 10px;
       font-weight: 600;
       font-family: var(--font-mono);
       letter-spacing: 0.2px;
-      padding: 2px 7px;
+      min-height: 28px;
+      padding: 4px 8px;
       border-radius: var(--radius-xs);
       color: var(--text-muted);
       background: transparent;
@@ -458,8 +468,10 @@
     .t-tab:hover { color: var(--text-secondary); background: rgba(255,255,255,0.04); }
     .t-tab.active { color: var(--text-primary); background: var(--surface-card); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
     .t-tab.tab-err.active { color: var(--ghost-rose); }
+    :focus-visible { outline: 2px solid var(--ghost-lavender); outline-offset: 2px; }
+    .modal-input:focus-visible { outline: none; }
     .tab-badge-err {
-      font-size: 7.5px;
+      font-size: 9px;
       font-weight: 700;
       color: var(--ghost-rose);
       background: rgba(251, 113, 133, 0.18);
@@ -473,7 +485,7 @@
     .terminal-meta { display: flex; align-items: center; gap: 6px; }
 
     .event-badge {
-      font-size: 8px;
+      font-size: 9px;
       font-weight: 600;
       font-family: var(--font-mono);
       color: var(--text-muted);
@@ -505,7 +517,7 @@
       transition: background 0.1s ease;
     }
     .log-line:hover { background: rgba(255,255,255,0.03); }
-    .log-ts { font-size: 8px; color: var(--text-muted); flex-shrink: 0; letter-spacing: -0.2px; }
+    .log-ts { font-size: 9px; color: var(--text-muted); flex-shrink: 0; letter-spacing: -0.2px; }
     .log-prompt { color: var(--ghost-lavender); font-size: 9px; flex-shrink: 0; font-weight: 700; }
     .log-msg { flex: 1; word-break: break-all; color: var(--text-secondary); }
     .log-msg.ok   { color: var(--ghost-mint); }
@@ -589,6 +601,10 @@
       pointer-events: auto;
     }
 
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+
     /* ── CUSTOM IN-PLUGIN MODAL DIALOG (No window.prompt dependency) ── */
     .modal-overlay {
       position: fixed;
@@ -601,11 +617,13 @@
       padding: 12px;
       z-index: 999;
       opacity: 0;
+      visibility: hidden;
       pointer-events: none;
       transition: opacity var(--transition);
     }
     .modal-overlay.show {
       opacity: 1;
+      visibility: visible;
       pointer-events: auto;
     }
     .modal-card {
@@ -643,6 +661,7 @@
       color: var(--text-secondary);
       line-height: 1.35;
     }
+    .modal-error { min-height: 14px; color: var(--ghost-rose); font-size: 10px; }
     .modal-input {
       width: 100%;
       background: var(--surface-base);
@@ -683,7 +702,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma MCP</span>
-            <span class="brand-ver" id="runtime-version">v3.2.12</span>
+            <span class="brand-ver" id="runtime-version">v3.2.13</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -691,7 +710,7 @@
 
       <div class="header-actions">
         <!-- Re-index Icon Button -->
-        <button class="header-icon-btn" id="reindex-btn" onclick="triggerManualReindex()" title="Sync Index (Re-index Figma canvas to MCP)">
+        <button class="header-icon-btn" id="reindex-btn" onclick="triggerManualReindex()" title="Sync index" aria-label="Sync Figma canvas index">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="12 2 2 7 12 12 22 7 12 2"/>
             <polyline points="2 17 12 22 22 17"/>
@@ -700,14 +719,14 @@
         </button>
 
         <!-- Reconnect / Probe Bridge Port Button -->
-        <button class="header-icon-btn" id="reconnect-btn" onclick="reconnect()" title="Reconnect / Probe Bridge Port">
+        <button class="header-icon-btn" id="reconnect-btn" onclick="reconnect()" title="Reconnect" aria-label="Reconnect to Figma MCP">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
           </svg>
         </button>
 
         <!-- Copy File / Session Link -->
-        <button class="header-icon-btn" id="file-link-btn" onclick="copyFileLink(event)" title="🔗 Set / Copy Figma File Link">
+        <button class="header-icon-btn" id="file-link-btn" onclick="copyFileLink(event)" title="Set or copy Figma file link" aria-label="Set or copy Figma file link">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -715,10 +734,10 @@
         </button>
 
         <!-- Connection Status Pill -->
-        <div class="status-pill" id="status-pill" onclick="handleStatusClick()" title="Connection Status (Click for details)">
-          <div class="dot yellow" id="dot"></div>
+        <button type="button" class="status-pill" id="status-pill" onclick="handleStatusClick()" title="Connection status. Click for details" aria-label="Connection status: Connecting. Click for details">
+          <span class="dot yellow" id="dot" aria-hidden="true"></span>
           <span id="status-text">Connecting</span>
-        </div>
+        </button>
       </div>
     </header>
 
@@ -740,21 +759,21 @@
 
     <!-- ── SELECTION INSPECTOR HERO CARD ── -->
     <div class="selection-card" id="selection-card">
-      <div class="selection-main" onclick="focusSelection()" title="Click to center view on selection">
-        <div class="selection-icon-wrap" id="selection-icon">
+      <button type="button" class="selection-main" onclick="focusSelection()" title="Center view on selection" aria-label="Center view on selected layer">
+        <span class="selection-icon-wrap" id="selection-icon">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="9"/>
           </svg>
-        </div>
-        <div class="selection-text">
+        </span>
+        <span class="selection-text">
           <span class="selection-name" id="selection-name">No selection</span>
           <span class="selection-meta" id="selection-meta">Document canvas root</span>
-        </div>
-      </div>
+        </span>
+      </button>
 
       <div class="selection-actions" id="selection-actions" style="display:none;">
         <!-- Snapshot PNG button -->
-        <button class="act-btn icon-only" id="snapshot-btn" onclick="exportSelectionImage(event)" title="📸 Copy layer PNG (2x) to clipboard">
+        <button class="act-btn icon-only" id="snapshot-btn" onclick="exportSelectionImage(event)" title="Copy layer PNG (2x) to clipboard" aria-label="Copy selected layer as a 2x PNG">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
             <circle cx="12" cy="13" r="4"/>
@@ -762,7 +781,7 @@
         </button>
 
         <!-- Copy Link to Selection Frame button -->
-        <button class="act-btn icon-only" id="link-btn" onclick="copySelectionLink(event)" title="🔗 Copy link to selection frame">
+        <button class="act-btn icon-only" id="link-btn" onclick="copySelectionLink(event)" title="Copy link to selection frame" aria-label="Copy link to selected frame">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -770,7 +789,7 @@
         </button>
 
         <!-- Focus / Center on Canvas button -->
-        <button class="act-btn icon-only" onclick="focusSelection()" title="🎯 Center view on canvas">
+        <button class="act-btn icon-only" onclick="focusSelection()" title="Center view on canvas" aria-label="Center view on selected layer">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
             <line x1="22" y1="12" x2="18" y2="12"/>
@@ -781,7 +800,7 @@
         </button>
 
         <!-- Copy Node ID button -->
-        <button class="act-btn icon-only" id="copy-id-btn" onclick="copySelectionId(event)" title="📋 Copy Figma Node ID">
+        <button class="act-btn icon-only" id="copy-id-btn" onclick="copySelectionId(event)" title="Copy Figma Node ID" aria-label="Copy Figma node ID">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -789,7 +808,7 @@
         </button>
 
         <!-- Node Type Badge button (also clickable to copy ID) -->
-        <button class="act-btn badge-btn" id="selection-badge" onclick="copySelectionId(event)" title="📋 Click to copy Figma Node ID">
+        <button class="act-btn badge-btn" id="selection-badge" onclick="copySelectionId(event)" title="Copy Figma Node ID" aria-label="Copy Figma node ID">
           FRAME
         </button>
       </div>
@@ -826,13 +845,13 @@
         </div>
         <div class="terminal-meta">
           <span class="event-badge" id="log-count">0 ev</span>
-          <button class="act-btn icon-only" onclick="copyLogs()" title="Copy console logs (respects active tab)" style="height:18px;width:18px;border-radius:3px;">
+          <button class="act-btn icon-only" onclick="copyLogs()" title="Copy console logs" aria-label="Copy visible console logs" style="height:24px;width:24px;border-radius:3px;">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
             </svg>
           </button>
-          <button class="act-btn icon-only" onclick="clearLog()" title="Clear stream console" style="height:18px;width:18px;border-radius:3px;">
+          <button class="act-btn icon-only" onclick="clearLog()" title="Clear stream console" aria-label="Clear console logs" style="height:24px;width:24px;border-radius:3px;">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
             </svg>
@@ -850,21 +869,22 @@
   </div>
 
   <!-- File Key Input Modal Dialog -->
-  <div class="modal-overlay" id="key-modal-overlay">
-    <div class="modal-card">
+    <div class="modal-overlay" id="key-modal-overlay" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="file-key-title" aria-describedby="file-key-desc">
       <div class="modal-title-row">
         <div class="modal-title">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--ghost-lavender)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
           </svg>
-          Set Figma File Link
+          <span id="file-key-title">Set Figma File Link</span>
         </div>
       </div>
-      <div class="modal-desc">
+      <div class="modal-desc" id="file-key-desc">
         Paste full Figma file URL or File Key to generate real browser links for your layers:
       </div>
-      <input type="text" class="modal-input" id="file-key-input" placeholder="https://www.figma.com/design/..." spellcheck="false" autocomplete="off" />
+      <input type="text" class="modal-input" id="file-key-input" aria-label="Figma file URL or key" aria-describedby="file-key-error" placeholder="https://www.figma.com/design/…" spellcheck="false" autocomplete="off" />
+      <div class="modal-error" id="file-key-error" role="alert"></div>
       <div class="modal-actions">
         <button class="btn" onclick="closeKeyModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveFileKeyFromModal()">Save & Copy</button>
@@ -873,7 +893,7 @@
   </div>
 
   <!-- Floating Toast Component -->
-  <div class="toast" id="toast">
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true">
     <span id="toast-icon">✓</span>
     <span id="toast-text">Action completed</span>
   </div>
@@ -1005,6 +1025,7 @@
         return;
       }
       if (reindexBtn) reindexBtn.classList.add("indexing");
+      if (reindexBtn) reindexBtn.disabled = true;
       showToast("Syncing canvas index…", "⚡");
       log("⚡ Manual re-index triggered…", "info");
       parent.postMessage({ pluginMessage: { type: "manual-reindex" } }, "*");
@@ -1019,7 +1040,7 @@
     function exportSelectionImage(event) {
       if (event) event.stopPropagation();
       if (currentSelectionCount === 0) return;
-      if (snapshotBtn) snapshotBtn.style.opacity = "0.5";
+      if (snapshotBtn) snapshotBtn.disabled = true;
       parent.postMessage({ pluginMessage: { type: "export-selection-image", scale: 2 } }, "*");
     }
 
@@ -1046,35 +1067,70 @@
       var modal = document.getElementById("key-modal-overlay");
       var input = document.getElementById("file-key-input");
       if (modal && input) {
+        keyModalOpener = document.activeElement;
         input.value = fileKey ? ("https://www.figma.com/design/" + fileKey) : "";
+        document.getElementById("file-key-error").textContent = "";
+        modal.setAttribute("aria-hidden", "false");
         modal.classList.add("show");
         window.__onKeySaved = onSuccess;
         setTimeout(function() { input.focus(); input.select(); }, 50);
       }
     }
 
+    var keyModalOpener = null;
     function closeKeyModal() {
       var modal = document.getElementById("key-modal-overlay");
-      if (modal) modal.classList.remove("show");
+      if (modal) {
+        modal.classList.remove("show");
+        modal.setAttribute("aria-hidden", "true");
+      }
       window.__onKeySaved = null;
+      if (keyModalOpener && keyModalOpener.focus) keyModalOpener.focus();
+      keyModalOpener = null;
+    }
+
+    function parseFigmaFileKey(value) {
+      var trimmed = value.trim();
+      var match = trimmed.match(/^https?:\/\/(?:www\.)?figma\.com\/(?:file|design)\/([a-zA-Z0-9_-]+)(?:\/|\?|#|$)/i);
+      var key = match ? match[1] : trimmed;
+      return /^[a-zA-Z0-9_-]{8,}$/.test(key) ? key : null;
     }
 
     function saveFileKeyFromModal() {
       var input = document.getElementById("file-key-input");
       var val = input ? input.value.trim() : "";
-      if (val) {
-        var match = val.match(/(?:file|design)\/([a-zA-Z0-9]+)/);
-        var parsedKey = match ? match[1] : val;
-        fileKey = parsedKey;
-        parent.postMessage({ pluginMessage: { type: "set-file-key", fileKey: parsedKey } }, "*");
-        showToast("File Key saved!", "🔗");
+      var parsedKey = parseFigmaFileKey(val);
+      if (!parsedKey) {
+        document.getElementById("file-key-error").textContent = "Enter a valid Figma file URL or file key.";
+        if (input) input.focus();
+        return;
       }
+      fileKey = parsedKey;
+      parent.postMessage({ pluginMessage: { type: "set-file-key", fileKey: parsedKey } }, "*");
       var cb = window.__onKeySaved;
       closeKeyModal();
       if (typeof cb === "function") {
         cb(fileKey);
+      } else {
+        copyTextToClipboard("https://www.figma.com/design/" + fileKey, "File link copied");
       }
     }
+
+    document.getElementById("file-key-input").addEventListener("input", function() {
+      document.getElementById("file-key-error").textContent = "";
+    });
+    document.addEventListener("keydown", function(event) {
+      var modal = document.getElementById("key-modal-overlay");
+      if (!modal.classList.contains("show")) return;
+      if (event.key === "Escape") {
+        closeKeyModal();
+      } else if (event.key === "Tab") {
+        var controls = modal.querySelectorAll("button:not([disabled]), input:not([disabled])");
+        var first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    });
 
     function copyFileLink(event) {
       if (event) {
@@ -1083,7 +1139,7 @@
       }
       openKeyModal(function(savedKey) {
         if (savedKey) {
-          showToast("File link updated", "🔗");
+          copyTextToClipboard("https://www.figma.com/design/" + savedKey, "File link copied");
         }
       });
     }
@@ -1129,20 +1185,7 @@
         link = "https://www.figma.com/design/draft/" + encodedSlug + "?node-id=" + figmaNodeId;
       }
       
-      var copied = copyTextFallback(link);
-      if (!copied && navigator && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(link).catch(function() {});
-      }
-      
-      showToast("Link: " + figmaNodeId, "🔗");
-      try {
-        parent.postMessage({
-          pluginMessage: {
-            type: "notify",
-            message: "🔗 Link copied to clipboard! (" + figmaNodeId + ")"
-          }
-        }, "*");
-      } catch(e) {}
+      copyTextToClipboard(link, "Link copied");
     }
 
     function copySelectionId(event) {
@@ -1183,6 +1226,7 @@
       statusEl.textContent = text;
 
       statusPill.className = "status-pill";
+      statusPill.setAttribute("aria-label", "Connection status: " + text + ". Click for details");
       if (state === "green")  statusPill.classList.add("connected");
       if (state === "red")    statusPill.classList.add("offline");
       if (state === "yellow") statusPill.classList.add("connecting");
@@ -1277,20 +1321,24 @@
       }
     }
 
-    function copyTextToClipboard(text, successMsg) {
+    async function copyTextToClipboard(text, successMsg) {
       if (!text) return;
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function() {
+        try {
+          await navigator.clipboard.writeText(text);
           showToast(successMsg || "Copied!", "✓");
-        }).catch(function() {
-          fallbackCopy(text, successMsg);
-        });
-      } else {
-        fallbackCopy(text, successMsg);
+          return true;
+        } catch(e) {}
       }
+      if (fallbackCopy(text)) {
+        showToast(successMsg || "Copied!", "✓");
+        return true;
+      }
+      showToast("Copy failed", "✗");
+      return false;
     }
 
-    function fallbackCopy(text, successMsg) {
+    function fallbackCopy(text) {
       try {
         var ta = document.createElement("textarea");
         ta.value = text;
@@ -1298,12 +1346,10 @@
         ta.style.left = "-9999px";
         document.body.appendChild(ta);
         ta.select();
-        document.execCommand("copy");
+        var copied = document.execCommand("copy");
         document.body.removeChild(ta);
-        showToast(successMsg || "Copied!", "✓");
-      } catch(e) {
-        showToast("Copy failed", "✗");
-      }
+        return copied;
+      } catch(e) { return false; }
     }
 
     function copyLogs() {
@@ -1427,7 +1473,7 @@
           everConnected = true;
           consecutiveErrors = 0;
           lastSuccessfulPollAt = Date.now();
-          setStatus("green", "Connected");
+          setStatus("yellow", "Server found · connecting…");
           connectWs();
           return;
         }
@@ -1444,7 +1490,7 @@
         everConnected = true;
         consecutiveErrors = 0;
         lastSuccessfulPollAt = Date.now();
-        setStatus("green", "Connected");
+        setStatus("yellow", "Server found · connecting…");
         connectWs();
         return;
       } catch(_) {}
@@ -1575,15 +1621,14 @@
 
       ws.onerror = function() {
         if (ws !== socket) return;
-        if (!everConnected) {
-          setStatus("yellow", "Connecting…");
-        }
+        setStatus("yellow", everConnected ? "Reconnecting…" : "Connecting…");
       };
 
       ws.onclose = function() {
         if (pingTimer) clearInterval(pingTimer);
         if (ws !== socket) return;
         wsConnected = false;
+        setStatus("yellow", "Reconnecting…");
         if (polling) {
           startLongPoll();
           if (retryTimer) clearTimeout(retryTimer);
@@ -1865,7 +1910,11 @@
       }
 
       if (msg.type === "selection-image-exported") {
-        if (snapshotBtn) snapshotBtn.style.opacity = "1";
+        if (snapshotBtn) snapshotBtn.disabled = false;
+        if (msg.error) {
+          showToast("Export failed: " + msg.error, "✗");
+          return;
+        }
         if (msg.bytes && msg.bytes.length > 0) {
           try {
             var blob = new Blob([new Uint8Array(msg.bytes)], { type: "image/png" });
@@ -1894,6 +1943,7 @@
 
       if (msg.type === "index-progress") {
         if (reindexBtn) reindexBtn.classList.add("indexing");
+        if (reindexBtn) reindexBtn.disabled = true;
         if (indexProgressWrap) indexProgressWrap.classList.add("active");
         if (indexProgressText && msg.label) indexProgressText.textContent = msg.label;
         if (indexProgressPct && msg.percent !== undefined) indexProgressPct.textContent = msg.percent + "%";
@@ -1901,9 +1951,18 @@
         return;
       }
 
+      if (msg.type === "index-start") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({
+            type: "index-start", fileName: msg.fileName, pageId: msg.pageId, startMs: msg.startMs
+          })); } catch(e) {}
+        }
+        return;
+      }
+
       if (msg.type === "index-chunk") {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send(JSON.stringify({ type: "index-chunk", nodes: msg.nodes })); } catch(e) {}
+          try { ws.send(JSON.stringify({ type: "index-chunk", pageId: msg.pageId, nodes: msg.nodes })); } catch(e) {}
         }
         return;
       }
@@ -1917,6 +1976,7 @@
 
       if (msg.type === "index-update") {
         if (reindexBtn) reindexBtn.classList.remove("indexing");
+        if (reindexBtn) reindexBtn.disabled = false;
         if (indexProgressPct) indexProgressPct.textContent = "100%";
         if (indexProgressFill) indexProgressFill.style.width = "100%";
         if (indexProgressText) indexProgressText.textContent = "Index ready";
@@ -1938,6 +1998,16 @@
             log("Indexed " + (msg.fileName || "canvas") + " (" + elapsed + "ms)", "ok", "read");
           } catch(e) {}
         }
+        return;
+      }
+
+      if (msg.type === "index-error") {
+        if (reindexBtn) {
+          reindexBtn.classList.remove("indexing");
+          reindexBtn.disabled = false;
+        }
+        if (indexProgressWrap) indexProgressWrap.classList.remove("active");
+        showToast("Index failed: " + (msg.error || "Unknown error"), "✗");
         return;
       }
 

@@ -777,6 +777,18 @@ handlers.export_image = async function(params) {
 // index_scan — active-page nodes/tokens; document-wide components on demand.
 var indexScanTask = null;
 var indexScanKey = null;
+function indexNodeRecord(node) {
+  var info = extractDesignTree(node, 0, 0, "compact", false, null, null, {
+    remaining: 1, absolute: false, precise: true, skipChildSummary: true
+  });
+  info.parentId = node.parent && node.parent.type !== "PAGE" ? node.parent.id : null;
+  info.childIds = "children" in node ? node.children.map(function(child) { return child.id; }) : [];
+  if (!info.effectData && node.effects && node.effects.length) {
+    try { info.effectData = JSON.parse(JSON.stringify(node.effects)); } catch(e) {}
+  }
+  return info;
+}
+
 handlers.index_scan = async function(params) {
   var includeComponents = !(params && params.deferComponents);
   var key = figma.currentPage.id + ":" + includeComponents;
@@ -792,6 +804,10 @@ handlers.index_scan = async function(params) {
 
 async function runIndexScan(includeComponents) {
   var page = figma.currentPage;
+  var indexStartedAt = Date.now();
+  if (figma.ui) {
+    try { figma.ui.postMessage({ type: "index-start", fileName: figma.root.name, pageId: page.id, startMs: indexStartedAt }); } catch(e) {}
+  }
   if (figma.ui) {
     try {
       figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 5, label: "Scanning canvas layers…" });
@@ -799,44 +815,41 @@ async function runIndexScan(includeComponents) {
   }
 
   var pageNodes = [];
+  var visitedNodes = 0;
+  var nodesTruncated = false;
   try {
     var topFrames = page.children || [];
-    var CHUNK_SIZE = 10;
-    var totalFrames = topFrames.length;
-
-    for (var i = 0; i < topFrames.length; i += CHUNK_SIZE) {
-      var chunk = topFrames.slice(i, i + CHUNK_SIZE);
-      var chunkData = chunk.map(function(n) {
-        return Object.assign(nodeToInfo(n), { childCount: "children" in n ? n.children.length : 0 });
-      });
-      Array.prototype.push.apply(pageNodes, chunkData);
-
-      var nodePct = totalFrames > 0 ? Math.min(40, Math.round(5 + (pageNodes.length / totalFrames) * 35)) : 35;
-      if (figma.ui) {
-        try {
-          figma.ui.postMessage({
-            type: "index-progress",
-            stage: "nodes",
-            percent: nodePct,
-            label: "Layers: " + pageNodes.length + (totalFrames ? "/" + totalFrames : "")
-          });
-        } catch(e) {}
+    pageNodes = topFrames.map(function(n) {
+      return Object.assign(nodeToInfo(n), { childCount: "children" in n ? n.children.length : 0 });
+    });
+    var nodeChunk = [];
+    var NODE_CHUNK_SIZE = 100;
+    var stack = [{ children: topFrames, next: 0 }];
+    while (stack.length) {
+      var cursor = stack[stack.length - 1];
+      if (cursor.next >= cursor.children.length) { stack.pop(); continue; }
+      if (visitedNodes >= 50000) { nodesTruncated = true; break; }
+      var currentNode = cursor.children[cursor.next++];
+      if (!currentNode || currentNode.removed) continue;
+      nodeChunk.push(indexNodeRecord(currentNode));
+      visitedNodes++;
+      if ("children" in currentNode && currentNode.children.length) {
+        stack.push({ children: currentNode.children, next: 0 });
       }
-
-      // Only stream explicit full reindexes for the still-active page.
-      // Startup/page switches publish one snapshot so chunks cannot mix pages.
-      if (includeComponents && figma.currentPage.id === page.id && topFrames.length > CHUNK_SIZE && figma.ui) {
-        try {
-          figma.ui.postMessage({ type: "index-chunk", nodes: chunkData });
-        } catch(e3) {}
-      }
-
-      // Yield between batches so the next batch does not monopolize the thread.
-      if (typeof yieldToUI === "function") {
-        await yieldToUI(0);
+      if (nodeChunk.length >= NODE_CHUNK_SIZE) {
+        if (figma.ui && figma.currentPage.id === page.id) {
+          figma.ui.postMessage({ type: "index-chunk", pageId: page.id, nodes: nodeChunk });
+        }
+        nodeChunk = [];
+        if (figma.ui) figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 20, label: "Layers: " + visitedNodes });
+        if (typeof yieldToUI === "function") await yieldToUI(0);
       }
     }
-  } catch (e) {}
+    if (nodeChunk.length && figma.ui && figma.currentPage.id === page.id) {
+      figma.ui.postMessage({ type: "index-chunk", pageId: page.id, nodes: nodeChunk });
+    }
+    if (figma.ui) figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 40, label: "Layers: " + visitedNodes });
+  } catch (e) { nodesTruncated = true; }
 
   if (typeof yieldToUI === "function") await yieldToUI(0);
 
@@ -887,16 +900,29 @@ async function runIndexScan(includeComponents) {
     try { return figma.root.getPluginData("mcp_session_id") || "_default"; } catch(e) { return "_default"; }
   })();
 
-  return {
+  var result = {
     fileName: figma.root ? figma.root.name : "unknown",
     sessionId: resolvedSid,
     pageId: page.id,
     componentsDeferred: !includeComponents,
+    nodesTruncated: nodesTruncated,
     pageNodes: pageNodes,
     styles: styles,
     variables: variables,
     components: components,
   };
+  if (figma.ui && figma.currentPage.id === page.id) {
+    try {
+      figma.ui.postMessage({
+        type: "index-update",
+        fileName: result.fileName,
+        sessionId: resolvedSid,
+        startMs: indexStartedAt,
+        data: Object.assign({}, result, { pageNodes: [], nodesStreamed: true }),
+      });
+    } catch(e) {}
+  }
+  return result;
 };
 
 // ─── ALIASES FOR READ HANDLERS ────────────────────────────────────────────────

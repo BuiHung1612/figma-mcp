@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.2.13] — 2026-10-07
+
+### Added
+- Index descendant layers in bounded batches and preserve streamed nodes when final metadata arrives.
+
+### Fixed
+- Report node-index truncation explicitly and preserve direct typography fields when indexing nodes.
+- Resolve variables from their default mode and map `Demi` to font weight 600.
+- Reduce sequential variable reads during design-token setup and improve plugin UI accessibility.
+
 ## [3.2.12] — 2026-10-06
 
 - Fix dynamic runtime bootstrap reopening the thin-loader iframe and interrupting UI loading.

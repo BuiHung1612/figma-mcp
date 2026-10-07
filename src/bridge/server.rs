@@ -1227,6 +1227,23 @@ async fn handle_socket(
                             continue;
                         }
 
+                        if val.get("type").and_then(|v| v.as_str()) == Some("index-start") {
+                            let file_name = val.get("fileName").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let page_id = val.get("pageId").and_then(|v| v.as_str()).unwrap_or("");
+                            let start_ms = val.get("startMs").and_then(|v| v.as_u64()).unwrap_or_else(now_ms);
+                            let mut idx = crate::bridge::index::FigmaIndex::from_raw(
+                                &sid_clone, file_name, &json!([]), None, None, None, start_ms,
+                            );
+                            idx.page_id = Some(page_id.to_string());
+                            idx.dirty = true;
+                            let mut inner = state_clone.inner.lock().await;
+                            if let Some(session) = inner.sessions.get_mut(&sid_clone) {
+                                session.invalidate_reads();
+                                session.index = Some(idx);
+                            }
+                            continue;
+                        }
+
                         // "index-update" = plugin sent pre-indexed data snapshot
                         if val.get("type").and_then(|v| v.as_str()) == Some("index-update") {
                             if let Some(data) = val.get("data") {
@@ -1237,7 +1254,7 @@ async fn handle_socket(
                                 let components = data.get("components");
                                 let start_ms = val.get("startMs").and_then(|v| v.as_u64()).unwrap_or_else(now_ms);
 
-                                let idx = crate::bridge::index::FigmaIndex::from_raw(
+                                let mut idx = crate::bridge::index::FigmaIndex::from_raw(
                                     &sid_clone,
                                     file_name,
                                     page_nodes,
@@ -1246,6 +1263,26 @@ async fn handle_socket(
                                     components,
                                     start_ms,
                                 );
+                                let page_id = data.get("pageId").and_then(|v| v.as_str()).unwrap_or("");
+                                idx.page_id = Some(page_id.to_string());
+                                if data.get("nodesStreamed").and_then(Value::as_bool) == Some(true) {
+                                    let inner = state_clone.inner.lock().await;
+                                    if let Some(previous) = inner.sessions.get(&sid_clone)
+                                        .and_then(|session| session.index.as_ref())
+                                        .filter(|previous| previous.page_id.as_deref() == Some(page_id))
+                                    {
+                                        idx.nodes = previous.nodes.clone();
+                                        idx.top_level_frames = previous.top_level_frames.clone();
+                                        idx.pending_nodes = previous.pending_nodes.clone();
+                                        idx.stats.total_nodes = idx.nodes.len();
+                                        idx.stats.nodes_truncated = previous.stats.nodes_truncated
+                                            || data.get("nodesTruncated").and_then(Value::as_bool) == Some(true);
+                                        idx.dirty = false;
+                                    } else {
+                                        idx.dirty = true;
+                                    }
+                                    drop(inner);
+                                }
                                 eprintln!(
                                     "[figma-mcp] ⚡ Pre-indexed {} nodes, {} components, {} styles, {} variables in {}ms",
                                     idx.stats.total_nodes,
@@ -1262,10 +1299,13 @@ async fn handle_socket(
                         // "index-chunk" = selective streaming of subtree chunks
                         if val.get("type").and_then(|v| v.as_str()) == Some("index-chunk") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
+                                let page_id = val.get("pageId").and_then(|v| v.as_str());
                                 let mut inner = state_clone.inner.lock().await;
                                 if let Some(session) = inner.sessions.get_mut(&sid_clone) {
                                     session.invalidate_reads();
-                                    if let Some(ref mut idx) = session.index {
+                                    if let Some(idx) = session.index.as_mut()
+                                        .filter(|idx| idx.page_id.as_deref() == page_id)
+                                    {
                                         idx.merge_chunk(nodes);
                                     }
                                 }

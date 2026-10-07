@@ -196,13 +196,23 @@ async function buildVariableResolverMapAsync(forceRefresh) {
         var v = vars[i];
         if (v && v.id) rawMap[v.id] = v;
       }
+      var defaultModeByCollection = {};
+      var collections = await figma.variables.getLocalVariableCollectionsAsync();
+      for (var ci = 0; ci < collections.length; ci++) {
+        defaultModeByCollection[collections[ci].id] = collections[ci].defaultModeId;
+      }
 
       function resolveVarValue(v, depth) {
         if (!v || depth > 6) return null;
         var defaultVal = null;
         if (v.valuesByMode) {
-          var modeKeys = Object.keys(v.valuesByMode);
-          if (modeKeys.length > 0) defaultVal = v.valuesByMode[modeKeys[0]];
+          var defaultModeId = defaultModeByCollection[v.variableCollectionId];
+          if (defaultModeId && Object.prototype.hasOwnProperty.call(v.valuesByMode, defaultModeId)) {
+            defaultVal = v.valuesByMode[defaultModeId];
+          } else {
+            var modeKeys = Object.keys(v.valuesByMode);
+            if (modeKeys.length > 0) defaultVal = v.valuesByMode[modeKeys[0]];
+          }
         }
         if (defaultVal && typeof defaultVal === "object" && defaultVal.type === "VARIABLE_ALIAS" && defaultVal.id) {
           var targetVar = rawMap[defaultVal.id];
@@ -816,14 +826,18 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
     if (depth >= maxDepth || budgetSpent) {
       // At the depth limit / node budget: summarize instead of truncating to empty []
       info.childCount = node.children.length;
-      var texts = collectCapped(collectTextContent, node, 15);
-      if (texts.items.length) info.textContent = texts.items;
-      var icons = collectCapped(collectIconNames, node, 10);
-      if (icons.items.length) info.iconNames = icons.items;
-      info.childrenTruncated = budgetSpent ? "nodeBudget" : "maxDepth";
-      if (texts.truncated) info.textContentTruncated = true;
-      if (icons.truncated) info.iconNamesTruncated = true;
-      if (budgetSpent) walkState.truncated = true;
+      if (walkState && walkState.skipChildSummary) {
+        info.childrenTruncated = "indexDiff";
+      } else {
+        var texts = collectCapped(collectTextContent, node, 15);
+        if (texts.items.length) info.textContent = texts.items;
+        var icons = collectCapped(collectIconNames, node, 10);
+        if (icons.items.length) info.iconNames = icons.items;
+        info.childrenTruncated = budgetSpent ? "nodeBudget" : "maxDepth";
+        if (texts.truncated) info.textContentTruncated = true;
+        if (icons.truncated) info.iconNamesTruncated = true;
+        if (budgetSpent) walkState.truncated = true;
+      }
     } else {
       var rawChildren = node.children
         .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })

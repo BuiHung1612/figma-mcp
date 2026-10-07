@@ -560,9 +560,14 @@ handlers.setupDesignTokens = async function(params) {
 
   // Read existing variables in this collection
   var existing = {};
-  for (var vi = 0; vi < collection.variableIds.length; vi++) {
-    var v = await figma.variables.getVariableByIdAsync(collection.variableIds[vi]);
-    if (v) existing[v.name] = v;
+  var existingIds = {};
+  for (var evi = 0; evi < collection.variableIds.length; evi++) {
+    existingIds[collection.variableIds[evi]] = true;
+  }
+  var localVariables = await figma.variables.getLocalVariablesAsync();
+  for (var vi = 0; vi < localVariables.length; vi++) {
+    var v = localVariables[vi];
+    if (v && existingIds[v.id]) existing[v.name] = v;
   }
 
   var created = [];
@@ -599,6 +604,7 @@ handlers.setupDesignTokens = async function(params) {
     } else {
       skipped.push(cName);
     }
+    existing[cName] = cVar;
     applyVariableValue(cVar, colors[cName], function(hex) { return hexToRgbA(hex); });
   }
 
@@ -613,6 +619,7 @@ handlers.setupDesignTokens = async function(params) {
     } else {
       skipped.push(numName);
     }
+    existing[numName] = numVar;
     applyVariableValue(numVar, numbers[numName], function(v) { return Number(v); });
   }
 
@@ -627,6 +634,7 @@ handlers.setupDesignTokens = async function(params) {
     } else {
       skipped.push(fsName);
     }
+    existing[fsName] = fsVar;
     applyVariableValue(fsVar, fontSizes[fsName], function(v) { return Number(v); });
   }
 
@@ -641,13 +649,8 @@ handlers.setupDesignTokens = async function(params) {
     } else {
       skipped.push(fontVarName);
     }
+    existing[fontVarName] = fontVar;
     applyVariableValue(fontVar, fonts[fontVarName], function(v) { return String(v); });
-  }
-
-  // Re-read existing after creates so textStyles can reference new vars
-  for (var vi2 = 0; vi2 < collection.variableIds.length; vi2++) {
-    var v2 = await figma.variables.getVariableByIdAsync(collection.variableIds[vi2]);
-    if (v2) existing[v2.name] = v2;
   }
 
   // Create/update TEXT STYLES with variable references
@@ -1135,4 +1138,3 @@ handlers.bind_component_property_to_text = handlers.bindComponentPropertyToText;
 handlers.bind_component_property = handlers.bindComponentProperty;
 handlers.unbind_component_property = handlers.unbindComponentProperty;
 handlers.remove_component_property = handlers.removeComponentProperty;
-

@@ -46,7 +46,7 @@ fn font_weight(value: &Value) -> Result<u16, String> {
         "light" | "300" => Ok(300),
         "normal" | "regular" | "400" => Ok(400),
         "medium" | "500" => Ok(500),
-        "semibold" | "demibold" | "600" => Ok(600),
+        "semibold" | "demibold" | "demi" | "600" => Ok(600),
         "bold" | "700" => Ok(700),
         "extrabold" | "ultrabold" | "800" => Ok(800),
         "black" | "heavy" | "900" => Ok(900),

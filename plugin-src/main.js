@@ -178,14 +178,9 @@ try {
 } catch(e) {}
 
 async function publishIndex(deferComponents) {
-  var startMs = Date.now();
   var scanResult = await handlers.index_scan({ deferComponents: deferComponents });
   // A scan for the previous page must not overwrite the newly active page.
   if (scanResult.pageId !== figma.currentPage.id) return;
-  figma.ui.postMessage({
-    type: "index-update", data: scanResult, fileName: currentFileName,
-    sessionId: currentSessionId, startMs: startMs
-  });
 }
 
 // Startup indexes the active page and tokens, deferring the file-wide component

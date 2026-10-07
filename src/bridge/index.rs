@@ -100,6 +100,8 @@ pub struct IndexVariable {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexStats {
     pub total_nodes: usize,
+    #[serde(default)]
+    pub nodes_truncated: bool,
     pub total_components: usize,
     #[serde(default)]
     pub components_indexed: bool,
@@ -120,6 +122,7 @@ pub struct FigmaIndex {
     pub variables: Vec<IndexVariable>,
     pub top_level_frames: Vec<String>,
     pub stats: IndexStats,
+    pub page_id: Option<String>,
     pub dirty: bool,
     pub raw_components: Option<Value>,
     pub raw_styles: Option<Value>,
@@ -216,6 +219,7 @@ impl FigmaIndex {
             .unwrap_or(&[]);
 
         for node in nodes_arr {
+            if idx.nodes.len() >= 50_000 { idx.stats.nodes_truncated = true; break; }
             let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if id.is_empty() { continue; }
             idx.top_level_frames.push(id.clone());
@@ -235,8 +239,11 @@ impl FigmaIndex {
 
     pub fn merge_chunk(&mut self, nodes: &[Value]) {
         for node in nodes {
+            if self.nodes.len() >= 50_000 { self.stats.nodes_truncated = true; break; }
             let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if !id.is_empty() && !self.top_level_frames.contains(&id) {
+            let parent_id = node.get("parentId").and_then(Value::as_str)
+                .or_else(|| node.get("parent").and_then(|parent| parent.get("id")).and_then(Value::as_str));
+            if !id.is_empty() && parent_id.is_none() && !self.top_level_frames.contains(&id) {
                 self.top_level_frames.push(id.clone());
             }
             self.ingest_node(node, None);
@@ -250,17 +257,20 @@ impl FigmaIndex {
             _ => return,
         };
 
-        let children_ids: Vec<String> = node
-            .get("children")
+        let children_ids: Vec<String> = node.get("childIds").or_else(|| node.get("children"))
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|c| c.get("id").and_then(|v| v.as_str())).map(|s| s.to_string()).collect())
+            .map(|arr| arr.iter().filter_map(|c| c.as_str().or_else(|| c.get("id").and_then(Value::as_str))).map(str::to_owned).collect())
             .unwrap_or_default();
 
+        let actual_parent = parent_id.map(str::to_owned).or_else(|| {
+            node.get("parentId").and_then(Value::as_str).map(str::to_owned)
+                .or_else(|| node.get("parent").and_then(|parent| parent.get("id")).and_then(Value::as_str).map(str::to_owned))
+        });
         let entry = IndexNode {
             id: id.clone(),
             name: node.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             node_type: node.get("type").and_then(|v| v.as_str()).unwrap_or("UNKNOWN").to_string(),
-            parent_id: parent_id.map(|s| s.to_string()),
+            parent_id: actual_parent,
             width: node.get("width").and_then(|v| v.as_f64())
                 .or_else(|| node.get("absoluteBoundingBox").and_then(|b| b.get("width")).and_then(|v| v.as_f64())),
             height: node.get("height").and_then(|v| v.as_f64())
@@ -293,16 +303,21 @@ impl FigmaIndex {
             border_radius: node.get("borderRadius").cloned()
                 .or_else(|| node.get("cornerRadius").cloned()),
             effects: node.get("effectData").or_else(|| node.get("effects")).cloned(),
-            text_style: node.get("textStyle").cloned(),
+            text_style: text_style_from_node(node),
             full_data: Some(node_snapshot(node)),
             children: children_ids,
         };
 
         self.nodes.insert(id.clone(), entry);
-        if self.nodes.len() >= 50_000 { return; }
+        if self.nodes.len() >= 50_000 {
+            if node.get("children").and_then(Value::as_array).is_some_and(|children| !children.is_empty()) {
+                self.stats.nodes_truncated = true;
+            }
+            return;
+        }
 
         if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
-            for child in children { self.ingest_node(child, Some(&id)); }
+            for child in children { if child.get("type").is_some() { self.ingest_node(child, Some(&id)); } }
         }
     }
 
@@ -312,15 +327,18 @@ impl FigmaIndex {
             _ => return,
         };
 
-        let children_ids: Vec<String> = node
-            .get("children")
+        let has_child_list = node.get("childIds").or_else(|| node.get("children")).and_then(Value::as_array).is_some();
+        let children_ids: Vec<String> = node.get("childIds").or_else(|| node.get("children"))
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|c| c.get("id").and_then(|v| v.as_str())).map(|s| s.to_string()).collect())
+            .map(|arr| arr.iter().filter_map(|c| c.as_str().or_else(|| c.get("id").and_then(Value::as_str))).map(str::to_owned).collect())
             .unwrap_or_default();
 
-        let parent_id = node.get("parentId").and_then(Value::as_str)
-            .or_else(|| node.get("parent").and_then(|p| p.get("id")).and_then(Value::as_str)).map(str::to_owned)
-            .or_else(|| self.nodes.get(&id).and_then(|existing| existing.parent_id.clone()));
+        let parent_id = match node.get("parentId") {
+            Some(Value::Null) => None,
+            Some(value) => value.as_str().map(str::to_owned),
+            None => node.get("parent").and_then(|p| p.get("id")).and_then(Value::as_str).map(str::to_owned)
+                .or_else(|| self.nodes.get(&id).and_then(|existing| existing.parent_id.clone())),
+        };
 
         let entry = IndexNode {
             id: id.clone(),
@@ -361,7 +379,7 @@ impl FigmaIndex {
             effects: node.get("effectData").or_else(|| node.get("effects")).cloned(),
             text_style: node.get("textStyle").cloned(),
             full_data: Some(node_snapshot(node)),
-            children: if children_ids.is_empty() {
+            children: if !has_child_list {
                 self.nodes.get(&id).map(|e| e.children.clone()).unwrap_or_default()
             } else {
                 children_ids
@@ -571,6 +589,21 @@ impl FigmaIndex {
     }
 }
 
+fn text_style_from_node(node: &Value) -> Option<Value> {
+    let mut style = node.get("textStyle").and_then(Value::as_object).cloned().unwrap_or_default();
+    for key in ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "textTransform", "textCase"] {
+        if !style.contains_key(key) {
+            if let Some(value) = node.get(key) { style.insert(key.to_string(), value.clone()); }
+        }
+    }
+    if !style.contains_key("color") {
+        if let Some(color) = node.get("color").or_else(|| node.get("fill")) {
+            style.insert("color".to_string(), color.clone());
+        }
+    }
+    (!style.is_empty()).then_some(Value::Object(style))
+}
+
 impl IndexNode {
     /// Generates a clean, token-efficient, complete CSS & Layout specification
     pub fn to_css_spec(&self) -> serde_json::Value {
@@ -771,6 +804,28 @@ mod tests {
         assert_eq!(index.top_level_frames, vec!["1:1"]);
         assert_eq!(index.search_nodes("welcome", Some("TEXT"), 10).len(), 1);
         assert_eq!(index.get_node("1:2").and_then(|n| n.parent_id.as_deref()), Some("1:1"));
+    }
+
+    #[test]
+    fn streamed_flat_nodes_index_descendants_and_direct_typography() {
+        let mut index = FigmaIndex::default();
+        index.page_id = Some("page-1".into());
+        index.dirty = true;
+        index.merge_chunk(&[
+            json!({"id":"root","name":"Frame","type":"FRAME","parentId":null,"childIds":["child"]}),
+            json!({"id":"child","name":"Label","type":"TEXT","parentId":"root","childIds":[],"content":"Searchable","textStyle":{"fontFamily":"Inter"},"fontSize":15.5,"fontWeight":"Demi"}),
+        ]);
+
+        assert_eq!(index.stats.total_nodes, 2);
+        assert_eq!(index.top_level_frames, vec!["root"]);
+        assert_eq!(index.get_node("child").and_then(|node| node.parent_id.as_deref()), Some("root"));
+        assert_eq!(index.search_nodes("searchable", Some("TEXT"), 10).len(), 1);
+        let spec = index.get_node("child").unwrap().to_css_spec();
+        let typography = &spec["typography"];
+        assert_eq!(typography["fontFamily"], "Inter");
+        assert_eq!(typography["fontSize"], "15.5px");
+        assert_eq!(typography["fontWeight"], "Demi");
+        assert!(index.dirty);
     }
 
     #[test]
