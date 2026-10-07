@@ -66,6 +66,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install Node dependencies
+        run: npm ci
+
       - name: Build and validate plugin bundle
         run: node scripts/build-plugin.js
 

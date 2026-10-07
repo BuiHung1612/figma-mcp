@@ -28,6 +28,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install Node dependencies
+        run: npm ci
+
       - name: Build Figma Plugin
         run: node scripts/build-plugin.js
 
