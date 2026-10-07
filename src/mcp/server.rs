@@ -90,6 +90,7 @@ fn is_supported_read_operation(operation: &str) -> bool {
     matches!(
         operation,
         "get_selection"
+            | "read_nodes"
             | "get_design"
             | "get_page_nodes"
             | "screenshot"
@@ -453,13 +454,14 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                 }
             }
 
-            // The compact node index is not the get_design_context contract.
-            // Resolve paints, consumer modes and effects through the live handler.
-            let mut op_params = json!({});
+            let mut op_params = json!({"depth":0,"fields":["geometry","content","text","style","layout","tokens","component"]});
             if let Some(ref nid) = node_id { op_params["id"] = json!(nid); }
             if let Some(nname) = node_name { op_params["name"] = json!(nname); }
+            for key in ["fields","depth","limit","includeHidden","expandInstances"] {
+                if let Some(value) = args.get(key) { op_params[key] = value.clone(); }
+            }
 
-            match bridge.send_operation("get_design_context", op_params, session_id).await {
+            match bridge.send_operation("read_nodes", op_params, session_id).await {
                 Ok(data) => ToolResult::text(serde_json::to_string(&data).unwrap_or_default()),
                 Err(e) => ToolResult::error(e),
             }
@@ -513,8 +515,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             };
 
             let operation = match raw_operation {
-                "inspect_node" | "inspect" => "get_design_context",
-                "get_node_info" | "node_detail" => "get_node_detail",
+                "get_design" | "get_node_detail" | "get_design_context" | "read_nodes" | "inspect_node" | "inspect" | "get_node_info" | "node_detail" => "read_nodes",
                 "get_tokens" | "tokens" if args.get("format").is_some() => "get_tokens",
                 "get_tokens" | "tokens" => "get_variable_tokens",
                 "export_icons" => "export_assets",
@@ -548,6 +549,34 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                     }
                 }
             }
+
+            if operation == "read_nodes" {
+                if op_params.get("cursor").is_none() {
+                    if raw_operation == "get_node_detail" || raw_operation == "get_node_info" || raw_operation == "node_detail" {
+                        op_params["depth"] = json!(0);
+                    }
+                    if op_params.get("fields").is_none() && raw_operation != "read_nodes" {
+                        op_params["fields"] = json!(["geometry", "content", "text", "style", "layout", "tokens", "component"]);
+                    }
+                }
+                return match bridge.send_operation("read_nodes", op_params, session_id).await {
+                    Ok(data) => ToolResult::text(data.to_string()),
+                    Err(error) => ToolResult::error(error),
+                };
+            }
+            if operation == "search_nodes" {
+                let query = args["query"].as_str().unwrap_or("");
+                let node_type = args.get("type").or_else(|| args.get("nodeType")).and_then(Value::as_str);
+                let limit = args["limit"].as_u64().unwrap_or(30) as usize;
+                let results = bridge.search_index_nodes(session_id, query, node_type, limit).await;
+                let stats = bridge.get_index_stats(session_id).await;
+                let nodes = results.unwrap_or_default();
+                return ToolResult::text(json!({"query":query,"nodes":nodes,"count":nodes.len(),
+                    "cached":true,"scope":stats.as_ref().map(|stats| &stats.scopes),
+                    "complete":stats.as_ref().is_some_and(|stats| stats.complete),
+                    "hint":"Search covers indexed scopes; refresh nodeId to expand a frame."}).to_string());
+            }
+
 
             // Fast-path read from index cache if available for read-only catalog queries
             if ["get_styles", "get_variables", "get_local_components"].contains(&operation) {
@@ -591,7 +620,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                                     } else {
                                         None
                                     };
-                                    if let Some(n) = matched {
+                                    if let Some(n) = matched.filter(|node| node.has_details()) {
                                         let mut detail = n.to_css_spec();
                                         if let Some(obj) = detail.as_object_mut() {
                                             obj.insert("cached".to_string(), json!(true));
@@ -946,32 +975,21 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
 
             match operation {
                 "subtree" | "typography" => {
-                    let Some(id) = args["nodeId"].as_str() else { return ToolResult::error("nodeId is required; request one frame/section at a time"); };
-                    let mut params = json!({"id":id, "detail":"compact", "depth": if operation == "typography" { json!("full") } else { json!(2) }, "maxNodes":1000});
-                    for key in ["depth", "maxNodes", "includeHidden"] {
-                        if let Some(value) = args.get(key) { params[key] = value.clone(); }
-                    }
-                    if !params["maxNodes"].as_u64().is_some_and(|n| (1..=50000).contains(&n)) {
-                        return ToolResult::error("maxNodes must be an integer from 1 to 50000");
-                    }
-                    if params["depth"] != "full" && !params["depth"].as_u64().is_some_and(|n| n <= 256) {
-                        return ToolResult::error("depth must be full or an integer from 0 to 256");
-                    }
-                    return match bridge.send_operation("get_design", params, session_id).await {
-                        Ok(data) if operation == "typography" => {
-                            let tree = data.get("tree").unwrap_or(&data);
-                            let mut rows = crate::mcp::design_pack::extract_all_text_elements(tree);
-                            let total = rows.len();
-                            let limit = args["limit"].as_u64().unwrap_or(200).min(1000) as usize;
-                            rows.truncate(limit);
-                            let rows: Vec<_> = rows.into_iter().map(|row| json!({"nodeId":row.id,"text":row.text,
-                                "fontFamily":row.font_family,"fontSize":row.font_size,"fontWeight":row.font_weight,
-                                "lineHeight":row.line_height,"segments":row.segments})).collect();
-                            ToolResult::text(json!({"nodeId":id,"typography":rows,"textNodesInPayload":total,
-                                "rowsTruncated":total > limit,"meta":data.get("meta"),
-                                "hint":"null font fields are unknown or mixed; use segments for mixed runs. Read a smaller section if truncated."}).to_string())
+                    let mut params = json!({});
+                    if let Some(cursor) = args.get("cursor") { params["cursor"] = cursor.clone(); }
+                    else {
+                        let Some(id) = args["nodeId"].as_str() else { return ToolResult::error("nodeId is required for the first page"); };
+                        params["id"] = json!(id);
+                        params["depth"] = if operation == "typography" { json!("full") } else { json!(2) };
+                        params["fields"] = if operation == "typography" { json!(["geometry","text"]) } else { json!(["geometry","content"]) };
+                        for key in ["fields","depth","includeHidden","expandInstances"] {
+                            if let Some(value) = args.get(key) { params[key] = value.clone(); }
                         }
-                        Ok(data) => ToolResult::text(crate::mcp::semantic_optimizer::compress_tree(&data, true).to_string()),
+                    }
+                    if let Some(limit) = args.get("limit") { params["limit"] = limit.clone(); }
+                    if args.get("maxNodes").is_some() { return ToolResult::error("Use limit (1..500) and nextCursor instead of maxNodes"); }
+                    return match bridge.send_operation("read_nodes", params, session_id).await {
+                        Ok(data) => ToolResult::text(data.to_string()),
                         Err(error) => ToolResult::error(error),
                     };
                 }
@@ -1019,15 +1037,14 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                         None => return ToolResult::error("'nodeId' is required for get_node"),
                     };
 
-                    match bridge.get_index_node(session_id, node_id).await {
-                        Some(node) => ToolResult::text(serde_json::to_string_pretty(&node).unwrap_or_default()),
-                        None => {
-                            // Fallback to direct bridge read if not indexed or node not in cache
-                            match bridge.send_operation("get_node_detail", json!({ "id": node_id }), session_id).await {
-                                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
-                                Err(e) => ToolResult::error(format!("Node not found in index or canvas: {}", e)),
-                            }
-                        }
+                    let mut params = json!({"id":node_id, "depth":0,
+                        "fields":["geometry","content","text","style","layout","tokens","component"]});
+                    for key in ["fields", "includeHidden", "expandInstances"] {
+                        if let Some(value) = args.get(key) { params[key] = value.clone(); }
+                    }
+                    match bridge.send_operation("read_nodes", params, session_id).await {
+                        Ok(data) => ToolResult::text(data.to_string()),
+                        Err(error) => ToolResult::error(error),
                     }
                 }
 
@@ -1038,23 +1055,21 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
 
                     match bridge.search_index_nodes(session_id, query, node_type, limit).await {
                         Some(results) => {
+                            let stats = bridge.get_index_stats(session_id).await;
                             let out = json!({
                                 "query": query,
                                 "nodeType": node_type,
                                 "count": results.len(),
                                 "cached": true,
                                 "results": results,
+                                "scope": stats.as_ref().map(|stats| &stats.scopes),
+                                "complete": stats.as_ref().is_some_and(|stats| stats.complete),
                             });
                             ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
                         }
                         None => {
-                            // Fallback to bridge search_nodes
-                            let mut op_params = json!({ "query": query, "limit": limit });
-                            if let Some(t) = node_type { op_params["type"] = json!(t); }
-                            match bridge.send_operation("search_nodes", op_params, session_id).await {
-                                Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
-                                Err(e) => ToolResult::error(e),
-                            }
+                            ToolResult::text(json!({"results":[], "count":0, "scope":[], "complete":false,
+                                "status":"not_indexed", "hint":"Refresh the active page, then read or refresh one frame to expand its scope."}).to_string())
                         }
                     }
                 }
@@ -1137,8 +1152,16 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
 
                     // Trigger index_scan operation on the plugin
                     let start_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                    match bridge.send_operation("index_scan", json!({}), session_id).await {
+                    let mut params = json!({"deferComponents": args["includeComponents"] != true});
+                    for key in ["depth", "includeHidden", "expandInstances"] {
+                        if let Some(value) = args.get(key) { params[key] = value.clone(); }
+                    }
+                    if let Some(id) = args.get("nodeId") { params["id"] = id.clone(); }
+                    match bridge.send_operation("index_scan", params, session_id).await {
                         Ok(data) => {
+                            if data["cancelled"] == true {
+                                return ToolResult::error("Index refresh cancelled because the active page changed.");
+                            }
                             let page_nodes = data.get("pageNodes").unwrap_or(&Value::Null);
                             let styles = data.get("styles");
                             let vars = data.get("variables");
@@ -1149,20 +1172,28 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                                 BridgeHandle::Proxy(_) => session_id.unwrap_or("_default").to_string(),
                             };
 
-                            let idx = crate::bridge::index::FigmaIndex::from_raw(
-                                &sid,
-                                file_name,
-                                page_nodes,
-                                styles,
-                                vars,
-                                comps,
-                                start_ms,
-                            );
-
-                            let stats = idx.stats.clone();
-                            if let BridgeHandle::Direct(ref state) = bridge {
-                                state.update_index(&sid, idx).await;
-                            }
+                            let stats = if data["nodesStreamed"] == true {
+                                // index-update arrived before this reply; keep its streamed descendants.
+                                match bridge.get_index_stats(session_id).await {
+                                    Some(stats) => stats,
+                                    None => return ToolResult::error("Streamed index was not received; retry refresh."),
+                                }
+                            } else {
+                                let idx = crate::bridge::index::FigmaIndex::from_raw(
+                                    &sid,
+                                    file_name,
+                                    page_nodes,
+                                    styles,
+                                    vars,
+                                    comps,
+                                    start_ms,
+                                );
+                                let stats = idx.stats.clone();
+                                if let BridgeHandle::Direct(ref state) = bridge {
+                                    state.update_index(&sid, idx).await;
+                                }
+                                stats
+                            };
 
                             let out = json!({
                                 "success": true,
@@ -1260,6 +1291,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             if let Some(nid) = node_id { op_params["id"] = nid.clone(); }
             if let Some(nname) = node_name { op_params["name"] = nname.clone(); }
 
+            op_params["expandInstances"] = json!(true);
             match bridge.send_operation("get_design_context", op_params, session_id).await {
                 Ok(context) => {
                     match crate::mcp::codegen::generate_code_from_context(&context, framework, component_name) {
@@ -1450,7 +1482,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                             if let Some(node) = matched {
                                 resolved_node_id = Some(node.id.clone());
                                 resolved_node_name = node.name.clone();
-                                figma_spec = Some(node.to_css_spec());
+                                if node.has_details() { figma_spec = Some(node.to_css_spec()); }
                             }
                         }
                     }
@@ -1467,6 +1499,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                 if let Some(ref id) = resolved_node_id { op_params["id"] = json!(id); }
                 if let Some(name) = node_name { op_params["name"] = json!(name); }
 
+                op_params["expandInstances"] = json!(true);
                 match bridge.send_operation("get_design_context", op_params, session_id).await {
                     Ok(data) => {
                         resolved_node_name = data.get("name").and_then(|v| v.as_str()).unwrap_or(&resolved_node_name).to_string();
@@ -1571,6 +1604,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             if let Some(id) = node_id {
                 op_params["id"] = json!(id);
             }
+            op_params["expandInstances"] = json!(true);
             let design_context = match bridge.send_operation("get_design_context", op_params, session_id).await {
                 Ok(data) => data,
                 Err(e) => return ToolResult::error(format!("Failed to retrieve design context: {}", e)),
@@ -1727,21 +1761,21 @@ mod tests {
     use super::is_supported_read_operation;
 
     #[tokio::test]
-    async fn typography_tool_uses_cached_subtree_and_reports_timing() {
+    async fn typography_tool_uses_cached_canonical_read_and_reports_timing() {
         let state = crate::bridge::server::BridgeState::new(0);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut session = crate::bridge::session::Session::new("s".into(),None);
         session.ws_tx = Some(tx);
         let tree = serde_json::json!({"id":"a","type":"FRAME","children":[{"id":"t","type":"TEXT","content":"Label","fontSize":15.5,"fontWeight":"Semi Bold","fontFamily":"Inter"}]});
         session.index = Some(crate::bridge::index::FigmaIndex::from_raw("s","f",&serde_json::json!([tree]),None,None,None,0));
-        let params = serde_json::json!({"id":"a","detail":"compact","depth":"full","maxNodes":1000});
-        session.read_cache.insert(format!("get_design:{params}"),serde_json::json!({"tree":tree,"meta":{"nodesTruncated":false}}));
+        let params = serde_json::json!({"id":"a","fields":["geometry","text"],"depth":"full"});
+        session.cache_read(format!("read_nodes:{params}"),serde_json::json!({"schemaVersion":4,"nodes":[{"id":"t","fontSize":15.5,"fontWeight":"Semi Bold"}],"complete":true,"nextCursor":null}));
         state.inner.lock().await.sessions.insert("s".into(),session);
         let result = super::handle_tool_call(crate::bridge::BridgeHandle::Direct(state.clone()),Some(serde_json::json!({"name":"figma_index","arguments":{"operation":"typography","nodeId":"a"}}))).await;
         let serialized = serde_json::to_value(result).unwrap();
         let payload: serde_json::Value = serde_json::from_str(serialized["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(payload["typography"][0]["fontSize"],15.5);
-        assert_eq!(payload["typography"][0]["fontWeight"],"Semi Bold");
+        assert_eq!(payload["nodes"][0]["fontSize"],15.5);
+        assert_eq!(payload["nodes"][0]["fontWeight"],"Semi Bold");
         assert!(rx.try_recv().is_err());
         let inner = state.inner.lock().await;
         assert_eq!(inner.sessions["s"].cache_hits,1);

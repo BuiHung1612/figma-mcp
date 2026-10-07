@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
@@ -65,6 +65,10 @@ pub struct Session {
     pub bridge_calls: u64,
     pub bridge_time_ms: u64,
     pub read_cache: HashMap<String, Value>,
+    pub read_cache_order: VecDeque<String>,
+    pub pending_index: Option<(String, crate::bridge::index::FigmaIndex, Value)>,
+    pub node_revision: u64,
+    pub resync_requested: bool,
     pub cache_revision: u64,
     pub tool_lock: Arc<tokio::sync::Mutex<()>>,
     pub id: String,
@@ -92,6 +96,10 @@ impl Session {
             bridge_calls: 0,
             bridge_time_ms: 0,
             read_cache: HashMap::new(),
+            read_cache_order: VecDeque::new(),
+            pending_index: None,
+            node_revision: 0,
+            resync_requested: false,
             cache_revision: 0,
             tool_lock: Arc::new(tokio::sync::Mutex::new(())),
             id,
@@ -118,7 +126,25 @@ impl Session {
 
     pub fn invalidate_reads(&mut self) {
         self.read_cache.clear();
+        self.read_cache_order.clear();
         self.cache_revision = self.cache_revision.wrapping_add(1);
+    }
+
+    pub fn cached_read(&mut self, key: &str) -> Option<Value> {
+        let value = self.read_cache.get(key)?.clone();
+        self.read_cache_order.retain(|entry| entry != key);
+        self.read_cache_order.push_back(key.to_string());
+        Some(value)
+    }
+
+    pub fn cache_read(&mut self, key: String, value: Value) {
+        self.read_cache_order.retain(|entry| entry != &key && self.read_cache.contains_key(entry));
+        while self.read_cache.len() >= 64 && !self.read_cache.contains_key(&key) {
+            let oldest = self.read_cache_order.pop_front().or_else(|| self.read_cache.keys().next().cloned());
+            if let Some(oldest) = oldest { self.read_cache.remove(&oldest); }
+        }
+        self.read_cache_order.push_back(key.clone());
+        self.read_cache.insert(key, value);
     }
 
     pub fn invalidate_nodes(&mut self, ids: &[String]) {
@@ -154,6 +180,21 @@ pub struct SessionInfo {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cache_evicts_one_least_recently_used_entry() {
+        let mut session = Session::new("s".into(), None);
+        for n in 0..64 { session.cache_read(n.to_string(), json!(n)); }
+        assert_eq!(session.cached_read("0"), Some(json!(0)));
+        session.cache_read("64".into(), json!(64));
+        assert_eq!(session.read_cache.len(), 64);
+        assert!(session.read_cache.contains_key("0"));
+        assert!(!session.read_cache.contains_key("1"));
+        session.invalidate_reads();
+        assert!(session.read_cache_order.is_empty());
+        session.cache_read("new".into(), json!(true));
+        assert_eq!(session.read_cache.len(), 1);
+    }
 
     #[test]
     fn changes_invalidate_related_subtrees_but_keep_other_frames_and_tokens() {

@@ -71,6 +71,10 @@ pub fn get_tools() -> Vec<ToolDefinition> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "fields": { "type":"array", "items":{"type":"string","enum":["geometry","content","text","style","layout","tokens","component"]} },
+                    "depth": { "type":"integer", "minimum":0, "maximum":256 },
+                    "expandInstances": { "type":"boolean", "description":"Expand instance descendants; default false." },
+                    "includeHidden": { "type":"boolean" },
                     "nodeId": {
                         "type": "string",
                         "description": "The Figma node ID (e.g. '2413:27687')."
@@ -131,17 +135,21 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "operation": {
                         "type": "string",
                         "enum": [
-                            "get_selection", "get_design", "get_page_nodes", "screenshot", "export_svg",
+                            "get_selection", "read_nodes", "get_page_nodes", "screenshot", "export_svg",
                             "get_styles", "get_local_components", "get_viewport", "get_variables", "get_tokens",
-                            "get_node_detail", "get_css", "get_design_context", "get_component_map",
+                            "get_css", "get_component_map",
                             "get_unmapped_components", "export_image", "search_nodes", "scan_design"
                         ],
-                        "description": "── Design-to-code (use these for code generation) ──\nget_design_context: AI-optimized payload for a node — flex layout, token-resolved colors, typography with style names, component instances with variant properties. Best single call for design→React/Vue/Swift code.\nget_css: ready-to-use CSS string for a single node — background, flex, border, radius, shadow, typography, opacity, transform.\nget_component_map: list every component instance in a frame with componentSetName, variantLabel, properties, and suggestedImport path. Use to scaffold import statements.\nget_unmapped_components: find component instances that have no description in Figma (likely no code mapping yet). Prompts AI to ask user for correct import paths.\n── Inspect ──\nget_node_detail: structured properties for a single node — fills, bound variables (resolved to name+value), style refs (resolved to name+hex), instance overrides (full field list), componentSetName/variantLabel.\nget_selection: full design tree of selected node(s) + design tokens summary.\nget_design: full node tree for a frame/page (depth param: number or 'full'). Multi-style TEXT reports real per-run values plus `segments`; nodes inside groups or under rotation also carry `absoluteBoundingBox`; capped subtrees carry `childrenTruncated` and meta.nodesTruncated.\nget_page_nodes: top-level frames on the current page.\n── Styles & tokens ──\nget_styles: all local paint, text, effect, grid styles.\nget_variables: all local Design Token variables — collections, modes, resolved values.\nget_local_components: component listing with descriptions + variant property definitions.\n── Export ──\nscreenshot: PNG of a node — displays inline in Claude Code.\nexport_svg: SVG markup string.\nexport_image: base64 PNG/JPG for saving to disk (scale param for resolution).\n── Search ──\nsearch_nodes: filter by type, namePattern (wildcard *), fill color, fontFamily, fontSize, hasImage, hasIcon.\nscan_design: structured summary of large frames — all text, colors, fonts, images, icons, sections. Every capped list is paired with real counts in `totals` and flags in `truncated`.\n── Viewport ──\nget_viewport: current viewport center, zoom, bounds."
+                        "description": "read_nodes: canonical flat node API with fields, depth, expandInstances and cursor. Returns schemaVersion, nodes, scope, revision, nextCursor and complete. Default fields are geometry and content; text adds typography including mixed runs. Tokens returns raw bindings/style IDs. Instances remain opaque unless expandInstances=true. Cursors expire after edits; continue with cursor and limit only. Other operations provide selection, styles/tokens, CSS, components, exports and scoped design summaries.",
                     },
+                    "fields": { "type":"array", "items":{"type":"string","enum":["geometry","content","text","style","layout","tokens","component"]}, "minItems":1, "description":"Requested node groups; default geometry/content. Identity and topology are always returned." },
+                    "cursor": { "type":"string", "description":"Opaque continuation from read_nodes. Send cursor and limit only; expired cursors require restarting." },
+                    "expandInstances": { "type":"boolean", "description":"Expand instance descendants; default false, instances report opaque=true." },
                     "nodeId": { "type": "string", "description": "Target node ID (optional — omit to use current selection)." },
                     "nodeName": { "type": "string", "description": "Target node name (alternative to nodeId)." },
                     "scale": { "type": "number", "description": "Export scale for screenshot / export_image (default 1 for screenshot, 2 for export_image)." },
-                    "depth": { "type": "string", "description": "Tree depth for get_design/get_selection. Number (default 10) or 'full' for unlimited. Higher = more detail but larger output." },
+                    "depth": { "oneOf":[{"type":"integer","minimum":0,"maximum":256},{"type":"string","enum":["full"]}], "description":"read_nodes depth: page default 0, frame default full (256)." },
+                    "limit": { "type":"integer", "minimum":1, "maximum":500, "description":"Nodes per read_nodes response; default 200." },
                     "format": { "type": "string", "description": "Image format for export_image: 'png' (default) or 'jpg'." },
                     "detail": { "type": "string", "description": "Detail level for get_design/get_selection: 'full' (default) bypasses Rust compression; 'compact'/'minimal' use shared styles when smaller. Merge _compression.styles[node.styleRef] into referenced nodes. Plugin detail/depth/node budgets still apply." },
                     "outputPath": { "type": "string", "description": "Optional file path to save exported SVG/image directly to disk (for export_svg, export_image, or screenshot)." },
@@ -188,19 +196,23 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_index".to_string(),
-            description: "Instant <1ms in-memory queries against the pre-indexed Figma file (nodes, components, design tokens, styles). Avoids slow roundtrips to the Figma canvas. Operations: 'status' (view index health and node counts), 'search_nodes' (instant text/type search across all nodes), 'get_node' (instant node lookup by id), 'search_components' (find component sets & variants), 'search_styles' (find paint & text styles), 'search_variables' (find design tokens), 'refresh' (trigger background re-index of canvas).".to_string(),
+            description: "In-memory search against the pre-indexed Figma file (nodes, components, design tokens, styles). Detailed node data is read and cached on demand. Operations: 'status' (view index health and node counts), 'search_nodes' (instant text/type search), 'get_node' (node details by id), 'search_components' (find component sets & variants), 'search_styles' (find paint & text styles), 'search_variables' (find design tokens), 'refresh' (index page top-level layers or expand the given nodeId).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
                         "enum": ["status", "search_nodes", "get_node", "search_components", "search_styles", "search_variables", "refresh", "subtree", "typography"],
-                        "description": "subtree: read/cache one frame (default depth 2); typography: compact text/font table computed in Rust with mixed runs preserved; status: includes Rust cache hits/misses and bridge latency totals."
+                        "description": "subtree and typography return canonical flat nodes with nextCursor; subtree defaults to depth 2, typography requests text fields. status reports scope coverage and cache/bridge timings."
                     },
                     "query": {
                         "type": "string",
                         "description": "Search query text (for search_nodes, search_components, search_styles, search_variables)."
                     },
+                    "fields": { "type":"array", "items":{"type":"string","enum":["geometry","content","text","style","layout","tokens","component"]}, "minItems":1, "description":"Requested node groups; default geometry/content. Identity and topology are always returned." },
+                    "cursor": { "type":"string", "description":"Opaque continuation from read_nodes. Send cursor and limit only; expired cursors require restarting." },
+                    "expandInstances": { "type":"boolean", "description":"Expand instance descendants; default false, instances report opaque=true." },
+                    "includeComponents": { "type":"boolean", "description":"refresh: include the document-wide component catalogue; default false." },
                     "nodeId": {
                         "type": "string",
                         "description": "Node ID to look up (for get_node)."
@@ -222,9 +234,9 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                         "type": "number",
                         "description": "Max results to return (default 30)."
                     },
-                    "depth": { "description": "subtree/typography depth: a number or full", "oneOf": [{"type":"number"},{"type":"string","enum":["full"]}] },
-                    "maxNodes": { "type":"integer", "minimum":1, "maximum":50000, "description":"Node budget for subtree/typography; default 1000. Inspect meta for truncation." },
-                    "includeHidden": { "type":"boolean", "description":"Include hidden nodes for subtree/typography." },
+                    "depth": { "description": "subtree/typography/refresh depth: 0..256 or full", "oneOf": [{"type":"integer","minimum":0,"maximum":256},{"type":"string","enum":["full"]}] },
+
+                    "includeHidden": { "type":"boolean", "description":"Include hidden nodes for node reads and scoped refresh." },
                     "sessionId": {
                         "type": "string",
                         "description": "Target a specific Figma file/tab. Omit to auto-select."

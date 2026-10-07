@@ -45,7 +45,8 @@ async function makeWalkStateAsync(params) {
       }
     } catch(e) {}
   }
-  return { remaining: budget, budget: budget, truncated: false, absolute: p.absolute === true, precise: precise, variableMap: varMap, styleMap: styleMap };
+  return { remaining: budget, budget: budget, truncated: false, expandInstances: p.expandInstances === true,
+    absolute: p.absolute === true, precise: precise, variableMap: varMap, styleMap: styleMap };
 }
 
 function walkStateMeta(walkState) {
@@ -79,7 +80,9 @@ handlers.get_selection = async function(params) {
   var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
   var instanceCollector = (detailLevel !== "minimal") ? [] : null;
   var walkState = await makeWalkStateAsync(params);
-  var trees = nodes.map(function(n) { return extractDesignTree(n, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); });
+  var trees = withInstanceVisibility(!filterInvisible, function() {
+    return nodes.map(function(n) { return extractDesignTree(n, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); });
+  });
   // mainComponent is async-only under documentAccess: dynamic-page — resolve
   // every collected INSTANCE after the (synchronous) tree walk.
   var instanceInfo = await resolveInstanceComponents(instanceCollector);
@@ -120,7 +123,9 @@ handlers.get_design = async function(params) {
     var tokenCollector = (detailLevel !== "minimal") ? { colors: new Set(), fonts: new Set(), sizes: new Set() } : null;
     var instanceCollector = (detailLevel !== "minimal") ? [] : null;
     var walkState = await makeWalkStateAsync(p);
-    var tree = extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState);
+    var tree = withInstanceVisibility(!filterInvisible, function() {
+      return extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState);
+    });
     var instanceInfo = await resolveInstanceComponents(instanceCollector);
 
     // SVG inlining: opt-in via inlineIcons/inlineSvg to avoid multi-second freezes on large designs
@@ -319,32 +324,37 @@ handlers.scan_design = async function(params) {
     }
 
     // Recurse
-    if ("children" in node && Array.isArray(node.children)) {
-      for (var i = 0; i < node.children.length; i++) walkCount(node.children[i], section);
+    if (node.type === "INSTANCE" && p.expandInstances !== true) return;
+    var children = "children" in node ? node.children : [];
+    if (Array.isArray(children)) {
+      for (var i = 0; i < children.length && !nodeBudgetHit; i++) walkCount(children[i], section);
     }
   }
 
   // Build the sections up front so the walk can attribute icons/images/text to
   // the top-level child they actually live under.
-  if ("children" in root && Array.isArray(root.children)) {
-    summary.totalNodes++;  // the root itself
-    for (var ci = 0; ci < root.children.length; ci++) {
-      var child = root.children[ci];
-      if (!scanIncludeHidden && child.visible === false) continue;
-      var section = {
-        id: child.id, name: child.name, type: child.type,
-        x: numberValue(child.x), y: numberValue(child.y),
-        width: numberValue(child.width), height: numberValue(child.height),
-        childCount: ("children" in child && Array.isArray(child.children)) ? child.children.length : 0,
-        iconCount: 0,
-        imageCount: 0,
-      };
-      summary.sections.push(section);
-      walkCount(child, section);
+  withInstanceVisibility(scanIncludeHidden, function() {
+    var rootChildren = root.type === "INSTANCE" && p.expandInstances !== true ? [] : ("children" in root ? root.children : []);
+    if (Array.isArray(rootChildren) && "children" in root) {
+      summary.totalNodes++;  // the root itself
+      for (var ci = 0; ci < rootChildren.length && !nodeBudgetHit; ci++) {
+        var child = rootChildren[ci];
+        if (!scanIncludeHidden && child.visible === false) continue;
+        var section = {
+          id: child.id, name: child.name, type: child.type,
+          x: numberValue(child.x), y: numberValue(child.y),
+          width: numberValue(child.width), height: numberValue(child.height),
+          childCount: ("children" in child && Array.isArray(child.children)) ? child.children.length : 0,
+          iconCount: 0,
+          imageCount: 0,
+        };
+        summary.sections.push(section);
+        walkCount(child, section);
+      }
+    } else {
+      walkCount(root, null);
     }
-  } else {
-    walkCount(root, null);
-  }
+  });
 
   await resolveInstanceComponents(instanceEntries);
 
@@ -777,153 +787,66 @@ handlers.export_image = async function(params) {
 // index_scan — active-page nodes/tokens; document-wide components on demand.
 var indexScanTask = null;
 var indexScanKey = null;
-function indexNodeRecord(node) {
-  var info = extractDesignTree(node, 0, 0, "compact", false, null, null, {
-    remaining: 1, absolute: false, precise: true, skipChildSummary: true
-  });
-  info.parentId = node.parent && node.parent.type !== "PAGE" ? node.parent.id : null;
-  info.childIds = "children" in node ? node.children.map(function(child) { return child.id; }) : [];
-  if (!info.effectData && node.effects && node.effects.length) {
-    try { info.effectData = JSON.parse(JSON.stringify(node.effects)); } catch(e) {}
-  }
-  return info;
-}
-
+var indexScanSequence = 0;
 handlers.index_scan = async function(params) {
-  var includeComponents = !(params && params.deferComponents);
-  var key = figma.currentPage.id + ":" + includeComponents;
+  var p = params || {}, pageId = figma.currentPage.id;
+  var options = { id: p.id || pageId, depth: p.depth === undefined ? (p.id && p.id !== pageId ? "full" : 0) : p.depth,
+    includeHidden: p.includeHidden === true, expandInstances: p.expandInstances === true, deferComponents: p.deferComponents === true };
+  var key = JSON.stringify(options);
   while (indexScanTask) {
-    var existingKey = indexScanKey;
-    var result = await indexScanTask;
-    if (existingKey === key) return result;
+    var existingKey = indexScanKey, existing = await indexScanTask;
+    if (existingKey === key) return existing;
   }
   indexScanKey = key;
-  indexScanTask = runIndexScan(includeComponents);
+  indexScanTask = runIndexScan(options);
   try { return await indexScanTask; } finally { indexScanTask = null; }
 };
 
-async function runIndexScan(includeComponents) {
-  var page = figma.currentPage;
-  var indexStartedAt = Date.now();
-  if (figma.ui) {
-    try { figma.ui.postMessage({ type: "index-start", fileName: figma.root.name, pageId: page.id, startMs: indexStartedAt }); } catch(e) {}
+async function runIndexScan(options) {
+  var page = figma.currentPage, startMs = Date.now(), scanId = "scan:" + (++indexScanSequence);
+  var request = Object.assign({}, options, { fields: ["geometry", "content"], limit: 500 });
+  var pageNodes = [], revision = nodeRevision;
+  function post(message) {
+    if (figma.ui && figma.currentPage.id === page.id) figma.ui.postMessage(Object.assign({ pageId: page.id, scanId: scanId, revision: revision }, message));
   }
-  if (figma.ui) {
-    try {
-      figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 5, label: "Scanning canvas layers…" });
-    } catch(e) {}
-  }
-
-  var pageNodes = [];
-  var visitedNodes = 0;
-  var nodesTruncated = false;
   try {
-    var topFrames = page.children || [];
-    pageNodes = topFrames.map(function(n) {
-      return Object.assign(nodeToInfo(n), { childCount: "children" in n ? n.children.length : 0 });
-    });
-    var nodeChunk = [];
-    var NODE_CHUNK_SIZE = 100;
-    var stack = [{ children: topFrames, next: 0 }];
-    while (stack.length) {
-      var cursor = stack[stack.length - 1];
-      if (cursor.next >= cursor.children.length) { stack.pop(); continue; }
-      if (visitedNodes >= 50000) { nodesTruncated = true; break; }
-      var currentNode = cursor.children[cursor.next++];
-      if (!currentNode || currentNode.removed) continue;
-      nodeChunk.push(indexNodeRecord(currentNode));
-      visitedNodes++;
-      if ("children" in currentNode && currentNode.children.length) {
-        stack.push({ children: currentNode.children, next: 0 });
+    var read = await handlers.read_nodes(request);
+    revision = read.revision;
+    post({ type: "index-start", fileName: figma.root.name, startMs: startMs, scope: read.scope });
+    var lastProgress = 0;
+    do {
+      if (figma.currentPage.id !== page.id || nodeRevision !== revision) throw new Error("Document changed during indexing");
+      post({ type: "index-chunk", nodes: read.nodes });
+      if (!figma.ui) pageNodes.push.apply(pageNodes, read.nodes);
+      if (Date.now() - lastProgress >= 100) {
+        post({ type: "index-progress", stage: "nodes", percent: 20, label: "Layers: " + read.totalRead });
+        lastProgress = Date.now();
       }
-      if (nodeChunk.length >= NODE_CHUNK_SIZE) {
-        if (figma.ui && figma.currentPage.id === page.id) {
-          figma.ui.postMessage({ type: "index-chunk", pageId: page.id, nodes: nodeChunk });
-        }
-        nodeChunk = [];
-        if (figma.ui) figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 20, label: "Layers: " + visitedNodes });
-        if (typeof yieldToUI === "function") await yieldToUI(0);
-      }
+      if (!read.nextCursor) break;
+      await yieldToUI(0);
+      read = await handlers.read_nodes({ cursor: read.nextCursor, limit: 500 });
+    } while (true);
+    post({ type: "index-progress", stage: "styles", percent: 45, label: "Indexing styles and tokens..." });
+    var styles = null, variables = null, components = null;
+    if (options.id === page.id) {
+      if (handlers.get_styles) styles = await handlers.get_styles({});
+      if (handlers.get_variables) variables = await handlers.get_variables({});
     }
-    if (nodeChunk.length && figma.ui && figma.currentPage.id === page.id) {
-      figma.ui.postMessage({ type: "index-chunk", pageId: page.id, nodes: nodeChunk });
-    }
-    if (figma.ui) figma.ui.postMessage({ type: "index-progress", stage: "nodes", percent: 40, label: "Layers: " + visitedNodes });
-  } catch (e) { nodesTruncated = true; }
-
-  if (typeof yieldToUI === "function") await yieldToUI(0);
-
-  if (figma.ui) {
-    try {
-      figma.ui.postMessage({ type: "index-progress", stage: "styles", percent: 45, label: "Indexing color & text styles…" });
-    } catch(e) {}
+    if (!options.deferComponents && handlers.get_local_components) components = await handlers.get_local_components({});
+    if (figma.currentPage.id !== page.id || nodeRevision !== revision) throw new Error("Document changed during indexing");
+    var result = { fileName: figma.root.name, pageId: page.id, scanId: scanId, revision: revision,
+      schemaVersion: 4, scope: read.scope, complete: read.complete, nodesTruncated: read.budgetReached,
+      indexDetail: "minimal", nodesStreamed: !!figma.ui, componentsDeferred: options.deferComponents,
+      pageNodes: pageNodes, styles: styles, variables: variables, components: components };
+    post({ type: "index-update", fileName: result.fileName, startMs: startMs, data: result });
+    post({ type: "index-progress", stage: "done", percent: 100, label: "Index ready" });
+    return result;
+  } catch (error) {
+    post({ type: "index-abort", error: error.message, retry: revision !== undefined && nodeRevision !== revision });
+    if (figma.currentPage.id !== page.id || (revision !== undefined && nodeRevision !== revision)) return { pageId: page.id, cancelled: true };
+    throw error;
   }
-
-  var styles = null;
-  try {
-    if (handlers.get_styles) styles = await handlers.get_styles({});
-  } catch (e) {}
-
-  if (typeof yieldToUI === "function") await yieldToUI(0);
-
-  if (figma.ui) {
-    try {
-      figma.ui.postMessage({ type: "index-progress", stage: "variables", percent: 65, label: "Indexing variables & tokens…" });
-    } catch(e) {}
-  }
-
-  var variables = null;
-  try {
-    if (handlers.get_variables) variables = await handlers.get_variables({});
-  } catch (e) {}
-
-  if (typeof yieldToUI === "function") await yieldToUI(0);
-
-  if (figma.ui) {
-    try {
-      figma.ui.postMessage({ type: "index-progress", stage: "components", percent: 85, label: "Indexing components & sets…" });
-    } catch(e) {}
-  }
-
-  var components = null;
-  try {
-    if (includeComponents && handlers.get_local_components) components = await handlers.get_local_components({});
-  } catch (e) {}
-
-  if (figma.ui) {
-    try {
-      figma.ui.postMessage({ type: "index-progress", stage: "done", percent: 100, label: "Index ready" });
-    } catch(e) {}
-  }
-
-  var resolvedSid = figma.fileKey || (function() {
-    try { return figma.root.getPluginData("mcp_session_id") || "_default"; } catch(e) { return "_default"; }
-  })();
-
-  var result = {
-    fileName: figma.root ? figma.root.name : "unknown",
-    sessionId: resolvedSid,
-    pageId: page.id,
-    componentsDeferred: !includeComponents,
-    nodesTruncated: nodesTruncated,
-    pageNodes: pageNodes,
-    styles: styles,
-    variables: variables,
-    components: components,
-  };
-  if (figma.ui && figma.currentPage.id === page.id) {
-    try {
-      figma.ui.postMessage({
-        type: "index-update",
-        fileName: result.fileName,
-        sessionId: resolvedSid,
-        startMs: indexStartedAt,
-        data: Object.assign({}, result, { pageNodes: [], nodesStreamed: true }),
-      });
-    } catch(e) {}
-  }
-  return result;
-};
+}
 
 // ─── ALIASES FOR READ HANDLERS ────────────────────────────────────────────────
 handlers.getSelection = handlers.get_selection;

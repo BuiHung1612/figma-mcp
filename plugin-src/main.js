@@ -63,12 +63,13 @@ try {
     fileKey: currentFileKey,
     documentId: currentDocumentId,
     runtimeVersion: "{{PLUGIN_VERSION}}",
-    protocolVersion: 2,
+    protocolVersion: 3,
     operations: Object.keys(handlers)
   });
 } catch (e) {}
 
-// Broadcast selection changes live to UI
+// Broadcast selection changes live to UI and expand only the selected scope.
+var selectionIndexTimer = null;
 figma.on("selectionchange", function() {
   try {
     var sel = figma.currentPage.selection;
@@ -101,56 +102,105 @@ figma.on("selectionchange", function() {
       selection: summary,
       fullNode: fullNode
     });
+    if (selectionIndexTimer) clearTimeout(selectionIndexTimer);
+    if (sel.length === 1) {
+      var selectedId = sel[0].id;
+      selectionIndexTimer = setTimeout(function() {
+        if (figma.currentPage.selection[0] && figma.currentPage.selection[0].id === selectedId) {
+          handlers.index_scan({ id: selectedId, deferComponents: true }).catch(function() {});
+        }
+      }, 150);
+    }
   } catch (e) {}
 });
 
 // Broadcast granular document changes to invalidate or incrementally update index cache
 var docChangeTimer = null;
 var pendingChangedNodeIds = new Set();
-var docChangeGeneration = 0;
+var pendingNodeChanges = new Map();
+var pendingPatchBaseRevision = null;
 
 function onDocChange(event) {
-  try {
-    var generation = ++docChangeGeneration;
+  var baseRevision = nodeRevision++;
+  nodeReadCursors.clear();
+  var changes = event && (event.documentChanges || event.nodeChanges);
+  if (!changes || !changes.length) {
     variableCache.clear();
-    var changes = event && (event.documentChanges || event.nodeChanges);
-    var ids = [];
-    if (changes) changes.forEach(function(ch) {
-      var id = ch && (ch.id || (ch.node && ch.node.id));
-      if (id) { ids.push(id); pendingChangedNodeIds.add(id); }
-      if (ch && ch.node && ch.node.parent && ch.node.parent.type !== "PAGE") {
-        var parentId = ch.node.parent.id;
-        ids.push(parentId); pendingChangedNodeIds.add(parentId);
-      }
-    });
-    figma.ui.postMessage({ type: "document-change", changedNodeIds: ids });
-    if (!ids.length) return;
-    if (docChangeTimer) clearTimeout(docChangeTimer);
-    var changedPage = figma.currentPage;
-    docChangeTimer = setTimeout(async function() {
-      var ids = Array.from(pendingChangedNodeIds);
-      pendingChangedNodeIds.clear();
-      var nodes = [], deleted = [];
-      for (var id of ids) {
-        try {
-          var node = await findNodeByIdAsync(id);
-          if (!node || node.removed) { deleted.push(id); continue; }
-          var data = extractDesignTree(node, 0, 0, "compact", false);
-          data.parentId = node.parent ? node.parent.id : null;
-          data.childIds = "children" in node ? node.children.map(function(c) { return c.id; }) : [];
-          nodes.push(data);
-        } catch(e) { figma.ui.postMessage({ type: "document-change" }); return; }
-      }
-      if (figma.currentPage.id !== changedPage.id) return;
-      if (generation !== docChangeGeneration) {
-        onDocChange({ nodeChanges: ids.map(function(id) { return { id: id }; }) });
-        return;
-      }
-      if (figma.currentPage.id === changedPage.id) {
-        figma.ui.postMessage({ type: "node-diff", nodes: nodes, deletedIds: deleted });
-      }
-    }, 100);
-  } catch(e) { figma.ui.postMessage({ type: "document-change" }); }
+    figma.ui.postMessage({ type: "nodes-invalidated", pageId: figma.currentPage.id,
+      baseRevision: baseRevision, revision: nodeRevision, ids: [], reset: true });
+    return;
+  }
+  if (pendingPatchBaseRevision === null) pendingPatchBaseRevision = baseRevision;
+  var ids = [], paths = {};
+  changes.forEach(function(change) {
+    var id = change.id || (change.node && change.node.id);
+    if (!id) return;
+    ids.push(id); pendingChangedNodeIds.add(id);
+    var ancestor = change.node && !change.node.removed && change.node.parent;
+    paths[id] = [];
+    while (ancestor && ancestor.type !== "PAGE") {
+      paths[id].push(ancestor.id); ancestor = ancestor.parent;
+    }
+    var previous = pendingNodeChanges.get(id);
+    var type = change.type || "PROPERTY_CHANGE";
+    var properties = change.properties || ["name", "x", "y", "width", "height", "visible", "characters"];
+    if (previous && previous.type === "CREATE" && type !== "DELETE") type = "CREATE";
+    pendingNodeChanges.set(id, { id: id, type: type, node: change.node || (previous && previous.node),
+      properties: Array.from(new Set((previous && previous.properties || []).concat(properties))) });
+    if (type === "CREATE" || properties.indexOf("parent") !== -1) {
+      var parent = change.node && !change.node.removed && change.node.parent;
+      if (parent && parent.type !== "PAGE") ids.push(parent.id);
+    }
+  });
+  figma.ui.postMessage({ type: "nodes-invalidated", pageId: figma.currentPage.id,
+    baseRevision: baseRevision, revision: nodeRevision, ids: ids, paths: paths, reset: false });
+  if (docChangeTimer) clearTimeout(docChangeTimer);
+  var page = figma.currentPage;
+  docChangeTimer = setTimeout(function() {
+    if (figma.currentPage !== page) return;
+    var patches = [];
+    try {
+      withInstanceVisibility(true, function() {
+        pendingNodeChanges.forEach(function(change) {
+          var node = change.node;
+          if (change.type === "DELETE" || (node && node.removed)) {
+            patches.push({ kind: "delete", id: change.id });
+          } else if (!node) {
+            // Unknown events require a scoped snapshot, never guess a deleted node.
+            patches.push({ kind: "invalidate", id: change.id });
+          } else if (change.type === "CREATE") {
+            var opaque = node.type === "INSTANCE";
+            var children = !opaque && "children" in node ? node.children : [];
+            var info = readNodeRecord(node, children, node.parent && node.parent.type !== "PAGE" ? node.parent.id : null, ["geometry"], opaque);
+            if (node.type === "TEXT") info.content = node.characters;
+            info.childrenLoaded = !opaque && !children.length;
+            patches.push({ kind: "create", node: info });
+          } else {
+            var values = { indexDetail: "minimal" };
+            change.properties.forEach(function(key) {
+              if (key === "parent") {
+                var opaque = node.type === "INSTANCE";
+                var children = !opaque && "children" in node ? node.children : [];
+                Object.assign(values, readNodeRecord(node, children, node.parent && node.parent.type !== "PAGE" ? node.parent.id : null, ["geometry"], opaque));
+                if (node.type === "TEXT") values.content = node.characters;
+              }
+              else if (key === "characters") values.content = node.characters;
+              else if (key === "relativeTransform") copyNodeFields(node, values, ["x", "y", "rotation"]);
+              else if (["name", "x", "y", "width", "height", "visible", "rotation", "opacity"].indexOf(key) !== -1) copyNodeFields(node, values, [key]);
+            });
+            patches.push({ kind: "update", id: change.id, values: values });
+          }
+        });
+      });
+      figma.ui.postMessage({ type: "node-patch", pageId: page.id,
+        baseRevision: pendingPatchBaseRevision, revision: nodeRevision, patches: patches });
+    } catch (error) {
+      figma.ui.postMessage({ type: "nodes-invalidated", pageId: page.id, revision: nodeRevision, ids: [], reset: true });
+    }
+    pendingChangedNodeIds.clear();
+    pendingNodeChanges.clear();
+    pendingPatchBaseRevision = null;
+  }, 100);
 }
 
 // Listen only to the active page: documentchange requires loading the entire
@@ -165,6 +215,9 @@ function watchCurrentPage() {
     watchedPage.on("nodechange", onDocChange);
   }
   pendingChangedNodeIds.clear();
+  pendingNodeChanges.clear();
+  pendingPatchBaseRevision = null;
+  nodeReadCursors.clear();
   if (docChangeTimer) clearTimeout(docChangeTimer);
 }
 try {
@@ -239,7 +292,8 @@ async function handlePluginRequest(request) {
     figma.ui.postMessage({ type: "session-info", sessionId: currentSessionId,
       fileName: currentFileName, fileKey: currentFileKey,
     documentId: currentDocumentId,
-      runtimeVersion: "{{PLUGIN_VERSION}}", protocolVersion: 2, operations: Object.keys(handlers) });
+      runtimeVersion: "{{PLUGIN_VERSION}}", protocolVersion: 3, operations: Object.keys(handlers) });
+    publishIndex(true).catch(function() {});
     return;
   }
 
@@ -338,6 +392,11 @@ async function handlePluginRequest(request) {
     return;
   }
 
+  if (request.type === "index-resync") {
+    try { await publishIndex(true); } catch (error) { figma.ui.postMessage({ type: "index-error", error: error.message }); }
+    return;
+  }
+
   // Handle manual reindex request from UI
   if (request.type === "manual-reindex") {
     try { await publishIndex(false); } catch(e) {}
@@ -352,7 +411,7 @@ async function handlePluginRequest(request) {
   if (!handler) {
     sendBridgeReply({
       id, operation, success: false,
-      error: `Unsupported operation "${operation}" (request ${id}, runtime {{PLUGIN_VERSION}}, protocol 2). Available: ${Object.keys(handlers).join(", ")}`,
+      error: `Unsupported operation "${operation}" (request ${id}, runtime {{PLUGIN_VERSION}}, protocol 3). Available: ${Object.keys(handlers).join(", ")}`,
     });
     return;
   }

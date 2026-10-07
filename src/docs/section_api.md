@@ -12,6 +12,16 @@ await figma.createPage({ name: "Signals" })          // create (no-op if exists)
 
 ---
 
+## Public node reads (v4)
+Use MCP tool figma_read with operation read_nodes, nodeId, fields, limit and optional expandInstances/includeHidden.
+Fields: geometry, content, text, style, layout, tokens, component. Defaults: geometry and content.
+Returns { schemaVersion: 4, pageId, revision, scope, nodes, nextCursor, complete, totalRead, budgetReached }.
+Nodes are flat. Instances are opaque unless expandInstances is true. Follow nextCursor with a new read_nodes request using cursor and limit only; restart if revision changes.
+Public get_design/get_design_context/get_node_detail aliases, figma_inspect_node and index get_node/subtree/typography return this envelope.
+Index startup covers page roots only; search completeness is scoped. Refresh nodeId to expand a frame. Internal script helpers below retain specialized formats.
+
+---
+
 ## Query nodes
 \`\`\`js
 await figma.query({ type: "FRAME" })                 // all frames on current page

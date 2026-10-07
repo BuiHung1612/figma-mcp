@@ -702,7 +702,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma Rust MCP</span>
-            <span class="brand-ver" id="runtime-version">v3.2.15</span>
+            <span class="brand-ver" id="runtime-version">v4.0.0</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -1567,6 +1567,10 @@
         if (ws !== socket) return;
         try {
           var req = JSON.parse(event.data);
+          if (req && req.type === "index-resync") {
+            dispatchToMain({ type: "index-resync" });
+            return;
+          }
           if (req && req.type === "server-hello") {
             if (Array.isArray(req.activeTaskIds)) dispatchToMain({ type: "task-sync", taskIds: req.activeTaskIds });
             var serverVer = req.version;
@@ -1895,6 +1899,13 @@
         return;
       }
 
+      if (msg.type === "node-patch" || msg.type === "nodes-invalidated") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify(msg)); } catch(e) {}
+        }
+        return;
+      }
+
       if (msg.type === "delta-diff") {
         if (ws && ws.readyState === WebSocket.OPEN) {
           try {
@@ -1953,16 +1964,14 @@
 
       if (msg.type === "index-start") {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send(JSON.stringify({
-            type: "index-start", fileName: msg.fileName, pageId: msg.pageId, startMs: msg.startMs
-          })); } catch(e) {}
+          try { ws.send(JSON.stringify(msg)); } catch(e) {}
         }
         return;
       }
 
       if (msg.type === "index-chunk") {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send(JSON.stringify({ type: "index-chunk", pageId: msg.pageId, nodes: msg.nodes })); } catch(e) {}
+          try { ws.send(JSON.stringify(msg)); } catch(e) {}
         }
         return;
       }
@@ -1988,20 +1997,17 @@
         showToast("Indexed in " + elapsed + "ms", "✓");
         if (ws && ws.readyState === WebSocket.OPEN) {
           try {
-            ws.send(JSON.stringify({
-              type: "index-update",
-              data: msg.data,
-              fileName: msg.fileName,
-              sessionId: msg.sessionId,
-              startMs: msg.startMs
-            }));
+            ws.send(JSON.stringify(msg));
             log("Indexed " + (msg.fileName || "canvas") + " (" + elapsed + "ms)", "ok", "read");
           } catch(e) {}
         }
         return;
       }
 
-      if (msg.type === "index-error") {
+      if (msg.type === "index-error" || msg.type === "index-abort") {
+        if (msg.type === "index-abort" && ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify(msg)); } catch(e) {}
+        }
         if (reindexBtn) {
           reindexBtn.classList.remove("indexing");
           reindexBtn.disabled = false;

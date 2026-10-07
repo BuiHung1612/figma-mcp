@@ -10,9 +10,9 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 - **Lossless Rust Tree Compression**: Compact/minimal tree responses share identical style bundles when the complete JSON becomes smaller. Node IDs, hierarchy, text, geometry and state differences remain intact. Full detail bypasses Rust compression; no heuristic merging of screens or repeated items.
 - **Pure Rust Native Performance**: Starts in `< 1ms`, uses `~3MB RAM`, zero GC pauses.
-- **In-Memory Deep Indexing (`figma_index`)**: Queries layers, components, styles, and tokens in `< 1ms` without slow canvas roundtrips.
+- **Scoped In-Memory Index (`figma_index`)**: Indexes page roots first and loads frame descendants on demand. Search reports the indexed scope and completeness.
 - **Binary IPC & Chunk Streaming**: Powered by **MessagePack** (`rmp-serde`) and progressive subtree chunking for instant transfers of massive design files.
-- **Incremental Diff Updates**: Sub-millisecond live document sync (`upsert_node`) keeps the server index fresh as you edit in Figma.
+- **Revisioned Updates**: Property patches update affected nodes; revision gaps trigger a fresh snapshot.
 - **Instant Design-to-Code (`figma_to_code`)**: Compiles Figma frames into clean, semantic components (**React + Tailwind**, **React Native**, **Vue 3 + Tailwind**, **HTML**, **SwiftUI**).
 - **Design Token Exporter (`figma_get_tokens`)**: Exports variables and styles to **Tailwind config**, **CSS custom properties** (`:root` & dark mode), **TypeScript consts**, or **W3C DTCG Token Studio JSON**.
 - **Batch Asset Extractor (`figma_export_assets` / `figma_export_asset`)**: Extracts SVG icons and raster images directly to project folders (`outputPath`) with auto-generated TypeScript barrel exports (`index.ts`) — zero chat token bloating.
@@ -217,7 +217,7 @@ Figma plugin only if the reported hash does not change.
 Checks live bridge connection status, connected Figma tabs/files, in-memory index health, queue length, and latency statistics.
 
 ### 2. `figma_inspect_node`
-Inspects a specific node by ID or name, returning CSS styles, flex layout rules, tokens, typography, and fills in a clean format (served in `< 1ms` via in-memory index or direct bridge).
+Reads a specific node by ID or name through the canonical flat `read_nodes` response. Select fields explicitly to control the work performed.
 
 ### 3. `figma_to_code`
 Compiles any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code.
@@ -291,7 +291,7 @@ Instant `< 1ms` in-memory queries against pre-indexed Figma file structures.
   - `"search_components"`: Find component sets and variants.
   - `"search_styles"`: Find paint, text, and effect styles.
   - `"search_variables"`: Find design token variables by name or collection.
-  - `"refresh"`: Trigger full background re-indexing of the canvas.
+  - `"refresh"`: Refresh page roots, or expand the frame specified by `nodeId`.
   - `"subtree"`: Read/cache one `nodeId`, default depth 2 and 1000 nodes. Increase `depth` or `maxNodes` only for the section you need; check `meta` for truncation.
   - `"typography"`: Rust-generated text/font table for one `nodeId`, with mixed-style runs preserved. Default limit 200 rows. Null font fields mean unknown/mixed, not a guessed default.
 
@@ -301,8 +301,8 @@ For typography verification, call `figma_verify_ui` with a text `nodeId` and bro
 
 ### 9. `figma_read`
 Universal reader for advanced queries:
-- **Design-to-code**: `get_design_context`, `get_css`, `get_component_map`, `get_unmapped_components`.
-- **Inspection & Hierarchy**: `get_selection`, `get_design`, `get_page_nodes`, `get_node_detail`, `scan_design`, `search_nodes`.
+- **Design-to-code**: `read_nodes`, `get_css`, `get_component_map`, `get_unmapped_components`.
+- **Inspection & Hierarchy**: `read_nodes`, `get_selection`, `get_page_nodes`, `scan_design`, `search_nodes`.
 - **Design Systems**: `get_styles`, `get_variables`, `get_local_components`, `get_tokens`.
 - **Visuals & Canvas**: `screenshot`, `export_svg`, `export_image`, `get_viewport`.
 
@@ -366,23 +366,58 @@ Tools on one tab run sequentially, including every awaited operation in a
 (Node >=22) checks real WebSocket/HTTP transport with a simulated plugin canvas;
 it does not replace validation in Figma Desktop.
 
-### Startup indexing
+### Startup indexing and v4 migration
 
-Opening the bridge indexes top-level nodes on the active page and local tokens.
-It does not preload every page or scan the document-wide component catalogue.
-`figma_index` status exposes `components_indexed: false` until a full reindex;
-this means deferred, not an empty catalogue. Live component queries populate
-the Rust cache for subsequent reads while the index remains valid. Component reads/searches and rules
-that require the complete catalogue fall back to a live query.
+Version 4 requires both server and plugin runtime protocol 3. Update both and
+restart the plugin. Opening the bridge indexes only visible top-level nodes on
+the active page, plus local styles and variables. Selection expands the selected
+frame. Component catalogue discovery is deferred; request it with
+`figma_index({ operation: "refresh", includeComponents: true })`.
 
-The plugin listens to active-page `nodechange` and global `stylechange` events,
-and rebuilds the lightweight index when the active page changes. It does not
-subscribe to document-wide node changes by preloading the whole file. Explicit
-reindexing still includes all local components; discovery loads pages one at a
-time and yields after at most 100 nodes or an 8ms traversal slice. Figma's native
-page load itself cannot be interrupted by the plugin. Concurrent identical
-index requests share one scan, and results from a previously active page are
-not published as the current index.
+Search covers indexed scopes only. Inspect `scope` and `complete` in search
+responses; an empty result does not prove a layer is absent from the file.
+Refresh a specific frame to expand its scope:
+
+```js
+figma_index({ operation: "refresh", nodeId: "123:456", expandInstances: true })
+figma_read({ operation: "read_nodes", nodeId: "123:456",
+  fields: ["geometry", "content", "text", "style", "layout", "tokens", "component"],
+  limit: 200, expandInstances: true })
+// Continue using the returned cursor; do not repeat or change traversal options.
+figma_read({ operation: "read_nodes", cursor: nextCursor, limit: 200 })
+```
+
+`read_nodes` returns a flat envelope:
+`{ schemaVersion: 4, pageId, revision, scope, nodes, nextCursor, complete, totalRead, budgetReached }`.
+Identity and topology are always included. Default fields are geometry and
+content; typography, paints, layout, variable/style references and component
+metadata are opt-in. Token fields contain references, not resolved CSS values.
+Page reads default to depth 0; frame reads default to full traversal (maximum
+256 levels). Limit is 1?500 nodes per response; traversal stops at 50,000 visited
+nodes. `complete` describes the requested scope, including its depth and filters.
+Restart from the root if the page or document revision changes between cursor
+requests. Cursors are single-use and at most 16 traversals can remain open.
+
+Instances are opaque by default: `opaque: true` and no descendant traversal.
+Set `expandInstances: true` to read the actual instance children and overrides.
+Hidden nodes require `includeHidden: true`. Expansion and visibility are separate
+options; no master component is substituted for an instance.
+
+Breaking output changes: public `get_design`, `get_design_context` and
+`get_node_detail` aliases now return the same envelope as `read_nodes`.
+`figma_inspect_node` and index `get_node`, `subtree`, `typography` also return
+that envelope. Replace nested `children` consumers with `nodes` and parent/child
+IDs. Replace index `maxNodes` with `limit` and cursor pagination. Internal
+script helpers used for code generation retain their specialized formats.
+
+Canvas traversal reads each child list once, yields after an 8ms slice, and
+streams chunks of up to 500 nodes. Snapshots commit atomically; frame refreshes
+preserve other indexed frames. Revisioned create/delete/property patches
+invalidate affected cached reads, while unrelated nodes remain queryable.
+Structural additions mark coverage incomplete until the scope is reread.
+Revision gaps request resynchronization. Page switches rebuild the shallow
+index without preloading every page. Exact-read caching evicts one least
+recently used entry when its 64-entry capacity is reached.
 
 ## 💻 Development & Testing
 

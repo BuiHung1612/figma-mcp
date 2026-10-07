@@ -613,21 +613,23 @@ handlers.get_design_context = async function(params) {
     if (sRole) ctx.role = sRole;
 
     // Children (limited depth to avoid token overflow)
-    if (depth < 4 && nd.children && nd.children.length) {
+    if (nd.type === "INSTANCE" && !(params && params.expandInstances === true)) { ctx.opaque = true; return ctx; }
+    var children = "children" in nd ? nd.children : [];
+    if (depth < 4 && children.length) {
       var rawCtxChildren = [];
-      for (var i = 0; i < nd.children.length; i++) {
-        var child = nodeContext(nd.children[i], depth + 1);
+      for (var i = 0; i < children.length; i++) {
+        var child = nodeContext(children[i], depth + 1);
         if (child) rawCtxChildren.push(child);
       }
       ctx.children = rawCtxChildren;
-    } else if (nd.children && nd.children.length) {
-      ctx.childCount = nd.children.length;
+    } else if (children.length) {
+      ctx.childCount = children.length;
     }
 
     return ctx;
   }
 
-  var context = nodeContext(node, 0);
+  var context = withInstanceVisibility(false, function() { return nodeContext(node, 0); });
   // { name, set, variant } shape — kept distinct from the tree walkers' fields.
   await resolveInstanceComponents(ctxInstances, function(target, desc) {
     var comp = target.component || {};

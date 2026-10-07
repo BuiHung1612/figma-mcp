@@ -102,6 +102,10 @@ pub struct IndexStats {
     pub total_nodes: usize,
     #[serde(default)]
     pub nodes_truncated: bool,
+    #[serde(default)]
+    pub complete: bool,
+    #[serde(default)]
+    pub scopes: Vec<Value>,
     pub total_components: usize,
     #[serde(default)]
     pub components_indexed: bool,
@@ -115,6 +119,7 @@ pub struct IndexStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct FigmaIndex {
+    pub revision: u64,
     pub pending_nodes: std::collections::HashSet<String>,
     pub nodes: HashMap<String, IndexNode>,
     pub components: Vec<IndexComponent>,
@@ -177,7 +182,7 @@ impl FigmaIndex {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.stats.indexed_at_ms > 0 && !self.dirty && self.pending_nodes.is_empty()
+        self.stats.indexed_at_ms > 0 && !self.dirty
     }
 
     pub fn mark_dirty(&mut self) {
@@ -222,8 +227,9 @@ impl FigmaIndex {
             if idx.nodes.len() >= 50_000 { idx.stats.nodes_truncated = true; break; }
             let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if id.is_empty() { continue; }
-            idx.top_level_frames.push(id.clone());
-            idx.ingest_node(node, None);
+            let parent = node.get("parentId").and_then(Value::as_str);
+            if parent.is_none() { idx.top_level_frames.push(id.clone()); }
+            idx.ingest_node(node, parent);
         }
 
         if let Some(styles) = styles_data { idx.ingest_styles(styles); }
@@ -249,6 +255,72 @@ impl FigmaIndex {
             self.ingest_node(node, None);
         }
         self.stats.total_nodes = self.nodes.len();
+    }
+
+    pub fn merge_projected_nodes(&mut self, nodes: &[Value]) {
+        for node in nodes {
+            let Some(id) = node["id"].as_str() else { continue };
+            if !self.nodes.contains_key(id) && self.nodes.len() >= 50_000 {
+                self.stats.nodes_truncated = true;
+                break;
+            }
+            let mut merged = self.nodes.get(id).and_then(|n| n.full_data.clone()).unwrap_or_else(|| serde_json::json!({}));
+            if let (Some(base), Some(fields)) = (merged.as_object_mut(), node.as_object()) { base.extend(fields.clone()); }
+            self.upsert_node(&merged);
+        }
+    }
+
+    pub fn record_scope(&mut self, scope: &Value, complete: bool) {
+        let mut scope = scope.clone();
+        scope["complete"] = serde_json::json!(complete);
+        self.stats.scopes.retain(|old| old["id"] != scope["id"] || old["depth"] != scope["depth"]
+            || old["includeHidden"] != scope["includeHidden"] || old["expandInstances"] != scope["expandInstances"]);
+        self.stats.complete |= complete && scope["id"].as_str() == self.page_id.as_deref()
+            && scope["depth"] == 256 && scope["expandInstances"] == true && !self.stats.nodes_truncated;
+        self.stats.scopes.push(scope);
+    }
+
+    pub fn apply_patch_batch(&mut self, base_revision: u64, revision: u64, patches: &[Value]) -> bool {
+        if revision <= self.revision { return true; }
+        if base_revision != self.revision || revision <= base_revision {
+            self.mark_dirty();
+            return false;
+        }
+        for patch in patches {
+            match patch["kind"].as_str() {
+                Some("delete") => { if let Some(id) = patch["id"].as_str() { self.remove_node(id); } }
+                Some("create") => {
+                    let node = &patch["node"];
+                    let parent = node["parentId"].as_str();
+                    if parent.is_none() || parent.is_some_and(|id| self.nodes.contains_key(id)) {
+                        self.merge_projected_nodes(std::slice::from_ref(node));
+                    }
+                    self.stats.complete = false;
+                    for scope in &mut self.stats.scopes { scope["complete"] = serde_json::json!(false); }
+                }
+                Some("update") => {
+                    if patch["values"].get("parentId").is_some() {
+                        self.stats.complete = false;
+                        for scope in &mut self.stats.scopes { scope["complete"] = serde_json::json!(false); }
+                    }
+                    let Some(id) = patch["id"].as_str() else { continue };
+                    if self.nodes.contains_key(id) || patch["values"].get("parentId").is_some() {
+                        let mut node = self.nodes.get(id).and_then(|node| node.full_data.clone()).unwrap_or_else(|| serde_json::json!({}));
+                        if let Some(fields) = node.as_object_mut() {
+                            fields.retain(|key, _| ["id","name","type","parentId","childIds","childCount","childrenLoaded",
+                                "opaque","x","y","width","height","visible","rotation","opacity","content","indexDetail"].contains(&key.as_str()));
+                            if let Some(values) = patch["values"].as_object() { fields.extend(values.clone()); }
+                        }
+                        node["id"] = serde_json::json!(id);
+                        self.upsert_node(&node);
+                    }
+                }
+                Some("invalidate") => { if let Some(id) = patch["id"].as_str() { self.pending_nodes.insert(id.to_string()); } }
+                _ => { self.mark_dirty(); return false; }
+            }
+        }
+        self.revision = revision;
+        true
     }
 
     fn ingest_node(&mut self, node: &Value, parent_id: Option<&str>) {
@@ -540,6 +612,7 @@ impl FigmaIndex {
         let q = query.to_lowercase();
         self.nodes.values()
             .filter(|n| {
+                if self.pending_nodes.contains(&n.id) { return false; }
                 if let Some(t) = node_type { if !n.node_type.eq_ignore_ascii_case(t) { return false; } }
                 q.is_empty()
                     || n.name.to_lowercase().contains(&q)
@@ -549,11 +622,11 @@ impl FigmaIndex {
             .collect()
     }
 
-    pub fn get_node(&self, id: &str) -> Option<&IndexNode> { self.nodes.get(id) }
+    pub fn get_node(&self, id: &str) -> Option<&IndexNode> { self.nodes.get(id).filter(|_| !self.pending_nodes.contains(id)) }
 
     pub fn get_node_by_name(&self, name: &str) -> Option<&IndexNode> {
         let q = name.to_lowercase();
-        self.nodes.values().find(|n| n.name.to_lowercase() == q)
+        self.nodes.values().find(|n| !self.pending_nodes.contains(&n.id) && n.name.to_lowercase() == q)
     }
 
     pub fn search_components(&self, name: &str, limit: usize) -> Vec<&IndexComponent> {
@@ -605,6 +678,10 @@ fn text_style_from_node(node: &Value) -> Option<Value> {
 }
 
 impl IndexNode {
+    pub fn has_details(&self) -> bool {
+        self.full_data.as_ref().is_none_or(|data| data["indexDetail"] != "minimal")
+    }
+
     /// Generates a clean, token-efficient, complete CSS & Layout specification
     pub fn to_css_spec(&self) -> serde_json::Value {
         let mut css = HashMap::new();
@@ -749,7 +826,9 @@ mod tests {
             {"id":"b","type":"FRAME","children":[]}
         ]),None,None,None,0);
         idx.pending_nodes.insert("t".into());
-        assert!(!idx.is_ready());
+        assert!(idx.is_ready());
+        assert!(idx.get_node("t").is_none());
+        assert!(idx.get_node("b").is_some());
         idx.upsert_node(&json!({"id":"t","parentId":"b","type":"TEXT","content":"New","fontSize":15.5,"fontWeight":"Semi Bold","childIds":[]}));
         assert!(idx.is_ready());
         assert!(idx.nodes["a"].children.is_empty());
@@ -826,6 +905,38 @@ mod tests {
         assert_eq!(typography["fontSize"], "15.5px");
         assert_eq!(typography["fontWeight"], "Demi");
         assert!(index.dirty);
+    }
+
+    #[test]
+    fn lightweight_nodes_stay_searchable_but_need_live_details() {
+        let mut index = FigmaIndex::default();
+        index.merge_chunk(&[json!({"id":"label", "type":"TEXT", "content":"Searchable",
+            "indexDetail":"minimal", "width":15.5, "childIds":[]})]);
+        assert_eq!(index.search_nodes("searchable", Some("TEXT"), 10).len(), 1);
+        assert!(!index.get_node("label").unwrap().has_details());
+        index.apply_delta("label", &json!({"width":20}));
+        assert!(!index.get_node("label").unwrap().has_details());
+        index.upsert_node(&json!({"id":"label", "type":"TEXT", "fontSize":15.5}));
+        assert!(index.get_node("label").unwrap().has_details());
+    }
+
+    #[test]
+    fn revisioned_patches_move_delete_and_drop_stale_styles() {
+        let mut index = FigmaIndex::from_raw("s", "f", &json!([
+            {"id":"a","type":"FRAME","children":[{"id":"t","type":"TEXT","content":"old","fontSize":14,"paintData":[]}]},
+            {"id":"b","type":"FRAME"}]), None, None, None, 0);
+        assert!(index.apply_patch_batch(0, 1, &[json!({"kind":"update","id":"t",
+            "values":{"parentId":"b","content":"new","width":15.5,"indexDetail":"minimal"}})]));
+        assert_eq!(index.nodes["t"].parent_id.as_deref(), Some("b"));
+        assert_eq!(index.nodes["t"].characters.as_deref(), Some("new"));
+        assert!(index.nodes["a"].children.is_empty());
+        assert_eq!(index.nodes["b"].children, vec!["t"]);
+        assert!(index.nodes["t"].full_data.as_ref().unwrap().get("fontSize").is_none());
+        assert!(index.apply_patch_batch(0, 1, &[]));
+        assert!(index.apply_patch_batch(1, 2, &[json!({"kind":"delete","id":"b"})]));
+        assert!(!index.nodes.contains_key("t"));
+        assert!(!index.apply_patch_batch(3, 4, &[]));
+        assert!(!index.is_ready());
     }
 
     #[test]

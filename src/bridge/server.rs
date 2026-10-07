@@ -53,14 +53,15 @@ fn is_read_operation(operation: &str) -> bool {
         "getpagenodes" | "getnodedetail" | "getdesigncontext" | "getcss" | "getcomponentmap" | "getunmappedcomponents" |
         "getstyles" | "getvariables" | "getvariabletokens" | "gettokens" | "getlocalcomponents" | "getviewport" |
         "screenshot" | "exportsvg" | "exportimage" | "exportassets" | "scandesign" | "searchnodes" | "indexscan" |
-        "getcomponentproperties" | "getreactions")
+        "getcomponentproperties" | "getreactions" | "readnodes")
 }
 
 fn read_cache_key(operation: &str, params: &Value) -> Option<String> {
     // Cache exact live responses, never infer a detail contract from compact nodes.
-    // ponytail: 64 entries per tab; byte-based eviction if large trees dominate memory.
+    // ponytail: 64 entries per tab; add a byte budget if large trees dominate memory.
     if matches!(operation, "get_styles" | "get_variables" | "get_variable_tokens")
-        || (matches!(operation, "get_design" | "get_node_detail" | "get_design_context")
+        || (matches!(operation, "get_design" | "get_node_detail" | "get_design_context" | "read_nodes")
+        && params.get("cursor").is_none()
         && params.get("id").or_else(|| params.get("nodeId")).and_then(Value::as_str).is_some()) {
         Some(format!("{operation}:{}", params))
     } else { None }
@@ -69,6 +70,42 @@ fn read_cache_key(operation: &str, params: &Value) -> Option<String> {
 #[cfg(test)]
 mod read_cache_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn scoped_snapshots_commit_atomically_and_patch_gaps_request_resync() {
+        let state = BridgeState::new(0);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = Session::new("s".into(), None);
+        session.ws_tx = Some(tx);
+        let mut idx = crate::bridge::index::FigmaIndex::from_raw("s", "f",
+            &json!([{"id":"a","type":"FRAME"},{"id":"b","type":"FRAME"}]), None, None, None, 0);
+        idx.page_id = Some("page".into());
+        session.index = Some(idx);
+        state.inner.lock().await.sessions.insert("s".into(), session);
+        state.receive_index_event("s", &json!({"type":"index-start","scanId":"1","pageId":"page","revision":0,
+            "scope":{"id":"a","depth":256,"expandInstances":false}})).await;
+        state.receive_index_event("s", &json!({"type":"index-chunk","scanId":"old","pageId":"page","revision":0,
+            "nodes":[{"id":"bad","type":"TEXT"}]})).await;
+        state.receive_index_event("s", &json!({"type":"index-chunk","scanId":"1","pageId":"page","revision":0,
+            "nodes":[{"id":"a","type":"FRAME","parentId":null,"childIds":["t"]},
+                {"id":"t","type":"TEXT","parentId":"a","content":"new"}]})).await;
+        assert_eq!(state.get_index_stats(Some("s")).await.unwrap().total_nodes, 2);
+        state.receive_index_event("s", &json!({"type":"index-update","scanId":"1","pageId":"page","revision":0,
+            "data":{"complete":true}})).await;
+        let inner = state.inner.lock().await;
+        let idx = inner.sessions["s"].index.as_ref().unwrap();
+        assert_eq!(idx.nodes.len(), 3);
+        assert!(idx.nodes.contains_key("b"));
+        assert!(!idx.nodes.contains_key("bad"));
+        drop(inner);
+        state.receive_index_event("s", &json!({"type":"node-patch","pageId":"page","baseRevision":0,"revision":1,
+            "patches":[{"kind":"update","id":"t","values":{"content":"patched","indexDetail":"minimal"}}]})).await;
+        assert_eq!(state.inner.lock().await.sessions["s"].index.as_ref().unwrap().nodes["t"].characters.as_deref(), Some("patched"));
+        state.receive_index_event("s", &json!({"type":"node-patch","pageId":"page","baseRevision":2,"revision":3,"patches":[]})).await;
+        let Message::Text(request) = rx.try_recv().unwrap() else { panic!("expected resync") };
+        assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["type"], "index-resync");
+        assert!(state.inner.lock().await.sessions["s"].index.as_ref().unwrap().dirty);
+    }
 
     #[test]
     fn cache_keys_preserve_detail_contract_and_exclude_selection_and_exports() {
@@ -116,11 +153,13 @@ mod read_cache_tests {
         let mut session = Session::new("s".into(), None);
         session.ws_tx = Some(tx);
         session.index = Some(crate::bridge::index::FigmaIndex::from_raw(
-            "s", "f", &json!([{"id":"1:1", "name":"Card", "type":"FRAME"}]), None, None, None, 0));
+            "s", "f", &json!([{"id":"1:1", "name":"Card", "type":"FRAME", "indexDetail":"minimal"}]), None, None, None, 0));
         let params = json!({"id":"1:1", "detail":"full"});
         let data = json!({"id":"1:1", "resolvedPaints": []});
         session.read_cache.insert(read_cache_key("get_design_context", &params).unwrap(), data.clone());
         state.inner.lock().await.sessions.insert("s".into(), session);
+        assert!(state.get_index_node(Some("s"), "1:1").await.is_none());
+        assert_eq!(state.search_index_nodes(Some("s"), "Card", None, 10).await.unwrap().len(), 1);
         assert_eq!(state.send_operation("get_design_context", params, Some("s")).await.unwrap(), data);
         assert!(rx.try_recv().is_err());
         let dispatch = state.clone();
@@ -336,6 +375,9 @@ impl BridgeState {
                 if let Some(obj) = params.as_object_mut() { obj.remove("_taskId"); }
             }
 
+            if matches!(operation, "read_nodes" | "index_scan") && session.protocol_version.is_some_and(|version| version < 3) {
+                return Err("Node API v4 requires plugin protocol 3. Update and restart both the server and the Figma plugin.".to_string());
+            }
             if let Some(operations) = &session.operations {
                 let key = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
                 let canonical = match key(operation).as_str() {
@@ -353,7 +395,7 @@ impl BridgeState {
             }
             // Only cache node reads for indexed active-page nodes: other pages
             // are not covered by the plugin's nodechange subscription.
-            let node_read = matches!(operation, "get_design" | "get_node_detail" | "get_design_context");
+            let node_read = matches!(operation, "get_design" | "get_node_detail" | "get_design_context" | "read_nodes");
             let active_node = params.get("id").or_else(|| params.get("nodeId")).and_then(Value::as_str)
                 .is_some_and(|id| session.index.as_ref().is_some_and(|idx| idx.is_ready() && idx.nodes.contains_key(id)));
             let cache_key = if self.task_scope.is_none() && (!node_read || active_node) {
@@ -361,8 +403,7 @@ impl BridgeState {
             } else { None };
             let writes_pending = session.pending.values().any(|p| !is_read_operation(&p.op.operation));
             if !writes_pending {
-                if let Some(value) = cache_key.as_ref().and_then(|key| session.read_cache.get(key)) {
-                    let value = value.clone();
+                if let Some(value) = cache_key.as_ref().and_then(|key| session.cached_read(key)) {
                     session.cache_hits += 1;
                     tracing::debug!(operation, session_id = %sid, "Rust read cache hit");
                     return Ok(value);
@@ -484,8 +525,9 @@ impl BridgeState {
                     let mut inner = self.inner.lock().await;
                     if let Some(session) = inner.sessions.get_mut(&target_sid) {
                         if session.cache_revision == cache_revision && !session.pending.values().any(|p| !is_read_operation(&p.op.operation)) {
-                            if session.read_cache.len() >= 64 { session.read_cache.clear(); }
-                            session.read_cache.insert(key, data.clone());
+                            if operation != "read_nodes" || data["nextCursor"].is_null() {
+                                session.cache_read(key, data.clone());
+                            }
                         }
                     }
                 }
@@ -494,6 +536,22 @@ impl BridgeState {
                         let mut inner = self.inner.lock().await;
                         if let Some(idx) = inner.sessions.get_mut(&target_sid).and_then(|s| s.index.as_mut()) {
                             if idx.is_ready() { idx.cache_components(data); }
+                        }
+                    }
+                }
+                if operation == "read_nodes" {
+                    if let Ok(data) = &val {
+                        let mut inner = self.inner.lock().await;
+                        if let Some(session) = inner.sessions.get_mut(&target_sid) {
+                            if session.cache_revision == cache_revision {
+                                if let Some(idx) = &mut session.index {
+                                    if idx.page_id.as_deref() == data["pageId"].as_str()
+                                        && data["revision"].as_u64().is_some_and(|rev| rev >= session.node_revision) {
+                                        if let Some(nodes) = data["nodes"].as_array() { idx.merge_projected_nodes(nodes); }
+                                        idx.record_scope(&data["scope"], data["complete"] == true);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -558,18 +616,136 @@ impl BridgeState {
         }
     }
 
+    async fn receive_index_event(&self, sid: &str, event: &Value) {
+        let mut inner = self.inner.lock().await;
+        let Some(session) = inner.sessions.get_mut(sid) else { return };
+        let page = event["pageId"].as_str();
+        let revision = event["revision"].as_u64();
+        let mut resync = false;
+        match event["type"].as_str() {
+            Some("nodes-invalidated") => {
+                if session.index.as_ref().is_some_and(|idx| idx.page_id.as_deref() != page) {
+                    return;
+                }
+                if let Some(rev) = revision { session.node_revision = session.node_revision.max(rev); }
+                let ids: Vec<String> = event["ids"].as_array().map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+                if event["reset"] == true {
+                    session.invalidate_reads();
+                    if let Some(idx) = &mut session.index { idx.mark_dirty(); }
+                    resync = true;
+                } else {
+                    let affected: Vec<String> = ids.iter().map(|id| {
+                        if session.index.as_ref().is_some_and(|idx| idx.nodes.contains_key(id)) { return id.clone(); }
+                        event["paths"][id].as_array().and_then(|path| path.iter().filter_map(Value::as_str)
+                            .find(|ancestor| session.index.as_ref().is_some_and(|idx| idx.nodes.contains_key(*ancestor))))
+                            .unwrap_or(id).to_string()
+                    }).collect();
+                    session.invalidate_nodes(&affected);
+                    if let Some(idx) = &mut session.index {
+                        let known: Vec<_> = ids.into_iter().filter(|id| idx.nodes.contains_key(id)).collect();
+                        idx.pending_nodes.extend(known);
+                    } else { resync = true; }
+                }
+            }
+            Some("node-patch") => {
+                if session.index.as_ref().is_some_and(|idx| idx.page_id.as_deref() != page) { return; }
+                if let (Some(base), Some(rev), Some(patches)) = (event["baseRevision"].as_u64(), revision, event["patches"].as_array()) {
+                    if let Some(idx) = &mut session.index {
+                        resync = !idx.apply_patch_batch(base, rev, patches);
+                        session.node_revision = session.node_revision.max(rev);
+                    } else { resync = true; }
+                } else { resync = true; }
+            }
+            Some("index-start") => {
+                if let (Some(scan), Some(rev), Some(page)) = (event["scanId"].as_str(), revision, page) {
+                    if rev < session.node_revision { resync = true; }
+                    else {
+                        let mut idx = crate::bridge::index::FigmaIndex::from_raw(sid,
+                            event["fileName"].as_str().unwrap_or("unknown"), &json!([]), None, None, None,
+                            event["startMs"].as_u64().unwrap_or_else(now_ms));
+                        idx.page_id = Some(page.to_string());
+                        idx.revision = rev;
+                        session.pending_index = Some((scan.to_string(), idx, event["scope"].clone()));
+                    }
+                } else { resync = true; }
+            }
+            Some("index-chunk") => {
+                if let Some((scan, idx, _)) = &mut session.pending_index {
+                    if Some(scan.as_str()) == event["scanId"].as_str() && idx.page_id.as_deref() == page && Some(idx.revision) == revision {
+                        if let Some(nodes) = event["nodes"].as_array() { idx.merge_chunk(nodes); }
+                    }
+                } else { resync = true; }
+            }
+            Some("index-update") => {
+                let matches = session.pending_index.as_ref().is_some_and(|(scan, idx, _)|
+                    Some(scan.as_str()) == event["scanId"].as_str() && idx.page_id.as_deref() == page && Some(idx.revision) == revision);
+                if !matches { return; }
+                let (_, mut nodes, scope) = session.pending_index.take().unwrap();
+                if nodes.revision < session.node_revision { resync = true; }
+                else {
+                    let data = &event["data"];
+                    let mut metadata = crate::bridge::index::FigmaIndex::from_raw(sid,
+                        event["fileName"].as_str().unwrap_or("unknown"), &json!([]), data.get("styles"),
+                        data.get("variables"), data.get("components"), event["startMs"].as_u64().unwrap_or_else(now_ms));
+                    let page_snapshot = scope["id"].as_str() == page;
+                    session.invalidate_nodes(&[scope["id"].as_str().unwrap_or("").to_string()]);
+                    if page_snapshot || session.index.as_ref().is_none_or(|idx| idx.page_id.as_deref() != page) {
+                        metadata.nodes = std::mem::take(&mut nodes.nodes);
+                        metadata.top_level_frames = std::mem::take(&mut nodes.top_level_frames);
+                        metadata.page_id = nodes.page_id;
+                        metadata.revision = nodes.revision;
+                        metadata.stats.nodes_truncated = data["nodesTruncated"] == true;
+                        metadata.stats.total_nodes = metadata.nodes.len();
+                        metadata.record_scope(&scope, data["complete"] == true);
+                        session.index = Some(metadata);
+                        session.invalidate_reads();
+                    } else if let Some(idx) = &mut session.index {
+                        for node in nodes.nodes.into_values() {
+                            if let Some(data) = node.full_data { idx.merge_projected_nodes(&[data]); }
+                        }
+                        if data["components"].is_object() { idx.cache_components(&data["components"]); }
+                        idx.record_scope(&scope, data["complete"] == true);
+                        idx.stats.duration_ms = metadata.stats.duration_ms;
+                    }
+                    session.node_revision = session.node_revision.max(revision.unwrap_or(0));
+                    session.resync_requested = false;
+                }
+            }
+            Some("index-abort") => {
+                if session.pending_index.as_ref().is_some_and(|(scan, _, _)| Some(scan.as_str()) == event["scanId"].as_str()) {
+                    session.pending_index = None;
+                }
+                session.resync_requested = false;
+                resync = event["retry"] == true;
+            }
+            _ => return,
+        }
+        if resync && !session.resync_requested {
+            session.invalidate_reads();
+            if let Some(idx) = &mut session.index { idx.mark_dirty(); }
+            if let Some(tx) = &session.ws_tx {
+                let _ = tx.send(Message::Text(json!({"type":"index-resync"}).to_string()));
+                session.resync_requested = true;
+            }
+        }
+    }
+
     pub async fn get_index_stats(&self, session_id: Option<&str>) -> Option<crate::bridge::index::IndexStats> {
         let inner = self.inner.lock().await;
         let sid = Self::resolve_session_id(&inner, session_id);
 
-        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().map(|idx| idx.stats.clone()))
+        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().map(|idx| {
+            let mut stats = idx.stats.clone();
+            stats.complete &= idx.pending_nodes.is_empty() && !idx.dirty;
+            stats
+        }))
     }
 
     pub async fn get_index_node(&self, session_id: Option<&str>, node_id: &str) -> Option<crate::bridge::index::IndexNode> {
         let inner = self.inner.lock().await;
         let sid = Self::resolve_session_id(&inner, session_id);
 
-        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().filter(|idx| idx.is_ready()).and_then(|idx| idx.get_node(node_id).cloned()))
+        inner.sessions.get(&sid).and_then(|s| s.index.as_ref().filter(|idx| idx.is_ready()).and_then(|idx| idx.get_node(node_id).filter(|node| node.has_details()).cloned()))
     }
 
     pub async fn search_index_nodes(
@@ -1101,7 +1277,7 @@ async fn handle_socket(
             "name": "figma-rust-mcp",
             "dynamicRuntime": true,
             "runtimeHash": env!("FIGMA_RUNTIME_CODE_HASH"),
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "activeTaskIds": active_task_ids,
             "connectedAt": now_ms()
         });
@@ -1154,6 +1330,9 @@ async fn handle_socket(
                                 s.document_id = val["documentId"].as_str().map(str::to_owned).or(s.document_id.clone());
                                 s.runtime_version = val["runtimeVersion"].as_str().map(str::to_owned);
                                 s.protocol_version = val["protocolVersion"].as_u64();
+                                s.node_revision = 0;
+                                s.pending_index = None;
+                                s.resync_requested = false;
                                 s.operations = val["operations"].as_array().map(|ops| ops.iter().filter_map(Value::as_str).map(str::to_owned).collect());
                                 s.invalidate_reads();
                                 if let Some(idx) = &mut s.index { idx.tokens_dirty = true; }
@@ -1227,89 +1406,8 @@ async fn handle_socket(
                             continue;
                         }
 
-                        if val.get("type").and_then(|v| v.as_str()) == Some("index-start") {
-                            let file_name = val.get("fileName").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            let page_id = val.get("pageId").and_then(|v| v.as_str()).unwrap_or("");
-                            let start_ms = val.get("startMs").and_then(|v| v.as_u64()).unwrap_or_else(now_ms);
-                            let mut idx = crate::bridge::index::FigmaIndex::from_raw(
-                                &sid_clone, file_name, &json!([]), None, None, None, start_ms,
-                            );
-                            idx.page_id = Some(page_id.to_string());
-                            idx.dirty = true;
-                            let mut inner = state_clone.inner.lock().await;
-                            if let Some(session) = inner.sessions.get_mut(&sid_clone) {
-                                session.invalidate_reads();
-                                session.index = Some(idx);
-                            }
-                            continue;
-                        }
-
-                        // "index-update" = plugin sent pre-indexed data snapshot
-                        if val.get("type").and_then(|v| v.as_str()) == Some("index-update") {
-                            if let Some(data) = val.get("data") {
-                                let file_name = val.get("fileName").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                let page_nodes = data.get("pageNodes").unwrap_or(&Value::Null);
-                                let styles = data.get("styles");
-                                let variables = data.get("variables");
-                                let components = data.get("components");
-                                let start_ms = val.get("startMs").and_then(|v| v.as_u64()).unwrap_or_else(now_ms);
-
-                                let mut idx = crate::bridge::index::FigmaIndex::from_raw(
-                                    &sid_clone,
-                                    file_name,
-                                    page_nodes,
-                                    styles,
-                                    variables,
-                                    components,
-                                    start_ms,
-                                );
-                                let page_id = data.get("pageId").and_then(|v| v.as_str()).unwrap_or("");
-                                idx.page_id = Some(page_id.to_string());
-                                if data.get("nodesStreamed").and_then(Value::as_bool) == Some(true) {
-                                    let inner = state_clone.inner.lock().await;
-                                    if let Some(previous) = inner.sessions.get(&sid_clone)
-                                        .and_then(|session| session.index.as_ref())
-                                        .filter(|previous| previous.page_id.as_deref() == Some(page_id))
-                                    {
-                                        idx.nodes = previous.nodes.clone();
-                                        idx.top_level_frames = previous.top_level_frames.clone();
-                                        idx.pending_nodes = previous.pending_nodes.clone();
-                                        idx.stats.total_nodes = idx.nodes.len();
-                                        idx.stats.nodes_truncated = previous.stats.nodes_truncated
-                                            || data.get("nodesTruncated").and_then(Value::as_bool) == Some(true);
-                                        idx.dirty = false;
-                                    } else {
-                                        idx.dirty = true;
-                                    }
-                                    drop(inner);
-                                }
-                                eprintln!(
-                                    "[figma-rust-mcp] ⚡ Pre-indexed {} nodes, {} components, {} styles, {} variables in {}ms",
-                                    idx.stats.total_nodes,
-                                    idx.stats.total_components,
-                                    idx.stats.total_styles,
-                                    idx.stats.total_variables,
-                                    idx.stats.duration_ms
-                                );
-                                state_clone.update_index(&sid_clone, idx).await;
-                            }
-                            continue;
-                        }
-
-                        // "index-chunk" = selective streaming of subtree chunks
-                        if val.get("type").and_then(|v| v.as_str()) == Some("index-chunk") {
-                            if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
-                                let page_id = val.get("pageId").and_then(|v| v.as_str());
-                                let mut inner = state_clone.inner.lock().await;
-                                if let Some(session) = inner.sessions.get_mut(&sid_clone) {
-                                    session.invalidate_reads();
-                                    if let Some(idx) = session.index.as_mut()
-                                        .filter(|idx| idx.page_id.as_deref() == page_id)
-                                    {
-                                        idx.merge_chunk(nodes);
-                                    }
-                                }
-                            }
+                        if matches!(val["type"].as_str(), Some("nodes-invalidated" | "node-patch" | "index-start" | "index-chunk" | "index-update" | "index-abort")) {
+                            state_clone.receive_index_event(&sid_clone, &val).await;
                             continue;
                         }
 
@@ -1342,6 +1440,10 @@ async fn handle_socket(
                 Message::Binary(bin_bytes) => {
                     // Fast Binary IPC (MessagePack)
                     if let Ok(val) = rmp_serde::from_slice::<Value>(&bin_bytes) {
+                        if matches!(val["type"].as_str(), Some("nodes-invalidated" | "node-patch" | "index-start" | "index-chunk" | "index-update" | "index-abort")) {
+                            state_clone.receive_index_event(&sid_clone, &val).await;
+                            continue;
+                        }
                         if val.get("type").and_then(|v| v.as_str()) == Some("selection-change") {
                             let count = val.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                             let page_name = val.get("pageName").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -1632,7 +1734,7 @@ async fn handle_plugin_version() -> impl IntoResponse {
             "name": "figma-rust-mcp",
             "dynamicRuntime": true,
             "runtimeHash": env!("FIGMA_RUNTIME_CODE_HASH"),
-            "protocolVersion": 2
+            "protocolVersion": 3
         })),
     )
 }
@@ -1775,7 +1877,7 @@ mod contract_tests {
         let plugin: Value = client.get(format!("{base}/plugin/version")).send().await.unwrap().json().await.unwrap();
         assert_eq!(root["version"], version);
         assert_eq!(plugin["version"], version);
-        assert_eq!(plugin["protocolVersion"], 2);
+        assert_eq!(plugin["protocolVersion"], 3);
         let ui = client.get(format!("{base}/plugin/ui.html")).send().await.unwrap();
         assert_eq!(ui.headers()["etag"], RUNTIME_UI_ETAG);
         assert!(ui.text().await.unwrap().contains(&format!("id=\"runtime-version\">v{version}</span>")));

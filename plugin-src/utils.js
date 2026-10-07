@@ -500,6 +500,13 @@ function yieldToUI(delayMs) {
   });
 }
 
+// Scope this flag to synchronous traversal; never leave it changed across await.
+function withInstanceVisibility(includeHidden, read) {
+  var previous = figma.skipInvisibleInstanceChildren;
+  figma.skipInvisibleInstanceChildren = !includeHidden;
+  try { return read(); } finally { figma.skipInvisibleInstanceChildren = previous; }
+}
+
 // Flexible operation handler resolver with camelCase/snake_case and alias support
 function resolveOperationHandler(operation) {
   if (!operation || typeof operation !== "string") return null;

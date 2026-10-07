@@ -322,7 +322,7 @@ const ALL_OPS = [
     "get_selection", "get_design", "get_page_nodes",
     "screenshot", "export_svg",
     "get_styles", "get_local_components", "get_viewport", "get_variables",
-    "get_node_detail", "export_image", "search_nodes", "scan_design",
+    "get_node_detail", "read_nodes", "export_image", "search_nodes", "scan_design",
     "getReactions", "getComponentProperties"
 ];
 

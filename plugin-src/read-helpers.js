@@ -501,14 +501,16 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
 
   // Minimal: only basic info + childCount, skip all style properties
   if (isMinimal) {
-    if ("children" in node && node.children.length) {
-      info.childCount = node.children.length;
+    if (node.type === "INSTANCE" && !(walkState && walkState.expandInstances)) { info.opaque = true; return info; }
+    var minimalChildren = "children" in node ? node.children : [];
+    if (minimalChildren.length) {
+      info.childCount = minimalChildren.length;
       if (node.type === "TEXT") { try { info.content = node.characters; } catch(e) {} }
       if (walkState && typeof walkState.remaining === "number" && walkState.remaining <= 0) {
         info.childrenTruncated = "nodeBudget";
         walkState.truncated = true;
       } else {
-        info.children = node.children
+        info.children = minimalChildren
           .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })
           .filter(Boolean);
       }
@@ -821,11 +823,13 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   }
 
   // ── Children ──
-  if (node && typeof node === "object" && "children" in node && Array.isArray(node.children) && node.children.length) {
+  if (node.type === "INSTANCE" && !(walkState && walkState.expandInstances)) { info.opaque = true; return info; }
+  var children = "children" in node ? node.children : [];
+  if (Array.isArray(children) && children.length) {
     var budgetSpent = !!(walkState && typeof walkState.remaining === "number" && walkState.remaining <= 0);
     if (depth >= maxDepth || budgetSpent) {
       // At the depth limit / node budget: summarize instead of truncating to empty []
-      info.childCount = node.children.length;
+      info.childCount = children.length;
       if (walkState && walkState.skipChildSummary) {
         info.childrenTruncated = "indexDiff";
       } else {
@@ -839,7 +843,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         if (budgetSpent) walkState.truncated = true;
       }
     } else {
-      var rawChildren = node.children
+      var rawChildren = children
         .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })
         .filter(Boolean);
       info.children = rawChildren;

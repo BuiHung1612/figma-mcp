@@ -10,7 +10,7 @@ import { parse as parseJsonc } from 'jsonc-parser';
 
 function runtime(figma = {}) {
   const context = vm.createContext({ figma, handlers: {}, console, setTimeout, Map, Set, Uint8Array });
-  for (const file of ['utils', 'token-helpers', 'handlers-read-detail', 'handlers-read', 'handlers-tokens', 'handlers-write-ops']) {
+  for (const file of ['utils', 'token-helpers', 'read-helpers', 'handlers-read-detail', 'handlers-read', 'handlers-tokens', 'handlers-write-ops', 'node-reader']) {
     vm.runInContext(readFileSync(`plugin-src/${file}.js`, 'utf8'), context, { filename: file });
   }
   return context;
@@ -281,6 +281,86 @@ test('startup index defers document-wide components and coalesces duplicate scan
   assert.equal(componentQueries, 1);
 });
 
+test('page index is shallow; frame reads paginate and instances expand only on request', async () => {
+  const messages = [];
+  let childReads = 0;
+  const page = { id: 'page', type: 'PAGE', children: [] };
+  const figma = { currentPage: page, skipInvisibleInstanceChildren: false,
+    root: { name: 'File', getPluginData: () => '' }, ui: { postMessage: msg => messages.push(msg) } };
+  const text = i => ({ id: 'text:' + i, name: 'Label ' + i, type: 'TEXT', characters: 'Content ' + i,
+    width: 15.5, height: 20.25, visible: true,
+    get fills() { assert.fail('projected index must not read paints'); },
+    get fontSize() { assert.fail('projected index must not read typography'); } });
+  const visible = Array.from({ length: 1200 }, (_, i) => text(i));
+  const hidden = text('hidden'); hidden.visible = false;
+  const frame = { id:'frame', name:'Frame', type:'FRAME', parent:page };
+  const instance = { id:'instance', name:'Instance', type:'INSTANCE', parent:frame,
+    get children() { childReads++; return figma.skipInvisibleInstanceChildren ? visible : [...visible,hidden]; } };
+  for (const node of [...visible,hidden]) node.parent = instance;
+  frame.children = [instance]; page.children = [frame];
+  figma.getNodeByIdAsync = async id => id === frame.id ? frame : id === instance.id ? instance : null;
+  const r = runtime(figma);
+  r.handlers.get_styles = async () => ({}); r.handlers.get_variables = async () => ({});
+  r.yieldToUI = async () => assert.equal(figma.skipInvisibleInstanceChildren, false);
+  const startup = await r.handlers.index_scan({ deferComponents:true });
+  assert.equal(startup.scope.id, page.id);
+  assert.equal(startup.scope.depth, 0);
+  assert.deepEqual(messages.filter(msg => msg.type === 'index-chunk').flatMap(msg => msg.nodes.map(n => n.id)), ['frame']);
+  assert.equal(childReads, 0);
+  const opaque = await r.handlers.read_nodes({ id:frame.id });
+  assert.equal(opaque.nodes.length, 2); assert.equal(opaque.nodes[1].opaque, true); assert.equal(childReads, 0);
+  messages.length = 0;
+  const result = await r.handlers.index_scan({ id:frame.id, expandInstances:true, deferComponents:true });
+  const chunks = messages.filter(msg => msg.type === 'index-chunk');
+  assert.deepEqual(chunks.map(msg => msg.nodes.length), [500,500,202]);
+  const nodes = chunks.flatMap(msg => plain(msg.nodes));
+  assert.equal(childReads, 1); assert.equal(result.nodesTruncated, false);
+  assert.equal(nodes.at(-1).content, 'Content 1199'); assert.equal(nodes.at(-1).width, 15.5);
+  assert.equal(nodes[1].childIds.length, 1200);
+  assert.equal(figma.skipInvisibleInstanceChildren, false);
+  const first = await r.handlers.read_nodes({ id:frame.id, expandInstances:true, limit:2 });
+  assert.ok(first.nextCursor); assert.equal(first.complete, false);
+  const next = await r.handlers.read_nodes({ cursor:first.nextCursor, limit:2 });
+  assert.deepEqual(plain(next.nodes.map(n => n.id)), ['text:0','text:1']);
+  await assert.rejects(r.handlers.read_nodes({ cursor:first.nextCursor }), /expired/);
+  await assert.rejects(r.handlers.read_nodes({ cursor:next.nextCursor, fields:['style'] }), /options cannot change/);
+  r.nodeRevision++;
+  await assert.rejects(r.handlers.read_nodes({ cursor:next.nextCursor }), /expired/);
+  const full = await r.handlers.read_nodes({ id:instance.id, includeHidden:true, expandInstances:true, limit:500 });
+  let all = [...full.nodes], cursor = full.nextCursor;
+  while(cursor) { const page = await r.handlers.read_nodes({cursor,limit:500}); all.push(...page.nodes); cursor=page.nextCursor; }
+  assert.equal(all.length, 1202); assert.equal(all.at(-1).visible, false);
+  assert.throws(() => r.withInstanceVisibility(false, () => { throw Error('read failed'); }), /read failed/);
+  assert.equal(figma.skipInvisibleInstanceChildren, false);
+});
+
+test('index yields by elapsed time and cancels when the active page changes', async () => {
+  let elapsed = 0, reads = 0, previousReads = 0, yields = 0;
+  const messages = [];
+  const page = { id: 'page', children: Array.from({ length: 30 }, (_, i) => ({
+    id: `${i}`, type: 'FRAME', get width() { elapsed += 2; reads++; return 10; },
+  })) };
+  const r = runtime({ skipInvisibleInstanceChildren: false, currentPage: page,
+    root: { name: 'File', getPluginData: () => '' }, ui: { postMessage: msg => messages.push(msg) } });
+  r.Date = { now: () => elapsed };
+  r.handlers.get_styles = async () => ({});
+  r.handlers.get_variables = async () => ({});
+  r.yieldToUI = async () => {
+    yields++;
+    assert.ok(reads - previousReads <= 4, 'yield after an 8ms slice');
+    previousReads = reads;
+    assert.equal(r.figma.skipInvisibleInstanceChildren, false);
+  };
+  await r.handlers.index_scan({ deferComponents: true });
+  assert.equal(reads, 30);
+  assert.ok(yields >= 7);
+  r.yieldToUI = async () => { r.figma.currentPage = { id: 'other', children: [] }; };
+  messages.length = 0;
+  const result = await r.handlers.index_scan({ deferComponents: true });
+  assert.equal(result.cancelled, true);
+  assert.ok(!messages.some(msg => msg.type === 'index-update'));
+});
+
 test('component catalogue walks pages cooperatively without bulk loading or root searches', async () => {
   let loaded = 0, yields = 0, reads = 0, lastYieldReads = 0, maxSliceReads = 0;
   const page = { type: 'PAGE', name: 'Components', loadAsync: async () => { loaded++; } };
@@ -334,19 +414,17 @@ test('startup subscribes to active-page changes without loading the whole file',
   assert.equal(scanOptions.deferComponents, true);
   pageListener({ nodeChanges: [{ type: 'PROPERTY_CHANGE', node: { id: 'changed:1' } }] });
   assert.ok(r.pendingChangedNodeIds.has('changed:1'));
-  assert.ok(messages.some(msg => msg.type === 'document-change'));
-  assert.deepEqual(plain(messages.filter(msg => msg.type === 'document-change').at(-1).changedNodeIds), ['changed:1']);
-  r.findNodeByIdAsync = async id => id === 'changed:1'
-    ? { id, parent: page, type: 'TEXT', fontSize: 15.5, fontWeight: 'Semi Bold' } : null;
-  r.extractDesignTree = node => ({ id: node.id, type: node.type, fontSize: node.fontSize, fontWeight: node.fontWeight });
-  pageListener({ nodeChanges: [{ type: 'DELETE', id: 'deleted:1' }] });
+  assert.ok(messages.some(msg => msg.type === 'nodes-invalidated'));
+  const changed = { id:'changed:1', type:'TEXT', parent:page, width:15.5, characters:'New' };
+  r.extractDesignTree = () => assert.fail('patch sync must not extract a tree');
+  pageListener({ nodeChanges:[{ type:'PROPERTY_CHANGE', properties:['width','characters'], node:changed }] });
+  pageListener({ nodeChanges:[{ type:'DELETE', id:'deleted:1' }] });
   await timers.filter(timer => timer.delay === 100).at(-1).callback();
-  const diff = plain(messages.filter(msg => msg.type === 'node-diff').at(-1));
-  assert.deepEqual(diff.deletedIds, ['deleted:1']);
-  assert.equal(diff.nodes[0].fontSize, 15.5);
-  assert.equal(diff.nodes[0].fontWeight, 'Semi Bold');
-  assert.equal(diff.nodes[0].parentId, page.id);
-  assert.deepEqual(diff.nodes[0].childIds, []);
+  const diff = plain(messages.filter(msg => msg.type === 'node-patch').at(-1));
+  assert.equal(diff.baseRevision, 0); assert.equal(diff.revision, 3);
+  assert.equal(diff.patches[0].values.width, 15.5); assert.equal(diff.patches[0].values.content, 'New');
+  assert.deepEqual(diff.patches[1], {kind:'delete',id:'deleted:1'});
+  assert.equal(r.nodeReadCursors.size, 0);
   const next = { id: 'page:2', on: () => {}, off: () => {} };
   r.figma.currentPage = next;
   r.handlers.index_scan = async () => ({ pageId: 'page:1' });

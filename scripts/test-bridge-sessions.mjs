@@ -64,6 +64,7 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
       state.runtime = vm.createContext({ handlers: {}, findNodeByIdAsync: async id => nodes.get(id), yieldToUI: async () => {} });
       vm.runInContext(readFileSync('plugin-src/task-scope.js', 'utf8'), state.runtime);
       state.runtime.handlers.get_design = async params => ({ id: params.id, type: 'FRAME', name: params.id, tab: sid });
+      state.runtime.handlers.read_nodes = async params => ({ schemaVersion: 4, pageId: 'page', revision: 0, scope: { id: params.id }, nodes: [{ id: params.id, type: 'FRAME', name: params.id, tab: sid }], nextCursor: null, complete: true });
       state.runtime.handlers.status = async () => ({ tab: sid });
       state.runtime.handlers.modify = async params => {
         actions.push(params.note);
@@ -92,11 +93,15 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
       });
     });
     await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
-    socket.send(JSON.stringify({ type: 'runtime-capabilities', runtimeVersion: 'test', protocolVersion: 2, documentId: 'same-document', operations: Object.keys(state.runtime.handlers) }));
+    socket.send(JSON.stringify({ type: 'runtime-capabilities', runtimeVersion: 'test', protocolVersion: 3, documentId: 'same-document', operations: Object.keys(state.runtime.handlers) }));
     return state;
   }
   const tabA = await plugin('tab-a'), tabB = await plugin('tab-b');
   const first = agent(), second = agent();
+  const scopedSearch = decode(ok(await rpc('figma_read', { operation: 'search_nodes', query: 'child', sessionId: 'tab-a' })));
+  assert.equal(scopedSearch.complete, false);
+  assert.deepEqual(scopedSearch.nodes, []);
+
   const ambiguous = await rpc('figma_read', { operation: 'get_design', nodeId: 'frame-a' });
   assert.equal(ambiguous.isError, true); assert.match(ambiguous.content[0].text, /Ambiguous/);
   const missing = await rpc('figma_read', { operation: 'get_design', sessionId: 'missing' });
@@ -131,9 +136,9 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   const recovering = rpc('figma_read', { operation: 'get_design', nodeId: 'frame-a', sessionId: 'tab-a' });
   const ignored = await tabA.ignored.promise;
   await plugin('tab-a', tabA); oldSocket.close();
-  assert.equal(decode(ok(await recovering)).tab, 'tab-a');
+  assert.equal(decode(ok(await recovering)).nodes[0].tab, 'tab-a');
   await delay(30);
-  assert.equal(decode(ok(await rpc('figma_read', { operation: 'get_design', nodeId: 'frame-b', sessionId: 'tab-a' }))).id, 'frame-b');
+  assert.equal(decode(ok(await rpc('figma_read', { operation: 'get_design', nodeId: 'frame-b', sessionId: 'tab-a' }))).nodes[0].id, 'frame-b');
   // Cross-tab response spoofing cannot consume another tab's pending request.
   tabA.ignoreNext = true; tabA.ignored = deferred();
   const routed = rpc('figma_read', { operation: 'get_design', nodeId: 'frame-a', sessionId: 'tab-a' });

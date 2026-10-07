@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.0.0] ? 2026-10-07
+
+### Breaking changes
+- Require plugin protocol 3; update and restart the server and plugin together.
+- Default indexing to active-page roots and expand selected/requested frames on demand. Searches report scope and completeness.
+- Replace public node-read outputs with the flat, projected, revisioned `read_nodes` envelope and cursor pagination.
+- Treat instances as opaque unless `expandInstances: true`; hidden nodes require `includeHidden: true`.
+
+### Changed
+- Stream atomic scoped snapshots and synchronize lightweight property patches with revision-gap resynchronization.
+- Preserve unrelated indexed nodes during updates; move snapshot storage instead of cloning the complete index.
+- Evict one least recently used exact-read cache entry instead of clearing the cache.
+- Bound traversal work, reuse child lists, and restore native visibility flags before asynchronous work.
+
+
 ## [3.2.15] — 2026-10-07
 
 ### Added

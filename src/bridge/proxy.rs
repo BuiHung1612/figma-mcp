@@ -139,8 +139,8 @@ mod tests {
     #[test]
     fn forwarded_tools_keep_client_filesystem_paths_and_relative_imports() {
         let request = super::resolve_tool_paths(serde_json::json!({"name": "figma_prepare_design", "arguments": {"nodeId": "1:2"}}), std::path::Path::new("/client/project"));
-        assert_eq!(request["arguments"]["iconDir"], "/client/project/src/assets/icons");
+        assert_eq!(request["arguments"]["iconDir"], std::path::Path::new("/client/project").join("src/assets/icons").to_string_lossy().as_ref());
         assert_eq!(request["arguments"]["_importIconDir"], "src/assets/icons");
-        assert_eq!(request["arguments"]["projectDir"], "/client/project/.");
+        assert_eq!(request["arguments"]["projectDir"], std::path::Path::new("/client/project").join(".").to_string_lossy().as_ref());
     }
 }

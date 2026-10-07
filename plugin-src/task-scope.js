@@ -10,7 +10,7 @@ function taskReadOperation(operation) {
     "getpagenodes", "getnodedetail", "getdesigncontext", "getcss", "getcomponentmap", "getunmappedcomponents",
     "getstyles", "getvariables", "getvariabletokens", "gettokens", "getlocalcomponents", "getviewport",
     "screenshot", "exportsvg", "exportimage", "exportassets", "scandesign", "searchnodes", "indexscan",
-    "getcomponentproperties", "getreactions"].indexOf(operationKey(operation)) !== -1;
+    "getcomponentproperties", "getreactions", "readnodes"].indexOf(operationKey(operation)) !== -1;
 }
 
 handlers.task_start = async function(params) {
@@ -77,7 +77,7 @@ async function validateTaskOperation(operation, params, taskId, depth) {
   if (taskReadOperation(operation)) {
     if (key === "getselection") { operation = "get_design"; key = "getdesign"; }
     if (["getdesign", "getnodedetail", "getdesigncontext", "getcss", "getcomponentmap", "getunmappedcomponents",
-         "screenshot", "exportsvg", "exportimage", "exportassets", "scandesign", "searchnodes"].indexOf(key) !== -1 &&
+         "screenshot", "exportsvg", "exportimage", "exportassets", "scandesign", "searchnodes", "readnodes", "indexscan"].indexOf(key) !== -1 &&
         !params.id && !params.nodeId && !params.name && !params.nodeName) params.id = frameId;
     if (key === "screenshot" || key === "exportimage") params.keepViewport = true;
     return { operation: operation, params: params };
