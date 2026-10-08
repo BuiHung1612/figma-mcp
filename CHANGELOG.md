@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.1] — 2026-10-08
+
+### Fixed
+- `scan_design` expands component instances by default (`expandInstances:false` opts out). On instance-heavy files it previously returned ~10% of the text and almost no icons/images.
+- `scan_design` no longer reports `complete:true` when instances were left unexpanded; it sets `truncated.instances`, `totals.opaqueInstances` and a warning.
+- `figma_index` description no longer claims "instant" search.
+
 ## [4.1.0] — 2026-10-08
 
 ### Added
