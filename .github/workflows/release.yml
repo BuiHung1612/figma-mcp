@@ -10,7 +10,28 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: node scripts/build-plugin.js --check
+      - run: node --test scripts/test-plugin-tokens.mjs scripts/test-bench.mjs
+      - run: cargo test
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build
+      - run: node --test scripts/test-bridge-sessions.mjs
+
   build-release:
+    needs: [validate]
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -95,7 +116,7 @@ jobs:
 
   publish-release:
     name: Create GitHub Release
-    needs: [build-release]
+    needs: [validate, build-release]
     runs-on: ubuntu-latest
 
     steps:

@@ -53,6 +53,27 @@ mod read_cache_tests {
     use super::*;
 
     #[tokio::test]
+    async fn stale_index_completion_is_rejected_and_requests_resync() {
+        let state = BridgeState::new(0);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = Session::new("s".into(), None);
+        session.ws_tx = Some(tx);
+        state.inner.lock().await.sessions.insert("s".into(), session);
+        state.receive_index_event("s", &json!({"type":"index-start","scanId":"1","pageId":"page",
+            "revision":0,"scope":{"id":"page"}})).await;
+        state.inner.lock().await.sessions.get_mut("s").unwrap().node_revision = 1;
+        state.receive_index_event("s", &json!({"type":"index-update","scanId":"1","pageId":"page",
+            "revision":0,"data":{"complete":true}})).await;
+        let Message::Text(ack) = rx.try_recv().unwrap() else { panic!("expected acknowledgement") };
+        let ack: Value = serde_json::from_str(&ack).unwrap();
+        assert_eq!(ack["success"], false);
+        assert_eq!(ack["error"], "Document changed during sync");
+        assert!(state.get_index_stats(Some("s")).await.is_none());
+        let Message::Text(request) = rx.try_recv().unwrap() else { panic!("expected resync") };
+        assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["type"], "index-resync");
+    }
+
+    #[tokio::test]
     async fn scoped_snapshots_commit_atomically_and_patch_gaps_request_resync() {
         let state = BridgeState::new(0);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -73,6 +94,11 @@ mod read_cache_tests {
         assert_eq!(state.get_index_stats(Some("s")).await.unwrap().total_nodes, 2);
         state.receive_index_event("s", &json!({"type":"index-update","scanId":"1","pageId":"page","revision":0,
             "data":{"complete":true}})).await;
+        let Message::Text(ack) = rx.try_recv().unwrap() else { panic!("expected index acknowledgement") };
+        let ack: Value = serde_json::from_str(&ack).unwrap();
+        assert_eq!(ack["type"], "index-ack");
+        assert_eq!(ack["scanId"], "1");
+        assert_eq!(ack["success"], true);
         let inner = state.inner.lock().await;
         let idx = inner.sessions["s"].index.as_ref().unwrap();
         assert_eq!(idx.nodes.len(), 3);
@@ -661,7 +687,13 @@ impl BridgeState {
             Some("index-update") => {
                 let matches = session.pending_index.as_ref().is_some_and(|(scan, idx, _)|
                     Some(scan.as_str()) == event["scanId"].as_str() && idx.page_id.as_deref() == page && Some(idx.revision) == revision);
-                if !matches { return; }
+                if !matches {
+                    if let Some(tx) = &session.ws_tx {
+                        let _ = tx.send(Message::Text(json!({"type":"index-ack", "scanId":event["scanId"],
+                            "pageId":event["pageId"], "success":false, "error":"Index stream no longer active"}).to_string()));
+                    }
+                    return;
+                }
                 let (_, mut nodes, scope) = session.pending_index.take().unwrap();
                 if nodes.revision < session.node_revision { resync = true; }
                 else {
@@ -691,6 +723,11 @@ impl BridgeState {
                     }
                     session.node_revision = session.node_revision.max(revision.unwrap_or(0));
                     session.resync_requested = false;
+                }
+                if let Some(tx) = &session.ws_tx {
+                    let _ = tx.send(Message::Text(json!({"type":"index-ack", "scanId":event["scanId"],
+                        "pageId":event["pageId"], "success":!resync,
+                        "error":if resync { Some("Document changed during sync") } else { None }}).to_string()));
                 }
             }
             Some("index-abort") => {

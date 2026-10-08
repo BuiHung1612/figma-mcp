@@ -373,6 +373,7 @@ handlers.createPaintStyle = async function(params) {
   if (!name) throw new Error("Style name is required");
   if (!color) throw new Error("Color hex is required");
 
+  invalidateStyleNameMap();
   var style = figma.createPaintStyle();
   style.name = name;
   style.description = description;
@@ -398,6 +399,7 @@ handlers.createTextStyle = async function(params) {
 
   if (!name) throw new Error("Style name is required");
 
+  invalidateStyleNameMap();
   var style = figma.createTextStyle();
   style.name = name;
   style.description = description;
@@ -657,6 +659,7 @@ handlers.setupDesignTokens = async function(params) {
   var textStyleResults = [];
   var tsNames = Object.keys(textStyles);
   if (tsNames.length > 0) {
+    invalidateStyleNameMap();
     // BUG-01: only use async API. Sync getLocalTextStyles throws under documentAccess: dynamic-page
     var existingTextStyles = {};
     var allStyles = await figma.getLocalTextStylesAsync();

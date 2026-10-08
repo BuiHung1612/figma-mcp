@@ -422,21 +422,49 @@ recently used entry when its 64-entry capacity is reached.
 
 ## 📏 Benchmarks
 
-`npm run bench` builds the release binary, spawns it on a random port and prints:
+`npm run bench` builds the release binary and prints a JSON report from a fresh
+server: cold start, process startup, server RAM and MCP dispatch latency. A fresh
+server has no Figma session, so plugin and index measurements are explicitly
+skipped.
 
-| Metric | How it is measured |
+To measure real work, connect the Figma plugin and use the existing server:
+
+```bash
+# Server report, including its current index and plugin round trip
+node scripts/bench.mjs --url http://127.0.0.1:41730
+
+# Read all descendants of a frame, index that frame, and export it as a 1x PNG
+node scripts/bench.mjs --url http://127.0.0.1:41730 \
+  --target 'SESSION_ID=FRAME_ID' --samples 3 > benchmark.json
+
+# Run the same workloads concurrently on two tabs
+node scripts/bench.mjs --url http://127.0.0.1:41730 \
+  --target 'FIRST_SESSION=FIRST_FRAME' --target 'SECOND_SESSION=SECOND_FRAME'
+```
+
+Find session IDs at `GET /sessions` and frame IDs in the plugin selection card.
+Use one frame per session and 1–10 samples per workload. Workloads read Figma
+content; they do not modify canvas nodes. Indexing updates the bridge's cache,
+and PNG export may briefly move the viewport before restoring it.
+
+| Measurement | What it includes |
 |---|---|
-| Cold start | `spawn` → first successful `GET /health`, from outside the process |
-| Startup | `main()` entry → HTTP listener bound |
-| RAM | Resident set size (macOS/Linux; not reported on Windows) |
 | MCP `tools/list` | 200 in-process dispatches, p50/p95 |
-| Index search | 200 searches over the current tab's index, p50/p95 (plugin tab only) |
-| Plugin round trip | 10 `get_viewport` calls through Figma, p50/p95 (plugin tab only) |
+| Index search | 200 searches over the current index, when available |
+| Plugin round trip | 10 `get_viewport` calls, when connected |
+| Frame read | All paginated `read_nodes` responses, node/page counts and JSON bytes |
+| Frame index | Plugin scan and response time; bridge commit acknowledgement is separate |
+| PNG export | Figma export, transfer and decoded image bytes |
+| Concurrent tabs | Workloads run sequentially per tab and concurrently across tabs |
+| RAM | Server RSS before/after workloads, not peak RAM or Figma's memory |
 
-The plugin's **Bench** tab runs the same report (`POST /benchmark`) against the
-live server, so index and plugin numbers reflect your real file. Sample run on an
-Apple Silicon Mac (v4.0.1): cold start 45–530ms, startup 26–126ms, RSS ~7.6MB,
-`tools/list` p50 0.07ms. Your numbers will differ; quote your own.
+Reports contain each sample plus p50/p95/max. Reads use the normal cache, so the
+samples are not guaranteed cold reads. Truncated reads remain marked incomplete;
+failed workloads retain their error and the CLI exits with status 1. Real Figma
+results depend on your file; simulated integration tests only verify the path.
+
+The plugin's existing **Bench** tab retains the basic `POST /benchmark` report.
+Use the CLI for the heavier frame and concurrent-tab workloads.
 
 ## 💻 Development & Testing
 

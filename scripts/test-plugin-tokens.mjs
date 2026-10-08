@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { indexSyncUi } from './helpers/index-sync-ui.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -183,6 +184,76 @@ test('UI badge uses release version initially and follows the server on reconnec
   assert.equal(badge.textContent, 'v3.3.0');
   assert.ok(html.includes('updateRuntimeVersion(serverVer)'));
   assert.ok(html.includes('type: "runtime-ready"'));
+});
+
+test('sync waits for a matching bridge confirmation and ignores final and silent progress', async () => {
+  const ui = indexSyncUi(), messages = [];
+  const page = { id: 'page', children: [] };
+  const r = runtime({ currentPage: page, root: { name: 'File' },
+    ui: { postMessage: message => { messages.push(message); ui.handleIndexMessage(message); } } });
+  r.handlers.get_styles = async () => ({});
+  r.handlers.get_variables = async () => ({});
+  for (let i = 0; i < 2; i++) {
+    await r.handlers.index_scan({ deferComponents: true });
+    assert.equal(messages.at(-1).stage, 'done');
+    assert.equal(ui.reindexBtn.disabled, true);
+    assert.match(ui.indexProgressText.textContent, /confirmation/);
+    ui.receiveIndexAck({ scanId: 'old', pageId: 'page', success: true });
+    assert.equal(ui.reindexBtn.disabled, true);
+    const update = messages.findLast(msg => msg.type === 'index-update');
+    ui.receiveIndexAck({ ...update, success: true });
+    assert.equal(ui.reindexBtn.disabled, false);
+    assert.equal(ui.reindexBtn.classList.contains('indexing'), false);
+    assert.match(ui.reindexBtn.title, /Last synced/);
+    ui.handleIndexMessage({ ...update, type: 'index-progress', stage: 'done' });
+    ui.handleIndexMessage({ ...update, type: 'index-progress', stage: 'starting', silent: true });
+    assert.equal(ui.reindexBtn.disabled, false);
+    ui.fireTimers(1200);
+    assert.equal(ui.indexProgressWrap.classList.contains('active'), false);
+  }
+});
+
+test('sync reports read failures, page cancellation, rejection, missing ack and disconnect', async () => {
+  const ui = indexSyncUi();
+  const page = { id: 'page', children: [] };
+  const r = runtime({ currentPage: page, root: { name: 'File' },
+    ui: { postMessage: message => ui.handleIndexMessage(message) } });
+  r.handlers.read_nodes = async () => { throw new Error('Cannot read layers'); };
+  await assert.rejects(r.handlers.index_scan({}), /Cannot read layers/);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /Cannot read layers/);
+  r.handlers.read_nodes = async () => {
+    r.figma.currentPage = { id: 'next' };
+    return { revision: 0, scope: { id: 'page' }, nodes: [] };
+  };
+  await r.handlers.index_scan({});
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /Document changed/);
+  const start = { type: 'index-start', scanId: 'retry', pageId: 'page' };
+  ui.handleIndexMessage(start);
+  ui.receiveIndexAck({ ...start, success: false, error: 'Rejected stale revision' });
+  assert.match(ui.indexProgressText.textContent, /Rejected stale revision/);
+  ui.handleIndexMessage(start);
+  ui.handleIndexMessage({ ...start, type: 'index-update' });
+  ui.fireTimers(30000);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /No bridge confirmation/);
+  ui.ws.readyState = 3;
+  ui.handleIndexMessage(start);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /disconnected/);
+  assert.equal(ui.reindexBtn.title, 'Sync index');
+  ui.ws.readyState = 1;
+  ui.parent = { postMessage() {} };
+  ui.triggerManualReindex();
+  ui.fireTimers(30000);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /Canvas did not start/);
+  ui.handleIndexMessage(start);
+  ui.receiveIndexAck({ ...start, success: true });
+  ui.handleIndexMessage({ ...start, scanId: 'new' });
+  ui.fireTimers(1200);
+  assert.equal(ui.indexProgressWrap.classList.contains('active'), true);
 });
 
 test('build rejects wrong release tags and checked-in bundle matches source', () => {
@@ -539,11 +610,11 @@ test('old UI socket callbacks cannot clear or dispatch through a replacement soc
     close() {} send() {}
   }
   const r = vm.createContext({
-    ws: null, wsConnected: false, sessionId: null, fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730',
+    uiDisposed: false, ws: null, wsConnected: false, sessionId: null, fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730',
     WebSocket: Socket, setInterval: () => 1, clearInterval: () => {}, setTimeout: () => 1, clearTimeout: () => {},
     sendRuntimeCapabilities: () => {}, consecutiveErrors: 0, everConnected: false, retryTimer: null, polling: true,
     setStatus: () => {}, log: () => {}, currentPort: 41730, READ_OPS: [],
-    startLongPoll: () => assert.fail('stale socket started poll'), dispatchToMain: req => dispatched.push(req),
+    activeIndexScan: null, startLongPoll: () => assert.fail('stale socket started poll'), dispatchToMain: req => dispatched.push(req),
   });
   vm.runInContext(source, r);
   r.connectWs(); assert.equal(sockets.length, 0);
@@ -587,4 +658,155 @@ test('tree reads preserve Regular font weight, collect Regular font tokens, and 
   assert.equal(tree.textStyleId, 'S:text-1');
   assert.equal(tree.textStyle, 'Lato/18px/regular');
   assert.ok(tokenCollector.fonts.has('Lato/Regular/18px'));
+});
+
+test('hot reload removes old Figma listeners and timers before installing the next runtime', async () => {
+  const events = new Map(), pageEvents = new Set(), timers = new Map(), messages = [];
+  let timerId = 0;
+  const page = { id: 'page', children: [], selection: [], on: (_, fn) => pageEvents.add(fn), off: (_, fn) => pageEvents.delete(fn) };
+  let styleName = 'Before';
+  const figma = { getLocalTextStylesAsync: async () => [{ id: 'text-style', name: styleName }], currentPage: page, root: { name: 'File', getPluginData: () => 'document' },
+    clientStorage: { getAsync: async () => null }, ui: { postMessage: msg => messages.push(msg) },
+    on: (event, fn) => { if (!events.has(event)) events.set(event, new Set()); events.get(event).add(fn); },
+    off: (event, fn) => events.get(event)?.delete(fn) };
+  const main = readFileSync('plugin-src/main.js', 'utf8');
+  const runtimes = [];
+  for (let i = 0; i < 3; i++) {
+    const r = runtime(figma);
+    r.setTimeout = (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; };
+    r.clearTimeout = id => timers.delete(id);
+    r.__html__ = '';
+    vm.runInContext(main, r);
+    runtimes.push(r);
+    for (const listeners of events.values()) assert.equal(listeners.size, 1);
+    assert.equal(pageEvents.size, 1);
+    assert.equal(timers.size, 1, 'only the current startup timer survives');
+  }
+  assert.equal(runtimes[0].runtimeDisposed, true);
+  messages.length = 0;
+  for (const fn of events.get('selectionchange')) fn();
+  assert.equal(messages.filter(msg => msg.type === 'selection-change').length, 1);
+  const live = runtimes.at(-1);
+  assert.equal((await live.getStyleNameMapAsync())['text-style'], 'Before');
+  styleName = 'After';
+  for (const fn of events.get('stylechange')) fn({});
+  assert.equal((await live.getStyleNameMapAsync())['text-style'], 'After');
+  let releaseStyles;
+  live.handlers.get_styles = () => new Promise(resolve => { releaseStyles = resolve; });
+  live.handlers.get_variables = async () => ({});
+  const scan = live.handlers.index_scan({ deferComponents: true });
+  while (!releaseStyles) await new Promise(resolve => setTimeout(resolve, 0));
+  figma.ui.onmessage.dispose();
+  messages.length = 0;
+  releaseStyles({});
+  assert.equal((await scan).cancelled, true);
+  assert.ok(!messages.some(msg => msg.type === 'index-update'));
+  assert.equal(timers.size, 0);
+  assert.equal(pageEvents.size, 0);
+  for (const listeners of events.values()) assert.equal(listeners.size, 0);
+});
+
+test('style names share in-flight reads and refresh after invalidation or a failed getter', async () => {
+  const calls = {};
+  let name = 'Before', failPaint = false;
+  const figma = Object.fromEntries(['Paint', 'Text', 'Effect', 'Grid'].map(kind => [`getLocal${kind}StylesAsync`, async () => {
+    calls[kind] = (calls[kind] || 0) + 1;
+    if (kind === 'Paint' && failPaint) throw new Error('temporary failure');
+    return [{ id: kind, name }];
+  }]));
+  const r = runtime(figma);
+  const [first, second] = await Promise.all([r.makeWalkStateAsync({}), r.makeWalkStateAsync({})]);
+  assert.equal(first.styleMap.Text, 'Before');
+  assert.equal(second.styleMap.Paint, 'Before');
+  assert.deepEqual(Object.values(calls), [1, 1, 1, 1]);
+  name = 'After'; r.invalidateStyleNameMap();
+  assert.equal((await r.makeWalkStateAsync({})).styleMap.Text, 'After');
+  assert.deepEqual(Object.values(calls), [2, 2, 2, 2]);
+  failPaint = true; r.invalidateStyleNameMap();
+  assert.equal((await r.makeWalkStateAsync({})).styleMap.Paint, undefined);
+  failPaint = false;
+  assert.equal((await r.makeWalkStateAsync({})).styleMap.Paint, 'After');
+  assert.equal(calls.Paint, 4);
+  let release;
+  r.figma.getLocalPaintStylesAsync = () => new Promise(resolve => { release = resolve; });
+  r.invalidateStyleNameMap();
+  const old = r.getStyleNameMapAsync();
+  r.invalidateStyleNameMap();
+  r.figma.getLocalPaintStylesAsync = async () => [{ id: 'Paint', name: 'Newest' }];
+  assert.equal((await r.getStyleNameMapAsync()).Paint, 'Newest');
+  release([{ id: 'Paint', name: 'Obsolete' }]);
+  await old;
+  assert.equal((await r.getStyleNameMapAsync()).Paint, 'Newest');
+});
+
+test('UI reload clears previous timers, listeners and socket while keeping inline controls available', () => {
+  const html = readFileSync('plugin-runtime/ui.html', 'utf8');
+  const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const timers = new Set();
+  let timerId = 0, socketCloses = 0, cancelledRaf = 0;
+  const elements = new Map();
+  const target = () => {
+    const listeners = new Map();
+    return {
+      listeners, style: {}, dataset: {}, classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
+      addEventListener(name, fn, options) {
+        if (options?.signal?.aborted) return;
+        if (!listeners.has(name)) listeners.set(name, new Set());
+        listeners.get(name).add(fn);
+        options?.signal?.addEventListener('abort', () => listeners.get(name).delete(fn), { once: true });
+      },
+      removeEventListener(name, fn) { listeners.get(name)?.delete(fn); },
+      setPointerCapture() {}, releasePointerCapture() {},
+      setAttribute() {}, querySelectorAll: () => [], querySelector: () => null,
+    };
+  };
+  const window = { ...target(), innerWidth: 360, innerHeight: 600,
+    setTimeout() { timers.add(++timerId); return timerId; }, clearTimeout: id => timers.delete(id),
+    setInterval() { timers.add(++timerId); return timerId; }, clearInterval: id => timers.delete(id),
+  };
+  const document = { ...target(), getElementById: id => {
+    if (!elements.has(id)) elements.set(id, target());
+    return elements.get(id);
+  }, querySelectorAll: () => [] };
+  class Socket {
+    static OPEN = 1;
+    constructor() { this.readyState = 1; }
+    close() { socketCloses++; }
+    send() {}
+  }
+  const r = vm.createContext({ window, document, WebSocket: Socket, AbortController, AbortSignal,
+    console, navigator: {}, fetch: () => new Promise(() => {}), parent: { postMessage() {} },
+    requestAnimationFrame: () => 42, cancelAnimationFrame: () => cancelledRaf++ });
+  for (let i = 0; i < 3; i++) {
+    vm.runInContext(source.replace("\n    initConnection();\n", "\n    sessionId = 's'; connectWs();\n"), r);
+    assert.equal(timers.size, 1, 'only current stats interval remains');
+    assert.equal(window.listeners.get('focus').size, 1);
+    assert.equal(document.listeners.get('keydown').size, 1);
+    assert.equal(document.listeners.get('visibilitychange').size, 1);
+    for (const name of [...html.matchAll(/onclick="([A-Za-z][A-Za-z0-9_]*)\(/g)].map(match => match[1]).filter(name => name !== 'document')) {
+      assert.equal(typeof window[name], 'function', `${name} must remain available to inline controls`);
+    }
+  }
+  // Cleanup also covers a resize in progress.
+  const grip = elements.get('resize-grip');
+  for (const fn of grip.listeners.get('pointerdown')) fn({ preventDefault() {}, pointerId: 1, clientX: 0, clientY: 0 });
+  for (const fn of window.listeners.get('pointermove')) fn({ clientX: 10, clientY: 10 });
+  window.__disposeFigmaMcpUi();
+  assert.equal(timers.size, 0);
+  assert.equal(cancelledRaf, 1);
+  for (const listeners of window.listeners.values()) assert.equal(listeners.size, 0);
+  for (const listeners of document.listeners.values()) assert.equal(listeners.size, 0);
+  window.__disposeFigmaMcpUi();
+  assert.equal(cancelledRaf, 1, 'cleanup is idempotent');
+  assert.equal(socketCloses, 3);
+});
+
+
+test('creating a paint style invalidates the style names before the next design read', async () => {
+  const styles = [];
+  const r = runtime({ getLocalPaintStylesAsync: async () => styles,
+    createPaintStyle: () => { const style = { id: 'new-style' }; styles.push(style); return style; } });
+  assert.equal((await r.getStyleNameMapAsync())['new-style'], undefined);
+  await r.handlers.createPaintStyle({ name: 'Brand/New', color: '#ff0000' });
+  assert.equal((await r.getStyleNameMapAsync())['new-style'], 'Brand/New');
 });

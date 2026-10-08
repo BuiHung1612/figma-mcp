@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.0.1] — 2026-10-08
+
+### Fixed
+- Index sync waits for a matching bridge acknowledgement and shows errors or timeouts instead of spinning indefinitely.
+- Hot reload disposes runtime and UI listeners, timers and sockets, and cancels stale work.
+
+### Changed
+- Cache raw icon SVGs within a bounded cache and reuse compiled rendering regexes.
+- Reuse style metadata across reads and invalidate it when styles change.
+- Add repeatable benchmarks for large frames, index scans, PNG exports and concurrent tabs.
+- Require plugin, Rust and bridge integration tests before release builds and publication.
+
 ## [5.0.0] — 2026-10-08
 
 ### Breaking

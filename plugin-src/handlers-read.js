@@ -6,6 +6,28 @@
 // `absolute: true` forces absoluteBoundingBox on every node.
 var DEFAULT_NODE_BUDGET = 3000;
 
+var styleNameMapTask = null;
+function invalidateStyleNameMap() { styleNameMapTask = null; }
+
+async function getStyleNameMapAsync() {
+  if (styleNameMapTask) return styleNameMapTask;
+  var failed = false;
+  var task = Promise.all(["Paint", "Text", "Effect", "Grid"].map(async function(kind) {
+    try {
+      var getter = figma["getLocal" + kind + "StylesAsync"];
+      return typeof getter === "function" ? await getter.call(figma) : [];
+    } catch(e) { failed = true; return []; }
+  })).then(function(groups) {
+    var map = {};
+    groups.forEach(function(styles) { styles.forEach(function(style) { if (style) map[style.id] = style.name; }); });
+    // Failed reads stay retryable; an older in-flight read cannot restore an invalidated cache.
+    if (failed && styleNameMapTask === task) styleNameMapTask = null;
+    return map;
+  });
+  styleNameMapTask = task;
+  return task;
+}
+
 async function makeWalkStateAsync(params) {
   var p = params || {};
   var budget = (p.maxNodes !== undefined && Number(p.maxNodes) > 0) ? Number(p.maxNodes) : DEFAULT_NODE_BUDGET;
@@ -18,33 +40,7 @@ async function makeWalkStateAsync(params) {
       varMap = await buildVariableResolverMapAsync();
     }
   } catch(e) {}
-  var styleMap = {};
-  if (typeof figma !== "undefined" && figma) {
-    try {
-      if (typeof figma.getLocalPaintStylesAsync === "function") {
-        var pStyles = await figma.getLocalPaintStylesAsync();
-        for (var pi = 0; pi < pStyles.length; pi++) if (pStyles[pi]) styleMap[pStyles[pi].id] = pStyles[pi].name;
-      }
-    } catch(e) {}
-    try {
-      if (typeof figma.getLocalTextStylesAsync === "function") {
-        var tStyles = await figma.getLocalTextStylesAsync();
-        for (var ti = 0; ti < tStyles.length; ti++) if (tStyles[ti]) styleMap[tStyles[ti].id] = tStyles[ti].name;
-      }
-    } catch(e) {}
-    try {
-      if (typeof figma.getLocalEffectStylesAsync === "function") {
-        var eStyles = await figma.getLocalEffectStylesAsync();
-        for (var ei = 0; ei < eStyles.length; ei++) if (eStyles[ei]) styleMap[eStyles[ei].id] = eStyles[ei].name;
-      }
-    } catch(e) {}
-    try {
-      if (typeof figma.getLocalGridStylesAsync === "function") {
-        var gStyles = await figma.getLocalGridStylesAsync();
-        for (var gi = 0; gi < gStyles.length; gi++) if (gStyles[gi]) styleMap[gStyles[gi].id] = gStyles[gi].name;
-      }
-    } catch(e) {}
-  }
+  var styleMap = await getStyleNameMapAsync();
   return { remaining: budget, budget: budget, truncated: false, expandInstances: p.expandInstances === true,
     absolute: p.absolute === true, precise: precise, variableMap: varMap, styleMap: styleMap };
 }
@@ -818,32 +814,39 @@ async function runIndexScan(options, silent) {
   var request = Object.assign({}, options, { fields: ["geometry", "content"], limit: 500 });
   var pageNodes = [], revision = nodeRevision;
   function post(message) {
-    if (figma.ui && figma.currentPage.id === page.id) figma.ui.postMessage(Object.assign({ pageId: page.id, scanId: scanId, revision: revision, silent: silent }, message));
+    if (typeof runtimeDisposed !== "undefined" && runtimeDisposed) return;
+    if (figma.ui && (figma.currentPage.id === page.id || message.type === "index-abort")) figma.ui.postMessage(Object.assign({ pageId: page.id, scanId: scanId, revision: revision, silent: silent }, message));
   }
   try {
+    post({ type: "index-progress", stage: "starting", label: "Reading layers…" });
     var read = await handlers.read_nodes(request);
     revision = read.revision;
     post({ type: "index-start", fileName: figma.root.name, startMs: startMs, scope: read.scope });
     var lastProgress = 0;
     do {
+      if (typeof runtimeDisposed !== "undefined" && runtimeDisposed) return { pageId: page.id, cancelled: true };
       if (figma.currentPage.id !== page.id || nodeRevision !== revision) throw new Error("Document changed during indexing");
       post({ type: "index-chunk", nodes: read.nodes });
       if (!figma.ui) pageNodes.push.apply(pageNodes, read.nodes);
       if (Date.now() - lastProgress >= 100) {
-        post({ type: "index-progress", stage: "nodes", percent: 20, label: "Layers: " + read.totalRead });
+        post({ type: "index-progress", stage: "nodes", label: "Reading layers: " + read.totalRead });
         lastProgress = Date.now();
       }
       if (!read.nextCursor) break;
       await yieldToUI(0);
       read = await handlers.read_nodes({ cursor: read.nextCursor, limit: 500 });
     } while (true);
-    post({ type: "index-progress", stage: "styles", percent: 45, label: "Indexing styles and tokens..." });
+    post({ type: "index-progress", stage: "styles", label: "Indexing styles and tokens..." });
     var styles = null, variables = null, components = null;
     if (options.id === page.id) {
       if (handlers.get_styles) styles = await handlers.get_styles({});
       if (handlers.get_variables) variables = await handlers.get_variables({});
     }
-    if (!options.deferComponents && handlers.get_local_components) components = await handlers.get_local_components({});
+    if (!options.deferComponents && handlers.get_local_components) {
+      post({ type: "index-progress", stage: "components", label: "Reading component catalogue…" });
+      components = await handlers.get_local_components({});
+    }
+    if (typeof runtimeDisposed !== "undefined" && runtimeDisposed) return { pageId: page.id, cancelled: true };
     if (figma.currentPage.id !== page.id || nodeRevision !== revision) throw new Error("Document changed during indexing");
     var result = { fileName: figma.root.name, pageId: page.id, scanId: scanId, revision: revision,
       schemaVersion: 4, scope: read.scope, complete: read.complete, nodesTruncated: read.budgetReached,

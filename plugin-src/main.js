@@ -3,9 +3,13 @@
 // The thin loader already owns the UI. Reopening __html__ here would replace
 // its iframe with the loader again while it is fetching the full runtime UI.
 
+// Dispose the previous runtime before installing this runtime's subscriptions.
+if (figma.ui.onmessage && figma.ui.onmessage.dispose) figma.ui.onmessage.dispose();
+var runtimeDisposed = false;
+
 // Restore saved window size if user previously resized
 figma.clientStorage.getAsync("mcp_window_size").then(function(saved) {
-  if (saved && saved.width && saved.height) {
+  if (!runtimeDisposed && saved && saved.width && saved.height) {
     try {
       figma.ui.resize(
         Math.max(260, Math.min(1000, saved.width)),
@@ -70,7 +74,7 @@ try {
 
 // Broadcast selection changes live to UI and expand only the selected scope.
 var selectionIndexTimer = null;
-figma.on("selectionchange", function() {
+function onSelectionChange() {
   try {
     var sel = figma.currentPage.selection;
     var summary = [];
@@ -112,7 +116,9 @@ figma.on("selectionchange", function() {
       }, 150);
     }
   } catch (e) {}
-});
+}
+
+figma.on("selectionchange", onSelectionChange);
 
 // Broadcast granular document changes to invalidate or incrementally update index cache
 var docChangeTimer = null;
@@ -121,6 +127,7 @@ var pendingNodeChanges = new Map();
 var pendingPatchBaseRevision = null;
 
 function onDocChange(event) {
+  if (runtimeDisposed) return;
   var baseRevision = nodeRevision++;
   nodeReadCursors.clear();
   var changes = event && (event.documentChanges || event.nodeChanges);
@@ -220,15 +227,33 @@ function watchCurrentPage() {
   nodeReadCursors.clear();
   if (docChangeTimer) clearTimeout(docChangeTimer);
 }
+function onStyleChange(event) {
+  invalidateStyleNameMap();
+  onDocChange(event);
+}
+function onCurrentPageChange() {
+  watchCurrentPage();
+  onDocChange();
+  publishIndex(true).catch(function() {});
+}
 try {
   watchCurrentPage();
-  figma.on("stylechange", onDocChange);
-  figma.on("currentpagechange", function() {
-    watchCurrentPage();
-    onDocChange();
-    publishIndex(true).catch(function() {});
-  });
+  figma.on("stylechange", onStyleChange);
+  figma.on("currentpagechange", onCurrentPageChange);
 } catch(e) {}
+
+function disposeRuntime() {
+  runtimeDisposed = true;
+  figma.off("selectionchange", onSelectionChange);
+  figma.off("stylechange", onStyleChange);
+  figma.off("currentpagechange", onCurrentPageChange);
+  if (watchedPage && typeof watchedPage.off === "function") watchedPage.off("nodechange", onDocChange);
+  clearTimeout(selectionIndexTimer);
+  clearTimeout(docChangeTimer);
+  clearTimeout(startupIndexTimer);
+  nodeReadCursors.clear();
+  bridgeReplies.clear();
+}
 
 async function publishIndex(deferComponents) {
   var scanResult = await handlers.index_scan({ deferComponents: deferComponents });
@@ -238,7 +263,7 @@ async function publishIndex(deferComponents) {
 
 // Startup indexes the active page and tokens, deferring the file-wide component
 // catalogue until a component query or an explicit reindex requests it.
-setTimeout(function() {
+var startupIndexTimer = setTimeout(function() {
   publishIndex(true).catch(function() {});
 }, 1800);
 
@@ -276,7 +301,7 @@ function sendBridgeReply(reply) {
 }
 
 async function handlePluginRequest(request) {
-  if (!request) return;
+  if (!request || runtimeDisposed) return;
   if (request.id && bridgeReplies.has(request.id)) {
     figma.ui.postMessage(bridgeReplies.get(request.id));
     return;
@@ -399,7 +424,7 @@ async function handlePluginRequest(request) {
 
   // Handle manual reindex request from UI
   if (request.type === "manual-reindex") {
-    try { await publishIndex(false); } catch(e) {}
+    try { await publishIndex(false); } catch(error) { figma.ui.postMessage({ type: "index-error", error: error.message }); }
     return;
   }
 
@@ -436,3 +461,5 @@ figma.ui.onmessage = function(request) {
   pluginRequestTail = result.catch(function() {});
   return result;
 };
+
+figma.ui.onmessage.dispose = disposeRuntime;

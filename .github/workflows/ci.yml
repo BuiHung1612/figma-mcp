@@ -26,7 +26,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install Node dependencies
         run: npm ci
@@ -35,7 +35,7 @@ jobs:
         run: node scripts/build-plugin.js
 
       - name: Test plugin token extraction and version
-        run: node --test scripts/test-plugin-tokens.mjs
+        run: node --test scripts/test-plugin-tokens.mjs scripts/test-bench.mjs
 
       - name: Rust regression tests
         run: cargo test
@@ -48,6 +48,11 @@ jobs:
 
       - name: Build Release Binary
         run: cargo build --release
+
+      - name: Test bridge sessions and index sync
+        run: node --test scripts/test-bridge-sessions.mjs
+        env:
+          FIGMA_TEST_BINARY: target/release/figma-rust-mcp
 
       - name: Test MCP JSON-RPC
         run: ./scripts/test-rust-mcp.sh

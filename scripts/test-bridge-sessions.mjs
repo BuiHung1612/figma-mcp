@@ -158,3 +158,121 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   const restarted = decode(ok(await rpc('figma_task', { action: 'start', sessionId: 'tab-b', frameId: 'frame-c' })));
   ok(await rpc('figma_task', { action: 'end', taskId: restarted.taskId }));
 });
+
+test('index sync travels from plugin through UI to bridge and returns a matching confirmation', { timeout: 20000 }, async t => {
+  const { indexSyncUi } = await import('./helpers/index-sync-ui.mjs');
+  const reservation = createServer();
+  await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  const server = spawn(process.env.FIGMA_TEST_BINARY || 'target/debug/figma-rust-mcp',
+    ['--server', '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = ''; server.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-4000); });
+  const sockets = [];
+  t.after(() => { sockets.forEach(socket => socket.close()); server.kill(); });
+  const base = `http://127.0.0.1:${port}`;
+  await until(async () => { try { return (await fetch(`${base}/health`)).ok; } catch { assert.equal(server.exitCode, null, stderr); return false; } });
+  const ui = indexSyncUi(null);
+  const page = { id: 'page', children: [{ id: 'frame', name: 'Frame', type: 'FRAME', width: 100, height: 100 }] };
+  const runtime = vm.createContext({ figma: { currentPage: page, root: { name: 'Sync test' },
+    ui: { postMessage: msg => ui.handleIndexMessage(msg) } }, handlers: {}, console, setTimeout, Map, Set, Uint8Array });
+  for (const file of ['utils', 'token-helpers', 'read-helpers', 'handlers-read-detail', 'handlers-read', 'handlers-tokens', 'handlers-write-ops', 'node-reader']) {
+    vm.runInContext(readFileSync(`plugin-src/${file}.js`, 'utf8'), runtime);
+  }
+  runtime.handlers.get_styles = async () => ({});
+  runtime.handlers.get_variables = async () => ({});
+  const html = readFileSync('plugin-runtime/ui.html', 'utf8');
+  Object.assign(ui, { WebSocket, BRIDGE: base, sessionId: 'sync-test', fileName: 'Sync test', documentId: 'sync-doc',
+    uiDisposed: false, wsConnected: false, everConnected: false, retryTimer: null, polling: false, consecutiveErrors: 0,
+    currentPort: port, window: {}, READ_OPS: [], setInterval: () => 1, clearInterval() {},
+    sendRuntimeCapabilities() {}, setStatus() {}, updateRuntimeVersion() {}, startLongPoll() {},
+    dispatchToMain() {}, showSetupGuide() {}, parent: { postMessage: () => runtime.handlers.index_scan({ deferComponents: true }) } });
+  vm.runInContext(html.slice(html.indexOf('    function connectWs()'), html.indexOf('    async function startLongPoll()')), ui);
+  const connect = async () => { ui.connectWs(); sockets.push(ui.ws); await until(() => ui.wsConnected); };
+  await connect();
+  const confirmed = ui.receiveIndexAck;
+  const acks = [];
+  ui.receiveIndexAck = ack => acks.push(ack);
+  await runtime.handlers.index_scan({ deferComponents: true });
+  await until(() => acks.length === 1);
+  assert.equal(acks[0].success, true);
+  assert.equal(ui.reindexBtn.disabled, true, 'local scan completion must wait for bridge ack');
+  confirmed({ ...acks[0], scanId: 'older-scan' });
+  assert.equal(ui.reindexBtn.disabled, true);
+  confirmed(acks.shift());
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.reindexBtn.title, /Last synced/);
+  const lastSuccess = ui.reindexBtn.title;
+  ui.receiveIndexAck = ack => { acks.push(ack); confirmed(ack); };
+  const unmatched = { type: 'index-start', pageId: 'page', scanId: 'unmatched', revision: 0, scope: { id: 'page' } };
+  // The UI begins a scan but the bridge never receives its start/chunks.
+  ui.handleIndexMessage({ ...unmatched, type: 'index-progress', stage: 'starting' });
+  ui.handleIndexMessage({ ...unmatched, type: 'index-update', data: {} });
+  await until(() => acks.length === 1);
+  assert.equal(acks[0].success, false);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /no longer active/);
+  assert.equal(ui.reindexBtn.title, lastSuccess);
+
+  ui.handleIndexMessage({ ...unmatched, scanId: 'disconnect' });
+  ui.ws.close();
+  await until(() => !ui.wsConnected);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /disconnected/);
+  await connect();
+  acks.length = 0;
+  await ui.triggerManualReindex();
+  await until(() => acks.length === 1);
+  assert.equal(acks[0].success, true);
+  assert.equal(ui.reindexBtn.disabled, false);
+
+  runtime.handlers.get_styles = async () => { throw new Error('Styles unavailable'); };
+  await assert.rejects(runtime.handlers.index_scan({ deferComponents: true }), /Styles unavailable/);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /Styles unavailable/);
+  runtime.handlers.get_styles = async () => { runtime.figma.currentPage = { id: 'new-page', children: [] }; return {}; };
+  const cancelled = await runtime.handlers.index_scan({ deferComponents: true });
+  assert.equal(cancelled.cancelled, true);
+  assert.equal(ui.reindexBtn.disabled, false);
+  assert.match(ui.indexProgressText.textContent, /Document changed/);
+  runtime.handlers.get_styles = async () => ({});
+  acks.length = 0;
+  await runtime.handlers.index_scan({ deferComponents: true });
+  await until(() => acks.length === 1);
+  assert.equal(acks[0].pageId, 'new-page');
+  assert.equal(acks[0].success, true);
+  assert.equal(ui.reindexBtn.disabled, false);
+
+  const { benchmarkTargets } = await import('./bench-workloads.mjs');
+  page.type = 'PAGE';
+  const frame = page.children[0];
+  frame.parent = page;
+  frame.children = Array.from({ length: 600 }, (_, i) => ({ id: `bench:${i}`, type: 'TEXT',
+    name: `Child ${i}`, characters: `Text ${i}`, parent: frame, width: 10, height: 10 }));
+  let exported = 0;
+  frame.exportAsync = async () => { exported++; return new Uint8Array([1, 2, 3]); };
+  runtime.figma.currentPage = page;
+  runtime.figma.getNodeByIdAsync = async id => id === frame.id ? frame : null;
+  const operations = [];
+  ui.READ_OPS = ['read_nodes', 'index_scan', 'export_image'];
+  ui.dispatchToMain = async req => {
+    if (!req.operation) return;
+    operations.push(req.operation);
+    try {
+      const data = await runtime.handlers[req.operation](req.params);
+      ui.ws.send(JSON.stringify({ id: req.id, sessionId: ui.sessionId, success: true, data }));
+    } catch (error) {
+      ui.ws.send(JSON.stringify({ id: req.id, sessionId: ui.sessionId, success: false, error: error.message }));
+    }
+  };
+  const measurements = await benchmarkTargets(base, [{ sessionId: ui.sessionId, nodeId: frame.id }], 1);
+  const workloads = measurements.targets[0].workloads;
+  assert.equal(workloads.readFrame.samples[0].nodes, 601);
+  assert.equal(workloads.readFrame.samples[0].pages, 2);
+  assert.equal(workloads.readFrame.samples[0].complete, true);
+  assert.equal(workloads.indexFrame.samples[0].complete, true);
+  assert.equal(workloads.exportPng.samples[0].imageBytes, 3);
+  assert.equal(exported, 1);
+  assert.deepEqual(operations, ['read_nodes', 'read_nodes', 'index_scan', 'export_image']);
+
+});
