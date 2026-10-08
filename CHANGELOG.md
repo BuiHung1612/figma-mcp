@@ -1,5 +1,15 @@
 # Changelog
 
+## [5.0.0] — 2026-10-08
+
+### Breaking
+- Bridge ports moved from `38451–38455` to `41730–41739`, so an old server still holding 38451 can no longer block a new one. Re-run `npx -y figma-rust-mcp@latest --init` (refreshes the plugin loader and agent configs) and update any hand-written MCP client URLs to `http://127.0.0.1:41730/mcp`.
+
+### Changed
+- Startup scans the 10-port range: reuses a same-version server, skips ports held by another app, a different figma-rust-mcp version or a busy `[::1]`, and starts on the first free port (previously it attached to whatever answered `/health` on the first port).
+- Plugin UI and loader restyled retro: cream paper, ink borders, hard offset shadows, colored stat tiles and a segmented log filter.
+- The plugin loader scans all 10 ports in parallel, passes the found port to the runtime, and says when a port answers but is not a compatible figma-rust-mcp.
+
 ## [4.1.1] — 2026-10-08
 
 ### Fixed

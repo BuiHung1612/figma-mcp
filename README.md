@@ -18,7 +18,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 - **Batch Asset Extractor (`figma_export_assets` / `figma_export_asset`)**: Extracts SVG icons and raster images directly to project folders (`outputPath`) with auto-generated TypeScript barrel exports (`index.ts`) — zero chat token bloating.
 - **Sandboxed JS Drawing Engine (`figma_write`)**: Powered by **Boa** (pure Rust ECMAScript engine) with built-in asset resolvers and 7 icon packs (*Ionicons, Lucide, Tabler, Bootstrap, Fluent, Phosphor*).
 - **Multi-Tab / Multi-Session Support**: Seamlessly connects to multiple open Figma files simultaneously.
-- **100% Localhost Privacy**: All communication stays strictly on `127.0.0.1:38451`.
+- **100% Localhost Privacy**: All communication stays strictly on `127.0.0.1:41730`.
 
 ---
 
@@ -36,7 +36,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 │  • Sandboxed JS Runtime (Boa ECMAScript Engine)                        │
 │  • Binary MessagePack & Progressive Subtree Chunk Receiver             │
 └───────────────▲────────────────────────────────────────▲───────────────┘
-                │ (ws://127.0.0.1:38451/ws)              │ (http://127.0.0.1:38451/mcp)
+                │ (ws://127.0.0.1:41730/ws)              │ (http://127.0.0.1:41730/mcp)
                 │ (Dynamic Code Streaming & Hot-Reload)  │ (JSON-RPC 2.0 / Streamable HTTP)
       ┌─────────┴─────────┐                    ┌─────────┴─────────┐
       │   Figma Desktop   │                    │ AI Assistant(s)   │
@@ -50,9 +50,10 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 ### 🔌 How the Zero-Touch Connection Works:
 1. **Permanent Thin Loader**: You only import the Figma plugin **once** (`~/.figma-rust-mcp/plugin/manifest.json`).
-2. **Dynamic Runtime Streaming**: Upon launch, the Thin Loader contacts `http://127.0.0.1:38451/plugin/code.js` to fetch and execute the latest runtime in memory.
-3. **Live WebSocket Hot-Reload**: The plugin connects to `ws://127.0.0.1:38451/ws`. When you upgrade `figma-rust-mcp` or restart the daemon, the plugin automatically detects the new server version and hot-reloads seamlessly — **no need to re-import or restart the plugin in Figma**.
+2. **Dynamic Runtime Streaming**: Upon launch, the Thin Loader contacts `http://127.0.0.1:41730/plugin/code.js` to fetch and execute the latest runtime in memory.
+3. **Live WebSocket Hot-Reload**: The plugin connects to `ws://127.0.0.1:41730/ws`. When you upgrade `figma-rust-mcp` or restart the daemon, the plugin automatically detects the new server version and hot-reloads seamlessly — **no need to re-import or restart the plugin in Figma**.
 4. **Auto-Reconnect & Offline Buffer**: If Figma is opened before the Rust service starts, the plugin displays a waiting screen and connects automatically the instant the service is up.
+5. **Port Range & Auto-Switch**: The bridge uses ports `41730–41739`. On start it reuses a running server of the same version, skips any port held by another app or a different figma-rust-mcp version, and starts on the first free port. The plugin scans the same range, so it follows automatically. MCP clients configured by URL point at `41730`; the server prints a warning with the new port if it had to move.
 
 ---
 
@@ -148,13 +149,13 @@ Use the `/mcp` endpoint. It accepts `POST` JSON-RPC requests directly:
 
 ```toml
 [mcp_servers.figma-rust-mcp]
-url = "http://127.0.0.1:38451/mcp"
+url = "http://127.0.0.1:41730/mcp"
 ```
 
 For Codex CLI, the equivalent command is:
 
 ```bash
-codex mcp add figma-rust-mcp --url http://127.0.0.1:38451/mcp
+codex mcp add figma-rust-mcp --url http://127.0.0.1:41730/mcp
 ```
 
 #### Google Antigravity (SSE Transport)
@@ -163,7 +164,7 @@ Add to your `~/.gemini/config/mcp_config.json` or project `.agents/mcp_config.js
 {
   "mcpServers": {
     "figma-rust-mcp": {
-      "serverUrl": "http://127.0.0.1:38451/sse"
+      "serverUrl": "http://127.0.0.1:41730/sse"
     }
   }
 }
@@ -176,7 +177,7 @@ These clients can use the Streamable HTTP `/mcp` endpoint:
 {
   "mcpServers": {
     "figma-rust-mcp": {
-      "url": "http://127.0.0.1:38451/mcp"
+      "url": "http://127.0.0.1:41730/mcp"
     }
   }
 }
@@ -200,7 +201,7 @@ Alternatively, configure a stdio subprocess via NPX:
 Check the runtime bundle currently served to Figma Desktop:
 
 ```bash
-curl http://127.0.0.1:38451/plugin/version
+curl http://127.0.0.1:41730/plugin/version
 ```
 
 The response includes `version` and `runtimeHash`. If the hash changes after an

@@ -77,7 +77,7 @@ fn register_macos(current_exe: &Path) -> Result<(), String> {
     let exe_str = current_exe.to_string_lossy();
     let launcher_script = format!(
         r#"#!/bin/bash
-if curl -s -m 1 http://127.0.0.1:38451/ >/dev/null 2>&1; then
+if curl -s -m 1 http://127.0.0.1:41730/ >/dev/null 2>&1; then
     exit 0
 fi
 

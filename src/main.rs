@@ -4,7 +4,7 @@ pub mod executor;
 pub mod mcp;
 pub mod protocol;
 
-use bridge::{start_bridge_server, BridgeHandle, HttpProxy, DEFAULT_PORT};
+use bridge::{BridgeHandle, BridgeStart, HttpProxy, DEFAULT_PORT};
 use clap::Parser;
 use std::io::IsTerminal;
 
@@ -19,7 +19,7 @@ const LOADER_UI: &str = include_str!("../plugin/ui.html");
     about = "High-performance Rust MCP bridge & server for Figma"
 )]
 struct Args {
-    /// Port to listen on (default: 38451)
+    /// First port of the 10-port bridge range (default: 41730)
     #[arg(short, long, default_value_t = DEFAULT_PORT)]
     port: u16,
 
@@ -252,70 +252,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let is_interactive = (args.server || std::io::stdin().is_terminal()) && !args.stdio;
 
+    let started = bridge::connect_or_start(port).await;
+    if let Ok(BridgeStart::Attached(p) | BridgeStart::Started(_, p)) = &started {
+        if *p != port {
+            eprintln!(
+                "[figma-rust-mcp] ⚠️ Using port {p} because {port} is taken. The Figma plugin finds it automatically; \
+                 MCP clients configured with http://127.0.0.1:{port} must be pointed at port {p}."
+            );
+        }
+    }
+
     if is_interactive {
         // Standalone Server Mode (Terminal Dashboard or Daemon)
-        let proxy = HttpProxy::new(port);
-        if proxy.is_running().await {
-            eprintln!(
-                "[figma-rust-mcp] ⚠️ Server already running on port {}. Attached to active instance.",
-                port
-            );
-            print_banner(port);
-            if std::io::stdin().is_terminal() {
-                tokio::signal::ctrl_c().await?;
-                eprintln!("[figma-rust-mcp] Exiting.");
-            } else {
-                std::future::pending::<()>().await;
-            }
-            return Ok(());
-        }
-
-        match start_bridge_server(port).await {
-            Ok((_state, actual_port)) => {
+        match started {
+            Ok(start) => {
+                let (attached, actual_port) = match start {
+                    BridgeStart::Attached(p) => (true, p),
+                    BridgeStart::Started(_, p) => (false, p),
+                };
+                if attached {
+                    eprintln!("[figma-rust-mcp] Same-version server already running on port {actual_port}. Attached to active instance.");
+                }
                 print_banner(actual_port);
-                // Keep server process alive
+                // Keep the process alive: Ctrl+C in a terminal, forever under a LaunchAgent / systemd / background daemon.
                 if std::io::stdin().is_terminal() {
                     tokio::signal::ctrl_c().await?;
                     eprintln!("\n[figma-rust-mcp] Server stopped cleanly. Goodbye!");
                 } else {
-                    // Daemon mode (LaunchAgent / systemd / background daemon): run indefinitely
-                    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-                    let _ = shutdown_rx.await;
+                    std::future::pending::<()>().await;
                 }
             }
             Err(e) => {
-                eprintln!("[figma-rust-mcp] Failed to start server on port {}: {}", port, e);
+                eprintln!("[figma-rust-mcp] Failed to start server: {}", e);
                 std::process::exit(1);
             }
         }
     } else {
         // Stdio MCP Client Mode (Piped or Subprocess)
-        let proxy = HttpProxy::new(port);
-
-        if proxy.is_running().await {
-            eprintln!(
-                "[figma-rust-mcp] Existing bridge detected on port {}, using HTTP proxy",
-                port
-            );
-            let bridge = BridgeHandle::Proxy(proxy);
-            mcp::run_mcp_server(bridge).await?;
-        } else {
-            match start_bridge_server(port).await {
-                Ok((state, actual_port)) => {
-                    eprintln!("[figma-rust-mcp] Bridge started on port {}", actual_port);
-                    let bridge = BridgeHandle::Direct(state);
-                    mcp::run_mcp_server(bridge).await?;
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[figma-rust-mcp] Bridge failed ({}), connecting via proxy on port {}",
-                        e, port
-                    );
-                    let bridge = BridgeHandle::Proxy(proxy);
-                    mcp::run_mcp_server(bridge).await?;
-                }
+        let bridge = match started {
+            Ok(BridgeStart::Attached(p)) => {
+                eprintln!("[figma-rust-mcp] Existing bridge detected on port {p}, using HTTP proxy");
+                BridgeHandle::Proxy(HttpProxy::new(p))
             }
-        }
+            Ok(BridgeStart::Started(state, p)) => {
+                eprintln!("[figma-rust-mcp] Bridge started on port {p}");
+                BridgeHandle::Direct(state)
+            }
+            Err(e) => {
+                eprintln!("[figma-rust-mcp] Bridge failed ({e}), connecting via proxy on port {port}");
+                BridgeHandle::Proxy(HttpProxy::new(port))
+            }
+        };
+        mcp::run_mcp_server(bridge).await?;
     }
 
     Ok(())

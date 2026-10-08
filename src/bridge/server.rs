@@ -11,7 +11,7 @@ use super::session::{
 };
 use crate::mcp::protocol::JsonRpcResponse;
 
-pub const DEFAULT_PORT: u16 = 38451;
+pub const DEFAULT_PORT: u16 = 41730;
 pub const PORT_RANGE: u16 = 10;
 pub const LONG_POLL_MS: u64 = 8_000;
 pub const DEFAULT_OP_TIMEOUT_MS: u64 = 60_000;

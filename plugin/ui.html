@@ -6,18 +6,18 @@
   <title>Figma Rust MCP Loader</title>
   <style>
     :root {
-      --bg: #0d0e12;
-      --surface-base: #12141a;
-      --surface-card: #171922;
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --border-ghost: rgba(147, 129, 255, 0.35);
-      --text-primary: #f4f4f7;
-      --text-secondary: #9aa1b2;
-      --text-muted: #52596d;
-      --ghost-lavender: #9381ff;
-      --ghost-mint: #34d399;
-      --font-ui: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Text', sans-serif;
-      --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      --bg: #fdf1dc;
+      --surface-base: #fffaf0;
+      --surface-card: #fffdf7;
+      --border-subtle: #1c1a17;
+      --border-ghost: #1c1a17;
+      --text-primary: #1c1a17;
+      --text-secondary: #4a453d;
+      --text-muted: #7d7567;
+      --ghost-lavender: #f4532c;
+      --ghost-mint: #2f8f3a;
+      --font-ui: ui-rounded, 'SF Pro Rounded', -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+      --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text-primary); font-family: var(--font-ui); font-size: 11px; }
@@ -58,7 +58,7 @@
       height: 14px;
       border-radius: 50%;
       background: var(--ghost-lavender);
-      box-shadow: 0 0 16px var(--ghost-lavender);
+      border: 2px solid #1c1a17;
     }
 
     @keyframes pulse {
@@ -85,7 +85,8 @@
       gap: 6px;
       padding: 4px 10px;
       background: var(--surface-card);
-      border: 1px solid var(--border-subtle);
+      border: 2px solid var(--border-subtle);
+      box-shadow: 2px 2px 0 #1c1a17;
       border-radius: 9999px;
       font-family: var(--font-mono);
       font-size: 10px;
@@ -94,7 +95,8 @@
     }
     .hint-box {
       background: var(--surface-base);
-      border: 1px solid var(--border-subtle);
+      border: 2px solid var(--border-subtle);
+      box-shadow: 2px 2px 0 #1c1a17;
       border-radius: 8px;
       padding: 10px 12px;
       max-width: 280px;
@@ -108,7 +110,7 @@
       color: var(--ghost-lavender);
       display: block;
       margin-top: 4px;
-      background: rgba(0,0,0,0.3);
+      background: rgba(28,26,23,0.06);
       padding: 3px 6px;
       border-radius: 4px;
     }
@@ -123,9 +125,9 @@
       <div class="radar-core"></div>
     </div>
     <div class="title">Connecting to figma-rust-mcp</div>
-    <div id="status" class="status-text">Scanning local ports (38451-38455)...</div>
+    <div id="status" class="status-text">Scanning local ports (41730-41739)...</div>
     <div class="badge">
-      <span>●</span> <span id="port-label">localhost:38451</span>
+      <span>●</span> <span id="port-label">localhost:41730</span>
     </div>
     <div class="hint-box">
       Ensure the local Rust server is running:
@@ -134,7 +136,8 @@
   </div>
 
   <script>
-    const PORTS = [38451, 38452, 38453, 38454, 38455];
+    // Must match DEFAULT_PORT / PORT_RANGE in src/bridge/server.rs and manifest.json.
+    const PORTS = Array.from({ length: 10 }, (_, i) => 41730 + i);
     let attempts = 0;
 
     async function checkPort(port) {
@@ -148,8 +151,9 @@
         clearTimeout(timeoutId);
         if (res.ok) {
           const data = await res.json();
-          return { ok: true, data };
+          if (data && data.name === "figma-rust-mcp") return { ok: true, data };
         }
+        return { ok: false, answered: true };
       } catch (_) {
         clearTimeout(timeoutId);
       }
@@ -174,7 +178,8 @@
         if (!uiRes.ok) throw new Error("Failed to load plugin UI: " + uiRes.status);
         const uiHtml = await uiRes.text();
 
-        // 3. Inject full UI cleanly
+        // 3. Inject full UI cleanly; the runtime reads the port from here (globals survive document.open).
+        window.__FIGMA_MCP_PORT = port;
         document.open();
         document.write(uiHtml);
         document.close();
@@ -190,17 +195,20 @@
       const statusEl = document.getElementById("status");
       const portEl = document.getElementById("port-label");
 
-      for (const port of PORTS) {
-        if (portEl) portEl.textContent = `localhost:${port}`;
-        const result = await checkPort(port);
-        if (result.ok) {
-          await bootstrapFromPort(port);
-          return;
-        }
+      if (portEl) portEl.textContent = `localhost:${PORTS[0]}-${PORTS[PORTS.length - 1]}`;
+      const results = await Promise.all(PORTS.map(checkPort));
+      const hit = results.findIndex(r => r.ok);
+      if (hit >= 0) {
+        if (portEl) portEl.textContent = `localhost:${PORTS[hit]}`;
+        await bootstrapFromPort(PORTS[hit]);
+        return;
       }
 
       if (statusEl) {
-        statusEl.textContent = `Waiting for server (attempt #${attempts})...`;
+        const busy = PORTS.filter((_, i) => results[i].answered);
+        statusEl.textContent = busy.length
+          ? `Port ${busy.join(", ")} answered but is not a compatible figma-rust-mcp. Run: npx -y figma-rust-mcp@latest --install-service (attempt #${attempts})`
+          : `Waiting for server (attempt #${attempts})...`;
       }
       setTimeout(findAndConnect, 1000);
     }

@@ -5,21 +5,33 @@
   "main": "code.js",
   "ui": "ui.html",
   "documentAccess": "dynamic-page",
-  "editorType": ["figma", "dev"],
+  "editorType": [
+    "figma",
+    "dev"
+  ],
   "networkAccess": {
     "allowedDomains": [
-      "http://localhost:38451",
-      "http://localhost:38452",
-      "http://localhost:38453",
-      "http://localhost:38454",
-      "http://localhost:38455",
-      "ws://localhost:38451",
-      "ws://localhost:38452",
-      "ws://localhost:38453",
-      "ws://localhost:38454",
-      "ws://localhost:38455"
+      "http://localhost:41730",
+      "http://localhost:41731",
+      "http://localhost:41732",
+      "http://localhost:41733",
+      "http://localhost:41734",
+      "http://localhost:41735",
+      "http://localhost:41736",
+      "http://localhost:41737",
+      "http://localhost:41738",
+      "http://localhost:41739",
+      "ws://localhost:41730",
+      "ws://localhost:41731",
+      "ws://localhost:41732",
+      "ws://localhost:41733",
+      "ws://localhost:41734",
+      "ws://localhost:41735",
+      "ws://localhost:41736",
+      "ws://localhost:41737",
+      "ws://localhost:41738",
+      "ws://localhost:41739"
     ],
-    "reasoning": "Thin loader connecting dynamically to the local figma-rust-mcp Rust engine on ports 38451-38455."
+    "reasoning": "Thin loader connecting dynamically to the local figma-rust-mcp Rust engine on ports 41730-41739."
   }
 }
-

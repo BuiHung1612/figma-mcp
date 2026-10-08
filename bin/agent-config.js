@@ -4,7 +4,7 @@ import os from 'node:os';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 
 const SERVER_NAME = 'figma-rust-mcp';
-const HTTP_URL = 'http://127.0.0.1:38451/mcp';
+const HTTP_URL = 'http://127.0.0.1:41730/mcp';
 
 function existsAny(paths) {
   return paths.some(candidate => candidate && fs.existsSync(candidate));
@@ -78,7 +78,7 @@ function upsertCodex(filePath) {
 
 export function configureAgent(agent) {
   const entry = agent.id === 'antigravity'
-    ? { serverUrl: 'http://127.0.0.1:38451/sse' }
+    ? { serverUrl: 'http://127.0.0.1:41730/sse' }
     : agent.id === 'claude' || agent.id === 'vscode'
       ? { type: 'http', url: HTTP_URL }
       : { url: HTTP_URL };

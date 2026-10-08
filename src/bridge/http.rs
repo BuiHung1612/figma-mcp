@@ -973,7 +973,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_mcp_tool_names_before_plugin_dispatch() {
-        let state = BridgeState::new(38451);
+        let state = BridgeState::new(0);
         let err = state
             .send_operation("figma_prepare_design", json!({}), None)
             .await
@@ -991,7 +991,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_connected_session_by_file_name() {
-        let state = BridgeState::new(38451);
+        let state = BridgeState::new(0);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut session = super::Session::new("session-a".to_string(), Some("Checkout".to_string()));
         session.ws_tx = Some(tx);

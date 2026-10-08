@@ -5,41 +5,54 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Figma Rust MCP</title>
   <style>
-    /* ── GHOSTTY DESIGN SYSTEM (High-Performance Native Terminal Aesthetic) ── */
+    /* ── RETRO DESIGN SYSTEM (cream paper, ink borders, hard offset shadows) ── */
     :root {
-      --bg:             #0d0e12;
-      --surface-base:   #12141a;
-      --surface-card:   #171922;
-      --surface-hover:  #1d202b;
-      --surface-active: #242837;
+      --bg:             #fdf1dc;
+      --surface-base:   #fffaf0;
+      --surface-card:   #fffdf7;
+      --surface-hover:  #fff3d6;
+      --surface-active: #ffe9b8;
 
-      --border-subtle:  rgba(255, 255, 255, 0.07);
-      --border-light:   rgba(255, 255, 255, 0.13);
-      --border-ghost:   rgba(147, 129, 255, 0.35);
+      --ink:            #1c1a17;
+      --border-subtle:  #1c1a17;
+      --border-light:   #1c1a17;
+      --border-ghost:   #1c1a17;
+      --hairline:       rgba(28, 26, 23, 0.14);
+      --dots:           rgba(28, 26, 23, 0.10);
 
-      --text-primary:   #f4f4f7;
-      --text-secondary: #9aa1b2;
-      --text-muted:     #52596d;
-      --text-dim:       #363c4e;
+      --text-primary:   #1c1a17;
+      --text-secondary: #4a453d;
+      --text-muted:     #7d7567;
+      --text-dim:       #b3aa99;
 
-      /* Ghostty Signature Palette */
-      --ghost-lavender: #9381ff;
-      --ghost-glow:     rgba(147, 129, 255, 0.22);
-      --ghost-mint:     #34d399;
-      --ghost-mint-glow:rgba(52, 211, 153, 0.20);
-      --ghost-cyan:     #38bdf8;
-      --ghost-peach:    #ff9f68;
-      --ghost-rose:     #fb7185;
-      --ghost-amber:    #fbbf24;
+      /* Retro palette (legacy --ghost-* names kept for JS/inline references) */
+      --yellow:         #ffd34e;
+      --pink:           #ffb1c8;
+      --blue:           #9dd7fb;
+      --green:          #a8e6a1;
+      --red:            #f4532c;
+      --peach:          #ffb88a;
+      --ghost-lavender: #c2410c;
+      --ghost-glow:     rgba(255, 211, 78, 0.45);
+      --ghost-mint:     #2f8f3a;
+      --ghost-mint-glow:rgba(47, 143, 58, 0.20);
+      --ghost-cyan:     #1f6fa8;
+      --ghost-peach:    #c2410c;
+      --ghost-rose:     #d93a14;
+      --ghost-amber:    #b7791f;
 
-      --radius-xs:      4px;
-      --radius-sm:      6px;
+      --radius-xs:      5px;
+      --radius-sm:      7px;
       --radius-md:      9px;
       --radius-full:    9999px;
 
-      --font-ui:        -apple-system, BlinkMacSystemFont, 'Pretendard', 'Inter', 'SF Pro Text', sans-serif;
-      --font-mono:      'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace;
-      --transition:     0.14s cubic-bezier(0.4, 0, 0.2, 1);
+      --shadow-sm:      2px 2px 0 var(--ink);
+      --shadow:         3px 3px 0 var(--ink);
+      --border:         2px solid var(--ink);
+
+      --font-ui:        ui-rounded, 'SF Pro Rounded', -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+      --font-mono:      ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+      --transition:     0.12s ease-out;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -57,73 +70,71 @@
       flex-direction: column;
     }
 
-    /* Ghostty subtle atmospheric ambient */
-    body::before {
-      content: '';
-      position: fixed;
-      top: -80px; left: -50px;
-      width: 260px; height: 260px;
-      background: radial-gradient(circle, rgba(147, 129, 255, 0.07) 0%, transparent 65%);
-      pointer-events: none;
-      z-index: 0;
-    }
-    body::after {
-      content: '';
-      position: fixed;
-      bottom: -60px; right: -50px;
-      width: 220px; height: 220px;
-      background: radial-gradient(circle, rgba(52, 211, 153, 0.05) 0%, transparent 65%);
-      pointer-events: none;
-      z-index: 0;
-    }
-
     .app {
-      position: relative;
-      z-index: 1;
       display: flex;
       flex-direction: column;
       height: 100%;
-      padding: 8px;
-      gap: 6px;
+      padding: 8px 10px 10px 8px;
+      gap: 8px;
     }
 
-    /* ── HEADER (Ghostty macOS Native Window Chrome) ── */
+    /* Shared retro "card": ink border + hard shadow */
+    .header, .selection-card, .terminal-wrap, .telemetry-cell, .modal-card {
+      background: var(--surface-card);
+      border: var(--border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow);
+    }
+
+    /* Shared retro "button": press-down on click */
+    .header-icon-btn, .status-pill, .act-btn, .btn {
+      border: var(--border);
+      background: var(--surface-card);
+      color: var(--ink);
+      box-shadow: var(--shadow-sm);
+      cursor: pointer;
+      transition: transform var(--transition), box-shadow var(--transition), background var(--transition);
+    }
+    .header-icon-btn:hover, .status-pill:hover, .act-btn:hover, .btn:hover { background: var(--surface-hover); }
+    .header-icon-btn:active, .status-pill:active, .act-btn:active, .btn:active {
+      transform: translate(2px, 2px);
+      box-shadow: 0 0 0 var(--ink);
+    }
+    button:disabled { cursor: wait; opacity: 0.55; }
+
+    /* ── HEADER ── */
     .header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: var(--surface-base);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
+      gap: 6px;
       padding: 6px 8px;
       flex-shrink: 0;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.4);
-      position: relative;
     }
 
-    /* ── INDEXING PROGRESS BAR (Embedded in Header) ── */
+    /* ── INDEXING PROGRESS BAR ── */
     .index-progress-wrap {
       display: none;
       flex-direction: column;
-      gap: 3px;
-      padding: 4px 8px 6px;
-      background: rgba(147, 129, 255, 0.08);
-      border: 1px solid rgba(147, 129, 255, 0.28);
+      gap: 4px;
+      padding: 5px 8px 6px;
+      background: var(--yellow);
+      border: var(--border);
       border-radius: var(--radius-sm);
-      margin-top: 1px;
+      box-shadow: var(--shadow-sm);
       animation: fadeIn 0.2s ease-out;
     }
-    .index-progress-wrap.active {
-      display: flex;
-    }
+    .index-progress-wrap.active { display: flex; }
     .index-progress-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       font-size: 9px;
-      font-weight: 600;
-      color: var(--ghost-lavender);
+      font-weight: 700;
+      color: var(--ink);
       font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
     }
     .index-progress-label {
       display: flex;
@@ -134,48 +145,46 @@
       text-overflow: ellipsis;
       max-width: 220px;
     }
-    .index-progress-label svg {
-      animation: spin 1s linear infinite;
-      flex-shrink: 0;
-    }
-    .index-progress-pct {
-      color: var(--text-primary);
-      flex-shrink: 0;
-    }
+    .index-progress-label svg { animation: spin 1s linear infinite; flex-shrink: 0; }
+    .index-progress-pct { color: var(--ink); flex-shrink: 0; }
     .index-progress-track {
       width: 100%;
-      height: 3px;
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 9999px;
+      height: 8px;
+      background: var(--surface-card);
+      border: 1.5px solid var(--ink);
+      border-radius: 3px;
       overflow: hidden;
     }
     .index-progress-fill {
       height: 100%;
       width: 0%;
-      background: linear-gradient(90deg, #7c3aed, #9381ff, #34d399);
-      border-radius: 9999px;
+      background: repeating-linear-gradient(45deg, var(--red) 0 6px, #ff7a52 6px 12px);
+      border-right: 1.5px solid var(--ink);
       transition: width 0.2s ease-out;
-      box-shadow: 0 0 8px rgba(147, 129, 255, 0.6);
     }
 
     @keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 
-    .brand { display: flex; align-items: center; gap: 7px; min-width: 0; }
-
+    .brand { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; overflow: hidden; }
     .brand-logo {
-      width: 22px; height: 22px;
-      border-radius: var(--radius-xs);
-      background: linear-gradient(135deg, #7c3aed 0%, #9381ff 60%, #34d399 100%);
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      background: var(--yellow);
+      border: var(--border);
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.18) inset, 0 2px 8px rgba(124, 58, 237, 0.35);
-      color: #ffffff;
+      color: var(--ink);
     }
-
+    .brand-logo svg { stroke: var(--ink); }
     .brand-info { display: flex; flex-direction: column; min-width: 0; }
-    .brand-title-row { display: flex; align-items: baseline; gap: 5px; }
-    .brand-name { font-size: 11px; font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary); line-height: 1; }
-    .brand-ver { font-size: 9px; font-weight: 600; color: var(--text-muted); font-family: var(--font-mono); }
+    .brand-title-row { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+    .brand-name { overflow: hidden; text-overflow: ellipsis; }
+    .brand-ver { flex-shrink: 0; }
+    .brand-name { font-size: 13px; font-weight: 800; white-space: nowrap; letter-spacing: -0.02em; color: var(--ink); line-height: 1.05; }
+    .brand-ver {
+      font-size: 8.5px; font-weight: 700; color: var(--ink); font-family: var(--font-mono);
+      background: var(--yellow); border: 1.5px solid var(--ink); border-radius: var(--radius-full); padding: 0 5px;
+    }
     .brand-file {
       font-size: 10px;
       color: var(--text-secondary);
@@ -185,101 +194,63 @@
       overflow: hidden;
       text-overflow: ellipsis;
       max-width: 140px;
-      margin-top: 1px;
+      margin-top: 2px;
+      font-family: var(--font-mono);
     }
 
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex-shrink: 0;
-    }
+    .header-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 
     .header-icon-btn {
-      width: 28px;
-      height: 28px;
+      width: 26px;
+      height: 26px;
       padding: 0;
-      border-radius: var(--radius-xs);
-      background: var(--surface-card);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
+      border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      cursor: pointer;
-      transition: all var(--transition);
     }
-    .header-icon-btn:hover {
-      background: var(--surface-hover);
-      border-color: var(--border-light);
-      color: var(--text-primary);
-    }
-    button:disabled { cursor: wait; opacity: 0.55; }
-    .header-icon-btn:active { transform: scale(0.94); }
-    .header-icon-btn.indexing svg {
-      animation: spin 1s linear infinite;
-      color: var(--ghost-lavender);
-    }
+    .header-icon-btn.indexing { background: var(--yellow); }
+    .header-icon-btn.indexing svg { animation: spin 1s linear infinite; }
 
     .status-pill {
       appearance: none;
       display: flex; align-items: center; gap: 5px;
-      background: var(--surface-card);
-      border: 1px solid var(--border-subtle);
       border-radius: var(--radius-full);
       min-height: 28px;
       padding: 4px 9px 4px 7px;
-      font-size: 10px; font-weight: 600;
-      color: var(--text-secondary);
-      transition: all var(--transition);
-      cursor: pointer;
+      font-size: 10px; font-weight: 700;
       font-family: var(--font-mono);
     }
-    .status-pill:hover { border-color: var(--border-light); background: var(--surface-hover); color: var(--text-primary); }
-    .status-pill.connected { border-color: rgba(52,211,153,0.25); background: rgba(52,211,153,0.06); color: var(--ghost-mint); }
-    .status-pill.offline   { border-color: rgba(251,113,133,0.25); background: rgba(251,113,133,0.06); color: var(--ghost-rose); }
-    .status-pill.connecting { border-color: rgba(251,191,36,0.25); background: rgba(251,191,36,0.06); color: var(--ghost-amber); }
+    .status-pill.connected  { background: var(--green); }
+    .status-pill.offline    { background: var(--pink); }
+    .status-pill.connecting { background: var(--yellow); }
+    .status-pill.connected:hover, .status-pill.offline:hover, .status-pill.connecting:hover { filter: brightness(1.04); }
 
     .dot {
-      width: 6px; height: 6px;
+      width: 8px; height: 8px;
       border-radius: 50%; flex-shrink: 0;
-      transition: all var(--transition);
+      border: 1.5px solid var(--ink);
     }
-    .dot.green  { background: var(--ghost-mint); box-shadow: 0 0 0 2px rgba(52,211,153,0.2), 0 0 8px rgba(52,211,153,0.6); }
-    .dot.yellow { background: var(--ghost-amber); box-shadow: 0 0 0 2px rgba(251,191,36,0.2), 0 0 8px rgba(251,191,36,0.5); animation: pulse 1.4s ease-in-out infinite; }
-    .dot.red    { background: var(--ghost-rose); box-shadow: 0 0 0 2px rgba(251,113,133,0.2), 0 0 8px rgba(251,113,133,0.5); }
+    .dot.green  { background: #3fbf4f; }
+    .dot.yellow { background: #ff9f1c; animation: pulse 1.4s ease-in-out infinite; }
+    .dot.red    { background: var(--red); }
 
-    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.85); } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-    /* ── SELECTION INSPECTOR (Ghostty Split-Pane Card) ── */
+    /* ── SELECTION INSPECTOR ── */
     .selection-card {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 7px;
-      background: var(--surface-card);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      padding: 6px 8px;
+      padding: 7px 8px;
       flex-shrink: 0;
-      transition: border-color var(--transition), background var(--transition), box-shadow var(--transition);
-      position: relative;
-      overflow: hidden;
+      background-color: var(--surface-card);
+      background-image: radial-gradient(var(--dots) 1px, transparent 1px);
+      background-size: 10px 10px;
+      transition: background-color var(--transition);
     }
-    .selection-card::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0; height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
-    }
-    .selection-card.has-selection {
-      border-color: var(--border-ghost);
-      background: linear-gradient(135deg, rgba(147, 129, 255, 0.05) 0%, rgba(52, 211, 153, 0.02) 100%), var(--surface-card);
-    }
-    .selection-card.has-selection:hover {
-      border-color: rgba(147, 129, 255, 0.55);
-      background: linear-gradient(135deg, rgba(147, 129, 255, 0.09) 0%, rgba(52, 211, 153, 0.04) 100%), var(--surface-card);
-    }
+    .selection-card.has-selection { background-color: #fff6dc; }
 
     .selection-main {
       display: flex;
@@ -297,26 +268,21 @@
     }
 
     .selection-icon-wrap {
-      width: 22px; height: 22px;
+      width: 24px; height: 24px;
       border-radius: var(--radius-xs);
       background: var(--surface-base);
-      border: 1px solid var(--border-subtle);
+      border: var(--border);
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
       color: var(--text-muted);
-      transition: all var(--transition);
     }
-    .selection-card.has-selection .selection-icon-wrap {
-      background: rgba(147, 129, 255, 0.12);
-      border-color: rgba(147, 129, 255, 0.35);
-      color: var(--ghost-lavender);
-    }
+    .selection-card.has-selection .selection-icon-wrap { background: var(--yellow); color: var(--ink); }
 
     .selection-text { display: flex; flex-direction: column; min-width: 0; }
     .selection-name {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--ink);
       line-height: 1.2;
       white-space: nowrap;
       overflow: hidden;
@@ -326,155 +292,123 @@
       font-size: 9px;
       color: var(--text-secondary);
       font-family: var(--font-mono);
-      line-height: 1.2;
+      line-height: 1.3;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
-    .selection-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex-shrink: 0;
-    }
+    .selection-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 
     .act-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 4px;
-      min-height: 28px;
+      min-height: 26px;
       padding: 0 6px;
       border-radius: var(--radius-xs);
-      font-size: 10px;
-      font-weight: 600;
+      font-size: 9.5px;
+      font-weight: 700;
       font-family: var(--font-mono);
-      background: var(--surface-base);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      cursor: pointer;
-      transition: all var(--transition);
-      letter-spacing: 0.2px;
+      letter-spacing: 0.3px;
     }
-    .act-btn:hover {
-      background: var(--surface-hover);
-      border-color: var(--border-light);
-      color: var(--text-primary);
-    }
-    .act-btn:active { transform: scale(0.95); }
-    .act-btn.icon-only { width: 28px; padding: 0; }
-    .act-btn.badge-btn {
-      background: rgba(147, 129, 255, 0.12);
-      border-color: rgba(147, 129, 255, 0.28);
-      color: #d1c9ff;
-    }
-    .act-btn.badge-btn:hover {
-      background: rgba(147, 129, 255, 0.28);
-      border-color: rgba(147, 129, 255, 0.6);
-      color: #ffffff;
-    }
+    .act-btn.icon-only { width: 26px; padding: 0; }
+    .act-btn.badge-btn { background: var(--yellow); text-transform: uppercase; }
+    .act-btn.badge-btn:hover { background: #ffc92a; }
 
-    /* ── TELEMETRY SEGMENTED STATUSLINE ── */
+    /* ── TELEMETRY: colored stat tiles ── */
     .telemetry-ribbon {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      background: var(--surface-base);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      overflow: hidden;
+      gap: 7px;
       flex-shrink: 0;
     }
-
     .telemetry-cell {
       display: flex;
       flex-direction: column;
-      align-items: center;
+      align-items: flex-start;
       justify-content: center;
-      padding: 4px 2px;
-      gap: 1px;
-      position: relative;
-      transition: background var(--transition);
+      padding: 5px 7px 6px;
+      gap: 2px;
+      border-radius: var(--radius-sm);
     }
-    .telemetry-cell:not(:last-child)::after {
-      content: '';
-      position: absolute;
-      right: 0; top: 15%; bottom: 15%;
-      width: 1px;
-      background: var(--border-subtle);
-    }
-    .telemetry-cell:hover { background: rgba(255, 255, 255, 0.02); }
+    .telemetry-cell.writes { background: var(--yellow); }
+    .telemetry-cell.reads  { background: var(--pink); }
+    .telemetry-cell.speed  { background: var(--blue); }
+    .telemetry-cell.ram    { background: var(--green); }
 
     .telemetry-label {
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.6px;
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: 0.9px;
       text-transform: uppercase;
-      color: var(--text-muted);
+      color: var(--ink);
       font-family: var(--font-mono);
+      opacity: 0.8;
     }
     .telemetry-value {
-      font-size: 13px;
-      font-weight: 700;
-      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 800;
+      font-family: var(--font-ui);
+      color: var(--ink);
       line-height: 1;
       font-variant-numeric: tabular-nums;
       display: flex;
       align-items: baseline;
       gap: 1.5px;
     }
-    .telemetry-unit { font-size: 9px; font-weight: 600; color: var(--text-muted); }
+    .telemetry-unit { font-size: 9px; font-weight: 700; color: var(--ink); opacity: 0.7; }
 
-    .telemetry-cell.writes .telemetry-value { color: var(--ghost-lavender); }
-    .telemetry-cell.reads  .telemetry-value { color: var(--ghost-cyan); }
-    .telemetry-cell.speed  .telemetry-value { color: var(--ghost-mint); }
-    .telemetry-cell.ram    .telemetry-value { color: var(--ghost-peach); }
-
-    /* ── GHOSTTY STREAM CONSOLE BUFFER ── */
+    /* ── STREAM CONSOLE ── */
     .terminal-wrap {
       flex: 1; min-height: 0;
       display: flex; flex-direction: column;
-      background: var(--surface-base);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
       overflow: hidden;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
 
     .terminal-header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 5px 7px;
-      background: rgba(255,255,255,0.02);
-      border-bottom: 1px solid var(--border-subtle);
+      background: var(--surface-base);
+      border-bottom: var(--border);
       flex-shrink: 0;
     }
 
-    .terminal-tabs { display: flex; align-items: center; gap: 3px; }
-
+    /* Segmented control, like the "Tibo time / Local time" toggle */
+    .terminal-tabs {
+      display: flex; align-items: center;
+      border: var(--border);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      background: var(--surface-card);
+    }
     .t-tab {
-      font-size: 10px;
-      font-weight: 600;
-      font-family: var(--font-mono);
-      letter-spacing: 0.2px;
-      min-height: 28px;
-      padding: 4px 8px;
-      border-radius: var(--radius-xs);
-      color: var(--text-muted);
+      font-size: 9px;
+      font-weight: 700;
+      font-family: var(--font-ui);
+      min-height: 22px;
+      padding: 2px 5px;
+      white-space: nowrap;
+      color: var(--text-secondary);
       background: transparent;
       border: none;
       cursor: pointer;
-      transition: all var(--transition);
+      transition: background var(--transition);
     }
-    .t-tab:hover { color: var(--text-secondary); background: rgba(255,255,255,0.04); }
-    .t-tab.active { color: var(--text-primary); background: var(--surface-card); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
-    .t-tab.tab-err.active { color: var(--ghost-rose); }
-    :focus-visible { outline: 2px solid var(--ghost-lavender); outline-offset: 2px; }
+    .t-tab + .t-tab { border-left: 1.5px solid var(--ink); }
+    .t-tab:hover { background: var(--surface-hover); color: var(--ink); }
+    .t-tab.active { color: var(--ink); background: var(--yellow); }
+    .t-tab.tab-err.active { background: var(--pink); }
+    :focus-visible { outline: 2px dashed var(--red); outline-offset: 2px; }
     .modal-input:focus-visible { outline: none; }
     .tab-badge-err {
-      font-size: 9px;
-      font-weight: 700;
-      color: var(--ghost-rose);
-      background: rgba(251, 113, 133, 0.18);
+      font-size: 8.5px;
+      font-weight: 800;
+      color: #fff;
+      background: var(--red);
+      border: 1px solid var(--ink);
       border-radius: var(--radius-full);
       padding: 0 4px;
       margin-left: 2px;
@@ -482,17 +416,21 @@
       display: inline-block;
     }
 
-    .terminal-meta { display: flex; align-items: center; gap: 6px; }
+    .terminal-meta { display: flex; align-items: center; gap: 4px; }
+    .terminal-meta .act-btn.icon-only { width: 22px; min-height: 22px; height: 22px !important; width: 22px !important; }
 
     .event-badge {
-      font-size: 9px;
-      font-weight: 600;
+      font-size: 8.5px;
+      font-weight: 700;
       font-family: var(--font-mono);
-      color: var(--text-muted);
+      color: var(--ink);
       background: var(--surface-card);
-      border: 1px solid var(--border-subtle);
+      border: 1.5px solid var(--ink);
       border-radius: var(--radius-full);
-      padding: 1px 6px;
+      padding: 0 6px;
+      white-space: nowrap;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
     }
 
     .terminal-body {
@@ -500,13 +438,15 @@
       padding: 6px 8px;
       font-family: var(--font-mono);
       font-size: 9.5px;
-      line-height: 1.5;
+      line-height: 1.55;
       overflow-y: auto;
       color: var(--text-secondary);
+      background-image: radial-gradient(var(--dots) 1px, transparent 1px);
+      background-size: 12px 12px;
     }
-    .terminal-body::-webkit-scrollbar { width: 3px; }
+    .terminal-body::-webkit-scrollbar { width: 6px; }
     .terminal-body::-webkit-scrollbar-track { background: transparent; }
-    .terminal-body::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 2px; }
+    .terminal-body::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 3px; }
 
     .log-line {
       display: flex;
@@ -514,14 +454,13 @@
       gap: 6px;
       padding: 1.5px 3px;
       border-radius: 3px;
-      transition: background 0.1s ease;
     }
-    .log-line:hover { background: rgba(255,255,255,0.03); }
+    .log-line:hover { background: var(--surface-hover); }
     .log-ts { font-size: 9px; color: var(--text-muted); flex-shrink: 0; letter-spacing: -0.2px; }
-    .log-prompt { color: var(--ghost-lavender); font-size: 9px; flex-shrink: 0; font-weight: 700; }
-    .log-msg { flex: 1; word-break: break-all; color: var(--text-secondary); }
+    .log-prompt { color: var(--red); font-size: 9px; flex-shrink: 0; font-weight: 800; }
+    .log-msg { flex: 1; word-break: break-all; color: var(--text-primary); }
     .log-msg.ok   { color: var(--ghost-mint); }
-    .log-msg.err  { color: var(--ghost-rose); }
+    .log-msg.err  { color: var(--ghost-rose); font-weight: 700; }
     .log-msg.info { color: var(--ghost-cyan); }
 
     .terminal-empty {
@@ -529,55 +468,32 @@
       align-items: center; justify-content: center;
       height: 100%; gap: 5px; color: var(--text-muted);
     }
-    .terminal-empty-icon { font-size: 16px; opacity: 0.35; }
-    .terminal-empty-text { font-size: 9.5px; opacity: 0.6; font-family: var(--font-mono); }
+    .terminal-empty-icon { font-size: 18px; opacity: 0.5; }
+    .terminal-empty-text { font-size: 9.5px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.8px; }
 
-    .bench-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 3px; }
-    .bench-row span:last-child { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+    .bench-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 3px; border-bottom: 1px dashed var(--hairline); }
+    .bench-row span:last-child { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
     .bench-note { color: var(--text-muted); margin-top: 6px; }
-    #bench-results { margin-top: 8px; }
+    #bench-results { margin-top: 10px; }
 
-    /* ── FOOTER ACTIONS ── */
+    /* ── BUTTONS ── */
     .footer { display: flex; gap: 6px; flex-shrink: 0; }
 
     .btn {
       display: inline-flex; align-items: center; justify-content: center;
-      gap: 6px; padding: 6px 11px;
+      gap: 6px; padding: 6px 12px;
       border-radius: var(--radius-sm);
-      font-size: 10px; font-weight: 600;
+      font-size: 10.5px; font-weight: 800;
       font-family: var(--font-ui);
-      cursor: pointer;
-      border: 1px solid var(--border-subtle);
-      background: var(--surface-card);
-      color: var(--text-secondary);
-      transition: all var(--transition);
-      letter-spacing: 0.1px;
       white-space: nowrap;
     }
-    .btn:hover { background: var(--surface-hover); border-color: var(--border-light); color: var(--text-primary); }
-    .btn:active { transform: scale(0.97); }
-
     .btn-icon { width: 30px; height: 30px; padding: 0; flex-shrink: 0; }
-
-    .btn-primary {
-      flex: 1;
-      background: linear-gradient(135deg, rgba(124,58,237,0.9) 0%, rgba(147,129,255,0.9) 50%, rgba(52,211,153,0.85) 100%);
-      border-color: rgba(147, 129, 255, 0.45);
-      color: #ffffff;
-      font-weight: 600;
-      box-shadow: 0 1px 0 rgba(255,255,255,0.2) inset, 0 3px 12px rgba(124, 58, 237, 0.28);
-    }
-    .btn-primary:hover {
-      background: linear-gradient(135deg, #7c3aed 0%, #9381ff 50%, #34d399 100%);
-      border-color: rgba(147, 129, 255, 0.7);
-      color: #ffffff;
-      box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset, 0 4px 16px rgba(124, 58, 237, 0.45);
-    }
-
+    .btn-primary { flex: 1; background: var(--yellow); }
+    .btn-primary:hover { background: #ffc92a; }
     .btn-primary.indexing svg { animation: spin 1s linear infinite; }
     @keyframes spin { 100% { transform: rotate(360deg); } }
 
-    /* ── TOAST NOTIFICATION ── */
+    /* ── TOAST ── */
     .toast {
       position: fixed;
       bottom: 45px;
@@ -585,15 +501,14 @@
       transform: translateX(-50%) translateY(15px);
       opacity: 0;
       pointer-events: none;
-      background: rgba(18, 20, 26, 0.96);
-      border: 1px solid rgba(147, 129, 255, 0.3);
-      backdrop-filter: blur(8px);
-      box-shadow: 0 8px 24px rgba(0,0,0,0.6), 0 0 12px rgba(147, 129, 255, 0.2);
+      background: var(--yellow);
+      border: var(--border);
+      box-shadow: var(--shadow);
       border-radius: var(--radius-full);
       padding: 5px 12px;
-      font-size: 9.5px;
-      font-weight: 600;
-      color: var(--text-primary);
+      font-size: 10px;
+      font-weight: 800;
+      color: var(--ink);
       display: flex;
       align-items: center;
       gap: 6px;
@@ -610,12 +525,11 @@
       *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
     }
 
-    /* ── CUSTOM IN-PLUGIN MODAL DIALOG (No window.prompt dependency) ── */
+    /* ── MODAL ── */
     .modal-overlay {
       position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(8, 9, 13, 0.75);
-      backdrop-filter: blur(5px);
+      inset: 0;
+      background: rgba(253, 241, 220, 0.85);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -626,16 +540,9 @@
       pointer-events: none;
       transition: opacity var(--transition);
     }
-    .modal-overlay.show {
-      opacity: 1;
-      visibility: visible;
-      pointer-events: auto;
-    }
+    .modal-overlay.show { opacity: 1; visibility: visible; pointer-events: auto; }
     .modal-card {
-      background: var(--surface-card);
-      border: 1px solid var(--border-light);
-      border-radius: var(--radius-md);
-      box-shadow: 0 16px 36px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08) inset;
+      box-shadow: 4px 4px 0 var(--ink);
       width: 100%;
       max-width: 290px;
       padding: 12px;
@@ -645,69 +552,74 @@
       transform: scale(0.95);
       transition: transform var(--transition);
     }
-    .modal-overlay.show .modal-card {
-      transform: scale(1);
-    }
-    .modal-title-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
+    .modal-overlay.show .modal-card { transform: scale(1); }
+    .modal-title-row { display: flex; align-items: center; justify-content: space-between; }
     .modal-title {
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--ink);
       display: flex;
       align-items: center;
       gap: 5px;
     }
-    .modal-desc {
-      font-size: 9.5px;
-      color: var(--text-secondary);
-      line-height: 1.35;
-    }
-    .modal-error { min-height: 14px; color: var(--ghost-rose); font-size: 10px; }
+    .modal-desc { font-size: 9.5px; color: var(--text-secondary); line-height: 1.4; }
+    .modal-error { min-height: 14px; color: var(--ghost-rose); font-size: 10px; font-weight: 700; }
     .modal-input {
       width: 100%;
       background: var(--surface-base);
-      border: 1px solid var(--border-light);
+      border: var(--border);
       border-radius: var(--radius-xs);
-      color: var(--text-primary);
+      color: var(--ink);
       font-family: var(--font-mono);
       font-size: 9.5px;
       padding: 6px 8px;
       outline: none;
-      transition: border-color var(--transition);
     }
-    .modal-input:focus {
-      border-color: var(--ghost-lavender);
-      box-shadow: 0 0 0 2px var(--ghost-glow);
+    .modal-input:focus { background: #fffbe8; box-shadow: var(--shadow-sm); }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+
+    /* ── SETUP GUIDE OVERLAY (built in JS) ── */
+    .setup-overlay {
+      position: fixed; inset: 0; z-index: 999;
+      background: var(--bg);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 16px; gap: 10px;
+      font-family: var(--font-ui);
     }
-    .modal-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 6px;
-      margin-top: 2px;
+    .setup-logo {
+      width: 40px; height: 40px; border-radius: 50%;
+      background: var(--yellow); border: var(--border); box-shadow: var(--shadow);
+      display: flex; align-items: center; justify-content: center; margin-bottom: 2px;
     }
+    .setup-title { font-size: 14px; font-weight: 800; color: var(--ink); letter-spacing: -0.2px; }
+    .setup-desc { font-size: 10px; color: var(--text-secondary); text-align: center; max-width: 240px; line-height: 1.5; }
+    .setup-opt {
+      width: 100%; background: var(--surface-card); border: var(--border); border-radius: var(--radius-md);
+      box-shadow: var(--shadow); padding: 8px 11px; display: flex; flex-direction: column; gap: 3px;
+    }
+    .setup-opt.recommended { background: #fff6dc; }
+    .setup-opt-label { font-size: 8px; font-weight: 600; letter-spacing: 0.9px; text-transform: uppercase; color: var(--text-muted); font-family: var(--font-mono); }
+    .setup-opt-cmd { font-family: var(--font-mono); font-size: 11.5px; font-weight: 700; color: var(--ink); user-select: text; }
+    .setup-opt-note { font-size: 8.5px; color: var(--text-muted); }
+    .setup-wait { display: flex; align-items: center; gap: 6px; font-size: 9px; color: var(--text-secondary); font-family: var(--font-mono); }
   </style>
 </head>
 <body>
 
   <div class="app">
 
-    <!-- ── HEADER (Ghostty macOS Native Window Chrome) ── -->
+    <!-- ── HEADER  ── -->
     <header class="header">
       <div class="brand">
         <div class="brand-logo">
-          <!-- Ghostty Ghost Mascot Icon -->
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 10h.01M15 10h.01M12 2a8 8 0 0 0-8 8v11l3-2 3 2 2-2 2 2 3-2 3 2V10a8 8 0 0 0-8-8z"/>
           </svg>
         </div>
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma Rust MCP</span>
-            <span class="brand-ver" id="runtime-version">v4.1.1</span>
+            <span class="brand-ver" id="runtime-version">v5.0.0</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -851,13 +763,13 @@
         </div>
         <div class="terminal-meta">
           <span class="event-badge" id="log-count">0 ev</span>
-          <button class="act-btn icon-only" onclick="copyLogs()" title="Copy console logs" aria-label="Copy visible console logs" style="height:24px;width:24px;border-radius:3px;">
+          <button class="act-btn icon-only" onclick="copyLogs()" title="Copy console logs" aria-label="Copy visible console logs" style="height:24px;width:24px;">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
             </svg>
           </button>
-          <button class="act-btn icon-only" onclick="clearLog()" title="Clear stream console" aria-label="Clear console logs" style="height:24px;width:24px;border-radius:3px;">
+          <button class="act-btn icon-only" onclick="clearLog()" title="Clear stream console" aria-label="Clear console logs" style="height:24px;width:24px;">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
             </svg>
@@ -915,7 +827,7 @@
   </div>
 
   <script>
-    var currentPort = 38451;
+    var currentPort = window.__FIGMA_MCP_PORT || 41730; // set by the thin loader; 41730-41739 must match the server range
     var BRIDGE  = "http://localhost:" + currentPort;
     var POLL_MS = 300;
     var POLL_MAX_MS = 3000;
@@ -1303,45 +1215,32 @@
 
       var overlay = document.createElement("div");
       overlay.id = "setup-overlay";
-      Object.assign(overlay.style, {
-        position: "fixed", inset: "0",
-        background: "rgba(9,10,15,0.96)",
-        backdropFilter: "blur(8px)",
-        zIndex: "999",
-        display: "flex", flexDirection: "column",
-        alignItems: "center", justifyContent: "center",
-        padding: "16px", gap: "10px",
-        fontFamily: "var(--font-ui)"
-      });
+      overlay.className = "setup-overlay";
 
       overlay.innerHTML = [
-        '<div style="width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#4f46e5,#06b6d4);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(99,102,241,0.4),0 8px 24px rgba(79,70,229,0.4);margin-bottom:2px">',
-          '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+        '<div class="setup-logo">',
+          '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
         '</div>',
-        '<div style="font-size:13px;font-weight:700;color:#f8fafc;letter-spacing:-0.2px">Start Figma Rust MCP Server</div>',
-        '<div style="font-size:10px;color:#94a3b8;text-align:center;max-width:240px;line-height:1.5">Run command in your project terminal:</div>',
+        '<div class="setup-title">Start Figma Rust MCP Server</div>',
+        '<div class="setup-desc">Run command in your project terminal:</div>',
 
-        '<div style="width:100%;background:#0f1118;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:3px">',
-          '<div style="font-size:8px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#475569">Option A · Run once</div>',
-          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#38bdf8;user-select:text">npx figma-rust-mcp</div>',
-        '</div>',
-
-        '<div style="width:100%;background:#0f1118;border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:3px">',
-          '<div style="font-size:8px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#475569">Option B · Auto-start ✦ Recommended</div>',
-          '<div style="font-family:\'SF Mono\',monospace;font-size:11.5px;font-weight:600;color:#10b981;user-select:text">npx figma-rust-mcp --install-service</div>',
-          '<div style="font-size:8.5px;color:#475569">Background service for Claude / IDE</div>',
+        '<div class="setup-opt">',
+          '<div class="setup-opt-label">Option A · Run once</div>',
+          '<div class="setup-opt-cmd">npx figma-rust-mcp</div>',
         '</div>',
 
-        '<div style="display:flex;align-items:center;gap:6px;font-size:9px;color:#475569">',
-          '<div style="width:5px;height:5px;border-radius:50%;background:#f59e0b;animation:pulse 1.4s ease-in-out infinite"></div>',
+        '<div class="setup-opt recommended">',
+          '<div class="setup-opt-label">Option B · Auto-start ✦ Recommended</div>',
+          '<div class="setup-opt-cmd">npx figma-rust-mcp --install-service</div>',
+          '<div class="setup-opt-note">Background service for Claude / IDE</div>',
+        '</div>',
+
+        '<div class="setup-wait">',
+          '<span class="dot yellow"></span>',
           'Plugin auto-connects once server is detected',
         '</div>',
 
-        '<button onclick="document.getElementById(\'setup-overlay\').remove();reconnect();" style="',
-          'margin-top:4px;padding:6px 18px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);',
-          'background:rgba(255,255,255,0.06);color:#f8fafc;font-size:10px;font-weight:600;cursor:pointer;',
-          'font-family:inherit;letter-spacing:0.1px',
-        '">Dismiss & Retry</button>'
+        '<button class="btn" style="margin-top:4px" onclick="document.getElementById(\'setup-overlay\').remove();reconnect();">Dismiss &amp; Retry</button>'
       ].join("");
 
       document.body.appendChild(overlay);
@@ -1536,13 +1435,15 @@
         }
       } catch(e) {}
 
-      var scanPorts = [38451, 38452, 38453, 38454, 38455].filter(function(p) { return p !== currentPort; });
+      var scanPorts = [];
+      for (var sp = 41730; sp < 41740; sp++) if (sp !== currentPort) scanPorts.push(sp);
       try {
         var winner = await Promise.any(scanPorts.map(function(p) {
           return fetch("http://localhost:" + p + "/health", { signal: AbortSignal.timeout(500) })
             .then(function(r) { if (!r.ok) throw new Error("not ok"); return p; });
         }));
         currentPort = winner;
+        window.__FIGMA_MCP_PORT = winner;
         BRIDGE = "http://localhost:" + winner;
         everConnected = true;
         consecutiveErrors = 0;
@@ -1671,6 +1572,7 @@
           var uiRes = await fetch("http://localhost:" + port + "/plugin/ui.html?t=" + Date.now());
           if (uiRes.ok) {
             var uiHtml = await uiRes.text();
+            window.__FIGMA_MCP_PORT = port;
             document.open();
             document.write(uiHtml);
             document.close();

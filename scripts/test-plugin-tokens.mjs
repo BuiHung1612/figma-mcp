@@ -218,8 +218,8 @@ test('agent setup detects installed clients and preserves existing JSONC and TOM
       configureAgent(agent);
       const config = parseJsonc(readFileSync(agent.configPath, 'utf8')).mcpServers['figma-rust-mcp'];
       assert.ok(config);
-      if (id === 'antigravity') assert.equal(config.serverUrl, 'http://127.0.0.1:38451/sse');
-      else assert.equal(config.url, 'http://127.0.0.1:38451/mcp');
+      if (id === 'antigravity') assert.equal(config.serverUrl, 'http://127.0.0.1:41730/sse');
+      else assert.equal(config.url, 'http://127.0.0.1:41730/mcp');
     }
 
     const cursor = agents.find(agent => agent.id === 'cursor');
@@ -229,21 +229,21 @@ test('agent setup detects installed clients and preserves existing JSONC and TOM
     const cursorConfig = parseJsonc(cursorText);
     assert.match(cursorText, /keep this note/);
     assert.equal(cursorConfig.mcpServers.other.url, 'http://example.test');
-    assert.equal(cursorConfig.mcpServers['figma-rust-mcp'].url, 'http://127.0.0.1:38451/mcp');
+    assert.equal(cursorConfig.mcpServers['figma-rust-mcp'].url, 'http://127.0.0.1:41730/mcp');
     assert.equal(configureAgent(cursor), false);
 
     const zed = agents.find(agent => agent.id === 'zed');
     writeFileSync(zed.configPath, '{\n  "theme": "One Dark",\n}\n');
     configureAgent(zed);
     assert.equal(parseJsonc(readFileSync(zed.configPath, 'utf8')).theme, 'One Dark');
-    assert.equal(parseJsonc(readFileSync(zed.configPath, 'utf8')).context_servers['figma-rust-mcp'].url, 'http://127.0.0.1:38451/mcp');
+    assert.equal(parseJsonc(readFileSync(zed.configPath, 'utf8')).context_servers['figma-rust-mcp'].url, 'http://127.0.0.1:41730/mcp');
 
     const codex = agents.find(agent => agent.id === 'codex');
     writeFileSync(codex.configPath, '[mcp_servers.other]\nurl = "http://other.test"\n');
     configureAgent(codex);
     const codexText = readFileSync(codex.configPath, 'utf8');
     assert.match(codexText, /\[mcp_servers\.other\]/);
-    assert.match(codexText, /\[mcp_servers\.figma-rust-mcp\]\nurl = "http:\/\/127\.0\.0\.1:38451\/mcp"/);
+    assert.match(codexText, /\[mcp_servers\.figma-rust-mcp\]\nurl = "http:\/\/127\.0\.0\.1:41730\/mcp"/);
     assert.equal(configureAgent(codex), false);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -539,10 +539,10 @@ test('old UI socket callbacks cannot clear or dispatch through a replacement soc
     close() {} send() {}
   }
   const r = vm.createContext({
-    ws: null, wsConnected: false, sessionId: null, fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:38451',
+    ws: null, wsConnected: false, sessionId: null, fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730',
     WebSocket: Socket, setInterval: () => 1, clearInterval: () => {}, setTimeout: () => 1, clearTimeout: () => {},
     sendRuntimeCapabilities: () => {}, consecutiveErrors: 0, everConnected: false, retryTimer: null, polling: true,
-    setStatus: () => {}, log: () => {}, currentPort: 38451, READ_OPS: [],
+    setStatus: () => {}, log: () => {}, currentPort: 41730, READ_OPS: [],
     startLongPoll: () => assert.fail('stale socket started poll'), dispatchToMain: req => dispatched.push(req),
   });
   vm.runInContext(source, r);
