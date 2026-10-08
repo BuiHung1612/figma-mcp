@@ -524,10 +524,11 @@ impl BridgeState {
                 if let (Some(key), Ok(data)) = (cache_key, &val) {
                     let mut inner = self.inner.lock().await;
                     if let Some(session) = inner.sessions.get_mut(&target_sid) {
-                        if session.cache_revision == cache_revision && !session.pending.values().any(|p| !is_read_operation(&p.op.operation)) {
-                            if operation != "read_nodes" || data["nextCursor"].is_null() {
-                                session.cache_read(key, data.clone());
-                            }
+                        if session.cache_revision == cache_revision
+                            && !session.pending.values().any(|p| !is_read_operation(&p.op.operation))
+                            && (operation != "read_nodes" || data["nextCursor"].is_null())
+                        {
+                            session.cache_read(key, data.clone());
                         }
                     }
                 }
