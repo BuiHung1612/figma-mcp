@@ -144,7 +144,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     },
                     "fields": { "type":"array", "items":{"type":"string","enum":["geometry","content","text","style","layout","tokens","component"]}, "minItems":1, "description":"Requested node groups; default geometry/content. Identity and topology are always returned." },
                     "cursor": { "type":"string", "description":"Opaque continuation from read_nodes. Send cursor and limit only; expired cursors require restarting." },
-                    "expandInstances": { "type":"boolean", "description":"Expand instance descendants; default false, instances report opaque=true." },
+                    "expandInstances": { "type":"boolean", "description":"Expand instance descendants; default false (instances report opaque=true); scan_design defaults true." },
                     "nodeId": { "type": "string", "description": "Target node ID (optional — omit to use current selection)." },
                     "nodeName": { "type": "string", "description": "Target node name (alternative to nodeId)." },
                     "scale": { "type": "number", "description": "Export scale for screenshot / export_image (default 1 for screenshot, 2 for export_image)." },
@@ -196,7 +196,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_index".to_string(),
-            description: "In-memory search against the pre-indexed Figma file (nodes, components, design tokens, styles). Detailed node data is read and cached on demand. Operations: 'status' (view index health and node counts), 'search_nodes' (instant text/type search), 'get_node' (node details by id), 'search_components' (find component sets & variants), 'search_styles' (find paint & text styles), 'search_variables' (find design tokens), 'refresh' (index page top-level layers or expand the given nodeId).".to_string(),
+            description: "In-memory search against the pre-indexed Figma file (nodes, components, design tokens, styles). Detailed node data is read and cached on demand. Operations: 'status' (view index health and node counts), 'search_nodes' (text/type search), 'get_node' (node details by id), 'search_components' (find component sets & variants), 'search_styles' (find paint & text styles), 'search_variables' (find design tokens), 'refresh' (index page top-level layers or expand the given nodeId).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

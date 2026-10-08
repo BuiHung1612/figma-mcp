@@ -228,6 +228,10 @@ handlers.scan_design = async function(params) {
   var scanIncludeHidden = !!(p.includeHidden);
   var instanceEntries = [];
   var nodeBudgetHit = false;
+  // A summary scan exists to collect text/icons/images, which mostly live inside
+  // instances — so expand by default; callers opt out with expandInstances:false.
+  var expand = p.expandInstances !== false;
+  var opaqueInstances = 0;
 
   // section = the top-level child whose subtree we are inside (null at the root)
   function walkCount(node, section) {
@@ -324,7 +328,10 @@ handlers.scan_design = async function(params) {
     }
 
     // Recurse
-    if (node.type === "INSTANCE" && p.expandInstances !== true) return;
+    if (node.type === "INSTANCE" && !expand) {
+      if ("children" in node && node.children.length) opaqueInstances++;
+      return;
+    }
     var children = "children" in node ? node.children : [];
     if (Array.isArray(children)) {
       for (var i = 0; i < children.length && !nodeBudgetHit; i++) walkCount(children[i], section);
@@ -334,7 +341,7 @@ handlers.scan_design = async function(params) {
   // Build the sections up front so the walk can attribute icons/images/text to
   // the top-level child they actually live under.
   withInstanceVisibility(scanIncludeHidden, function() {
-    var rootChildren = root.type === "INSTANCE" && p.expandInstances !== true ? [] : ("children" in root ? root.children : []);
+    var rootChildren = root.type === "INSTANCE" && !expand ? [] : ("children" in root ? root.children : []);
     if (Array.isArray(rootChildren) && "children" in root) {
       summary.totalNodes++;  // the root itself
       for (var ci = 0; ci < rootChildren.length && !nodeBudgetHit; ci++) {
@@ -373,6 +380,7 @@ handlers.scan_design = async function(params) {
     imageNodes: totals.imageNodes,
     iconNodes: totals.iconNodes,
     instances: totals.instances,
+    opaqueInstances: opaqueInstances,
     uniqueColors: colorEntries.length,
     uniqueFonts: fontEntries.length,
   };
@@ -385,6 +393,7 @@ handlers.scan_design = async function(params) {
   if (colorEntries.length > summary.allColors.length) truncated.allColors = true;
   if (fontEntries.length > summary.allFonts.length)  truncated.allFonts = true;
   if (nodeBudgetHit) truncated.nodes = true;
+  if (opaqueInstances) truncated.instances = true;
   if (Object.keys(truncated).length) {
     summary.truncated = truncated;
     summary.truncatedHint = "Lists above are capped — compare with `totals` and re-scan a specific section id for the rest.";
@@ -392,6 +401,7 @@ handlers.scan_design = async function(params) {
   summary.complete = Object.keys(truncated).length === 0;
   summary.precision = precise ? "exact" : "rounded";
   summary.warnings = [];
+  if (opaqueInstances) summary.warnings.push(opaqueInstances + " instances were not expanded, so their text/icons/images are missing; re-scan without expandInstances:false.");
   if (!summary.complete) summary.warnings.push("Scan output is capped or hit maxNodes; use totals and re-scan sections for complete data.");
 
   return summary;

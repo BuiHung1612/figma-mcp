@@ -53,6 +53,20 @@ test('compact tree and scan preserve mixed typography instead of using the first
   assert.equal(r.resolveTextStyle(node).fontWeight, undefined);
 });
 
+test('scan_design expands instances by default and flags opaque ones as incomplete', async () => {
+  const text = { id: '1:3', name: 'Label', type: 'TEXT', characters: 'Hi', fontSize: 12, fontName: { family: 'Inter', style: 'Regular' }, visible: true };
+  const inst = { id: '1:2', name: 'Button', type: 'INSTANCE', visible: true, children: [text], getMainComponentAsync: async () => null };
+  const frame = { id: '1:1', name: 'Frame', type: 'FRAME', visible: true, children: [inst] };
+  const r = runtime({ root: { id: '0:0' }, currentPage: { id: '0:1' }, getNodeByIdAsync: async () => frame });
+  const full = plain(await r.handlers.scan_design({ id: '1:1' }));
+  assert.equal(full.totals.textNodes, 1);
+  assert.equal(full.complete, true);
+  const opaque = plain(await r.handlers.scan_design({ id: '1:1', expandInstances: false }));
+  assert.equal(opaque.totals.textNodes, 0);
+  assert.equal(opaque.totals.opaqueInstances, 1);
+  assert.equal(opaque.complete, false);
+});
+
 test('equivalent CSS syntaxes preserve alpha in reads and writes', () => {
   const r = runtime();
   for (const color of ['rgba(255, 0, 0, .5)', 'rgb(100% 0% 0% / 50%)', 'hsl(0 100% 50% / .5)', 'hsla(0, 100%, 50%, .5)']) {
