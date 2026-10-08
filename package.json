@@ -1,6 +1,6 @@
 {
   "name": "figma-rust-mcp",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Claude Code to Figma — Bidirectional MCP bridge. AI draws UI on Figma canvas, reads designs back. Works with Claude, Cursor, VS Code, Windsurf, Antigravity. No API key needed.",
   "mcpName": "io.github.BuiHung1612/figma-rust-mcp",
   "type": "module",

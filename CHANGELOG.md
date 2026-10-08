@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.0.1] — 2026-10-08
+
+### Fixed
+- Collapse a nested `if` in the bridge read-cache path to satisfy `clippy::collapsible_if` (CI fix; no behavior change).
+
 ## [4.0.0] ? 2026-10-07
 
 ### Breaking changes
