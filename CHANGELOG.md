@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [4.1.0] — 2026-10-08
 
 ### Added
 - `POST /benchmark` in-process report (startup, RSS, MCP dispatch, index search, plugin round trip), a **Bench** tab in the plugin UI, and `npm run bench` (adds external cold-start and binary size).
