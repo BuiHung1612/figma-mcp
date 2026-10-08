@@ -1,102 +1,36 @@
-# 🗺️ Figma Rust MCP Roadmap (v2.9.0 → v3.0.0)
+# 🗺️ Figma Rust MCP Roadmap
 
-> Strategic optimization roadmap for **figma-rust-mcp** focusing on **Workflow Ergonomics**, **Rust Engine Performance**, and **AI / LLM Context Intelligence**.
-
----
-
-## 📊 Roadmap Overview
-
-```mermaid
-gantt
-    title Figma Rust MCP Strategic Roadmap
-    dateFormat  YYYY-MM-DD
-    section Phase 1 (v2.9.0)
-    Semantic AST Token Pruner        :active, 2026-08-26, 7d
-    Annotated Visual Screenshots     :2026-09-02, 7d
-    Shadcn/UI & Radix Component Map  :2026-09-09, 7d
-    section Phase 2 (v2.9.5)
-    Realtime Selection Streaming    :2026-09-16, 7d
-    Viewport-First Partial Indexing  :2026-09-23, 7d
-    Delta Diff Updates Engine        :2026-09-30, 7d
-    section Phase 3 (v3.0.0)
-    Code-to-Figma Live Canvas Preview:2026-10-07, 10d
-    1-Click Design System Scaffolder :2026-10-17, 7d
-    Zero-Copy Local Asset Server     :2026-10-24, 7d
-```
+> Current release: **v4.0.1**. Shipped detail lives in [CHANGELOG.md](CHANGELOG.md); this file only tracks what is next.
 
 ---
 
-## 🎯 Phase 1: AI & Context Optimization (v2.9.0)
-*Target: Maximize LLM code generation precision & cut context token usage by another 40%.*
+## ✅ Shipped (v2.9 → v4.0)
 
-- [x] **1.1. Semantic AST Token Pruning (`codegen.rs`)**
-  - Strip redundant layout defaults (`opacity: 1`, `visible: true`, `padding: 0`, `blendMode: PASS_THROUGH`).
-  - Compress output into token-optimized clean specifications (`clean-spec` pseudo-JSX format).
-  - Reduce LLM prompt token footprint for large trees.
+- Semantic AST pruning and `clean-spec` output for `figma_to_code`
+- Annotated screenshots (`withAnnotations`)
+- Shadcn/UI & Radix component mapping (`framework="react-shadcn"`)
+- Responsive breakpoint & flex inference
+- Realtime selection streaming over WebSocket
+- Scoped, viewport-first indexing with revisioned delta updates (v4.0.0)
+- Local asset server (`/assets/*path`)
 
-- [x] **1.2. Annotated Screenshots with Bounding-Box Overlays**
-  - Add `withAnnotations: true` to `screenshot` and `figma_read`.
-  - Automatically extract structured bounding-box coordinates and numbered index labels (`[1] Navbar`, `[2] Hero CTA`, `[3] Card`) onto exported screenshot metadata.
-  - Enable multimodal models (Gemini / Claude) to cross-reference visual layout directly with code tree.
+## 🧭 Next
 
-- [x] **1.3. Smart Component Mapping (Shadcn/UI & Radix)**
-  - Enhance `figma_to_code` to detect standard design system patterns (Buttons, Badges, Dialogs, Avatars, Inputs, Cards).
-  - Automatically map Figma variants to Shadcn UI / Tailwind component imports (`@/components/ui/button`, `@/components/ui/card`, etc.) via `framework="react-shadcn"`.
+- [ ] **Code-to-Figma live preview (`figma_preview_code`)** — render a generated React/HTML/Tailwind snippet into a temporary `[AI Preview]` frame for visual review before commit.
+- [ ] **Design system scaffolder (`figma_scaffold_project`)** — one call writes `src/components/ui/*`, tokens, `tailwind.config.ts` and `globals.css` from the open file.
+- [ ] **Multi-file design system sync** — cross-file libraries and shared variable collections across open tabs.
 
-- [x] **1.4. Responsive Breakpoint & Flex Inference**
-  - Infer Tailwind responsive classes (`flex-col md:flex-row`, `flex-wrap`, `flex-1`, `w-full`, `max-w-screen-xl`) using Figma AutoLayout constraints and min/max width rules.
+## 📏 Performance claims
 
----
+Numbers in docs come from `npm run bench` or the plugin **Bench** tab, never estimates.
+See the Benchmarks section of the [README](README.md#-benchmarks).
 
-## ⚡ Phase 2: Realtime Engine & Memory Scaling (v2.9.5)
-*Target: Zero-latency developer experience for massive (>50,000 layers) design systems.*
+## 🏷️ Release policy
 
-- [x] **2.1. Realtime Selection Event Streaming**
-  - Figma plugin broadcasts `selectionchange` events directly via WebSocket to Rust memory.
-  - Server caches `active_selection` in real time.
-  - Calling `figma_inspect_node` and `figma_get_selection` without arguments immediately returns the active node without canvas latency (< 0.05ms).
-
-- [x] **2.2. Viewport-First Partial Indexing**
-  - Prioritize indexing visible frames inside the active designer viewport and Main Components.
-  - Background lazy-loading for distant canvas sections and pages.
-
-- [x] **2.3. Fine-Grained Delta Diff Engine**
-  - Send lightweight delta updates `{ id: "123:45", diff: { fills: [...] } }` instead of full node trees upon canvas edits.
-  - Apply in-memory patch in `< 0.1ms` via `apply_delta`.
-
-- [x] **2.4. Zero-Copy Local Asset Server**
-  - Expose a fast static asset route (`/assets/*path`) for high-res images and SVGs.
-  - Eliminate base64 string bloat across the bridge.
-
----
-
-## 🚀 Phase 3: Bidirectional Ecosystem & Workflows (v3.0.0)
-*Target: Complete two-way bridge between codebases and Figma.*
-
-- [ ] **3.1. Code-to-Figma Live Canvas Preview (`figma_preview_code`)**
-  - AI takes generated React/HTML/Tailwind snippet, parses AST, and renders it back onto a temporary Figma canvas frame `[AI Preview]`.
-  - Allows instant visual verification inside Figma Desktop before code is committed.
-
-- [ ] **3.2. 1-Click Design System Scaffolder (`figma_scaffold_project`)**
-  - One MCP command to inspect the entire Figma file and scaffold project directory:
-    - `src/components/ui/*`
-    - `src/tokens/*`
-    - `tailwind.config.ts`
-    - `globals.css`
-
-- [ ] **3.3. Multi-File Design System Sync**
-  - Support cross-file library dependencies and shared variable collections across multi-tab Figma workspaces.
-
----
-
-## 📈 Tracking & Milestones
-
-| Milestone | Status | Target Date | Key Deliverables |
-| :--- | :---: | :---: | :--- |
-| **v2.8.5** | ✅ Released | 2026-08-26 | `figma_to_code`, `figma_get_tokens`, `figma_export_assets`, In-Memory Fast Indexing, `@latest` hot-reload daemon |
-| **v2.9.0** | 🚧 Planning | 2026-09-09 | Clean AST Pruning, Annotated Visual Screenshots, Shadcn/UI Mapper |
-| **v2.9.5** | ⏳ Backlog | 2026-09-30 | Realtime Selection Streaming, Viewport-First Indexing, Delta Diffs |
-| **v3.0.0** | ⏳ Backlog | 2026-10-24 | Bidirectional `figma_preview_code`, 1-Click Project Scaffolding |
+- Patch: fixes only, no tool schema or response shape changes.
+- Minor: additive tools/fields; batch features into one minor instead of a release per change.
+- Major: any breaking change to tool names, parameters or response contracts — listed under **Breaking** in the changelog.
+- `--upgrade` stays on the installed major (`npm install -g figma-rust-mcp@4`); a new major is announced and needs an explicit `@latest` install.
 
 ---
 

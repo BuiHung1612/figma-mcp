@@ -9,7 +9,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 ## ⚡ Highlights
 
 - **Lossless Rust Tree Compression**: Compact/minimal tree responses share identical style bundles when the complete JSON becomes smaller. Node IDs, hierarchy, text, geometry and state differences remain intact. Full detail bypasses Rust compression; no heuristic merging of screens or repeated items.
-- **Pure Rust Native Performance**: Starts in `< 1ms`, uses `~3MB RAM`, zero GC pauses.
+- **Pure Rust Native Performance**: Single native binary, no runtime or GC. Measure it on your machine with `npm run bench` or the plugin's **Bench** tab (see [Benchmarks](#-benchmarks)).
 - **Scoped In-Memory Index (`figma_index`)**: Indexes page roots first and loads frame descendants on demand. Search reports the indexed scope and completeness.
 - **Binary IPC & Chunk Streaming**: Powered by **MessagePack** (`rmp-serde`) and progressive subtree chunking for instant transfers of massive design files.
 - **Revisioned Updates**: Property patches update affected nodes; revision gaps trigger a fresh snapshot.
@@ -30,7 +30,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 │                       figma-rust-mcp (Pure Rust Engine)                     │
 │  • MCP Streamable HTTP (/mcp) & legacy SSE (/sse, /message)             │
 │  • Dynamic Runtime Server (/plugin/code.js, /plugin/ui.html)           │
-│  • In-Memory Fast Index (<1ms Lookups & Incremental Diffs)             │
+│  • In-Memory Fast Index (Scoped Lookups & Incremental Diffs)           │
 │  • Design-to-Code Compiler (React/Tailwind, Vue, RN, SwiftUI)          │
 │  • Design Token Transformer (CSS, Tailwind, TypeScript, W3C DTCG)      │
 │  • Sandboxed JS Runtime (Boa ECMAScript Engine)                        │
@@ -283,7 +283,7 @@ Batch extracts all SVG icons and PNG images from a Figma frame/page directly int
 - **`createBarrel`**: Automatically creates an `index.ts` barrel export file in `iconDir`.
 
 ### 8. `figma_index`
-Instant `< 1ms` in-memory queries against pre-indexed Figma file structures.
+In-memory queries against pre-indexed Figma file structures (latency for your file: plugin **Bench** tab).
 - **`operation`**:
   - `"status"`: View index health and node counts.
   - `"search_nodes"`: Search nodes by text name, query, and type (`FRAME`, `TEXT`, `COMPONENT`, `INSTANCE`).
@@ -315,7 +315,7 @@ Executes JavaScript draw commands inside the sandboxed VM to build or modify des
 - Supports Prototyping & Reactions: `setReactions`, `getReactions`, `setScrollBehavior`.
 
 ### 11. `figma_rules`
-Audits the current Figma document and generates a complete design system rule sheet (color tokens, typography styles, variables, component catalog) in `< 1ms` from cache.
+Audits the current Figma document and generates a complete design system rule sheet (color tokens, typography styles, variables, component catalog) from the in-memory cache.
 
 ### 12. `figma_docs`
 Fetches built-in documentation, design rules, layout guidelines, and code examples for `figma_write`.
@@ -418,6 +418,24 @@ Structural additions mark coverage incomplete until the scope is reread.
 Revision gaps request resynchronization. Page switches rebuild the shallow
 index without preloading every page. Exact-read caching evicts one least
 recently used entry when its 64-entry capacity is reached.
+
+## 📏 Benchmarks
+
+`npm run bench` builds the release binary, spawns it on a random port and prints:
+
+| Metric | How it is measured |
+|---|---|
+| Cold start | `spawn` → first successful `GET /health`, from outside the process |
+| Startup | `main()` entry → HTTP listener bound |
+| RAM | Resident set size (macOS/Linux; not reported on Windows) |
+| MCP `tools/list` | 200 in-process dispatches, p50/p95 |
+| Index search | 200 searches over the current tab's index, p50/p95 (plugin tab only) |
+| Plugin round trip | 10 `get_viewport` calls through Figma, p50/p95 (plugin tab only) |
+
+The plugin's **Bench** tab runs the same report (`POST /benchmark`) against the
+live server, so index and plugin numbers reflect your real file. Sample run on an
+Apple Silicon Mac (v4.0.1): cold start 45–530ms, startup 26–126ms, RSS ~7.6MB,
+`tools/list` p50 0.07ms. Your numbers will differ; quote your own.
 
 ## 💻 Development & Testing
 

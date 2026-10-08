@@ -1,3 +1,5 @@
+pub mod bench;
+pub mod http;
 pub mod index;
 pub mod proxy;
 pub mod server;
@@ -153,8 +155,9 @@ pub async fn start_bridge_server(port: u16) -> Result<(BridgeState, u16), String
 
         match TcpListener::bind(addr_v4).await {
             Ok(listener_v4) => {
+                bench::mark_ready();
                 let state = BridgeState::new(current_port);
-                let app = server::create_router(state.clone());
+                let app = http::create_router(state.clone());
 
                 let app_v4 = app.clone();
                 tokio::spawn(async move {

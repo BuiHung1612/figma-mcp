@@ -107,7 +107,7 @@ figma.on("selectionchange", function() {
       var selectedId = sel[0].id;
       selectionIndexTimer = setTimeout(function() {
         if (figma.currentPage.selection[0] && figma.currentPage.selection[0].id === selectedId) {
-          handlers.index_scan({ id: selectedId, deferComponents: true }).catch(function() {});
+          handlers.index_scan({ id: selectedId, deferComponents: true, silent: true }).catch(function() {});
         }
       }, 150);
     }

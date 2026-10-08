@@ -435,6 +435,14 @@ function isNewer(latest, current) {
   return false;
 }
 
+// --upgrade stays on the installed major; a new major is announced but never auto-installed.
+function updateNotice(latest) {
+  if (latest.split('.')[0] !== pkgVersion.split('.')[0]) {
+    return `\n\x1b[36m⚡ v${latest} is a new major release with breaking changes (see CHANGELOG).\x1b[0m\n\x1b[36m   Opt in: npm install -g figma-rust-mcp@latest\x1b[0m\n\n`;
+  }
+  return `\n\x1b[36m⚡ Update available: v${pkgVersion} → v${latest}\x1b[0m\n\x1b[36m   Run: npx figma-rust-mcp --upgrade\x1b[0m\n\n`;
+}
+
 function checkForUpdatesAsync() {
   const updateStateFile = path.join(os.homedir(), '.figma-rust-mcp', 'update-check.json');
   try {
@@ -443,7 +451,7 @@ function checkForUpdatesAsync() {
       const now = Date.now();
       if (state.lastChecked && (now - state.lastChecked < 6 * 3600 * 1000)) {
         if (state.latestVersion && isNewer(state.latestVersion, pkgVersion)) {
-          process.stderr.write(`\n\x1b[36m⚡ Update available: v${pkgVersion} → v${state.latestVersion} (Run: npx figma-rust-mcp --upgrade)\x1b[0m\n\n`);
+          process.stderr.write(updateNotice(state.latestVersion));
         }
         return;
       }
@@ -467,7 +475,7 @@ function checkForUpdatesAsync() {
             latestVersion: latest
           }, null, 2));
           if (latest && isNewer(latest, pkgVersion)) {
-            process.stderr.write(`\n\x1b[36m⚡ Update available: v${pkgVersion} → v${latest}\x1b[0m\n\x1b[36m   Run: npx figma-rust-mcp --upgrade\x1b[0m\n\n`);
+            process.stderr.write(updateNotice(latest));
           }
         }
       } catch (_) {}
@@ -480,8 +488,9 @@ function checkForUpdatesAsync() {
 async function upgrade() {
   console.log('\x1b[36m[figma-rust-mcp]\x1b[0m Checking for updates and upgrading figma-rust-mcp...');
   try {
-    execSync('npm install -g figma-rust-mcp@latest', { stdio: 'inherit' });
-    console.log('\x1b[32m✓ Upgraded figma-rust-mcp to latest version.\x1b[0m');
+    const major = pkgVersion ? pkgVersion.split('.')[0] : 'latest';
+    execSync(`npm install -g figma-rust-mcp@${major}`, { stdio: 'inherit' });
+    console.log(`\x1b[32m✓ Upgraded figma-rust-mcp (${major === 'latest' ? 'latest' : `v${major}.x`}).\x1b[0m`);
     setupPlugin();
     if (isServiceInstalled()) {
       console.log('\x1b[36mUpdating background service binary...\x1b[0m');

@@ -20,6 +20,7 @@
     "test": "./scripts/test-rust-mcp.sh",
     "test:tokens": "node --test scripts/test-plugin-tokens.mjs && cargo test",
     "dev": "cargo run",
+    "bench": "cargo build --release && node scripts/bench.mjs",
     "test:sessions": "cargo build && node --test scripts/test-bridge-sessions.mjs"
   },
   "engines": {

@@ -798,16 +798,17 @@ handlers.index_scan = async function(params) {
     if (existingKey === key) return existing;
   }
   indexScanKey = key;
-  indexScanTask = runIndexScan(options);
+  // silent: background scope expansion (selection) — data still streams to the server, the UI shows nothing.
+  indexScanTask = runIndexScan(options, p.silent === true);
   try { return await indexScanTask; } finally { indexScanTask = null; }
 };
 
-async function runIndexScan(options) {
+async function runIndexScan(options, silent) {
   var page = figma.currentPage, startMs = Date.now(), scanId = "scan:" + (++indexScanSequence);
   var request = Object.assign({}, options, { fields: ["geometry", "content"], limit: 500 });
   var pageNodes = [], revision = nodeRevision;
   function post(message) {
-    if (figma.ui && figma.currentPage.id === page.id) figma.ui.postMessage(Object.assign({ pageId: page.id, scanId: scanId, revision: revision }, message));
+    if (figma.ui && figma.currentPage.id === page.id) figma.ui.postMessage(Object.assign({ pageId: page.id, scanId: scanId, revision: revision, silent: silent }, message));
   }
   try {
     var read = await handlers.read_nodes(request);

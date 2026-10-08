@@ -180,6 +180,7 @@ fn start_background() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    bridge::bench::mark_process_start();
     let args = Args::parse();
 
     #[cfg(target_os = "windows")]

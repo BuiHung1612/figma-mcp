@@ -1,11 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `POST /benchmark` in-process report (startup, RSS, MCP dispatch, index search, plugin round trip), a **Bench** tab in the plugin UI, and `npm run bench` (adds external cold-start and binary size).
+
+### Fixed
+- `figma_write` sandbox caps each loop at 1,000,000 iterations, so `while (true) {}` returns an error instead of pinning a blocking thread forever.
+- RAM is reported as unavailable on Windows instead of a hard-coded 3.2MB.
+- README performance claims replaced with measured numbers and how to reproduce them.
+- Selecting a frame no longer flashes the index progress bar, "Indexed in Xms" toast and log line; selection-scoped background scans are silent in the plugin UI (data still reaches the server).
+
+### Changed
+- `--upgrade` installs the newest release of the current major; a new major is announced but needs an explicit `@latest` install.
+- CI runs clippy on test code too (`--all-targets`).
+- Split `bridge/server.rs` (HTTP handlers → `bridge/http.rs`) and `mcp/server.rs` (large tools → `mcp/read_tools.rs`, `mcp/project_tools.rs`); no behavior change.
+
 ## [4.0.1] — 2026-10-08
 
 ### Fixed
 - Collapse a nested `if` in the bridge read-cache path to satisfy `clippy::collapsible_if` (CI fix; no behavior change).
 
-## [4.0.0] ? 2026-10-07
+## [4.0.0] — 2026-10-07
 
 ### Breaking changes
 - Require plugin protocol 3; update and restart the server and plugin together.
@@ -50,7 +66,7 @@
 - Fix dynamic runtime bootstrap reopening the thin-loader iframe and interrupting UI loading.
 - Keep UI ownership in the thin loader; add a regression check for iframe replacement.
 
-## [3.2.11] ? 2026-10-05
+## [3.2.11] — 2026-10-05
 
 - Cache exact reads in Rust and update/invalidate related node subtrees on canvas changes.
 - Add on-demand subtree reads, compact typography tables, cache counters and tool timings.

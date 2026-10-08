@@ -18,7 +18,8 @@ use std::cell::RefCell;
 use std::sync::mpsc::{channel as sync_channel, Sender as SyncSender};
 use std::sync::Arc;
 
-pub const TIMEOUT_MS: u64 = 30_000;
+/// Per-loop iteration cap so a runaway `while (true) {}` errors out instead of pinning a blocking thread forever.
+pub const LOOP_ITERATION_LIMIT: u64 = 1_000_000;
 
 pub enum HostRequest {
     Op {
@@ -163,6 +164,7 @@ pub async fn execute_code(
         });
 
         let mut context = Context::default();
+        context.runtime_limits_mut().set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
 
         // Register __host_console
         let console_fn = NativeFunction::from_copy_closure(|_this, args, _ctx| {
@@ -461,5 +463,18 @@ figma.loadIconIn = async (iconName, opts = {}) => {
         result,
         error,
         logs: captured_logs,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn runaway_loop_fails_instead_of_hanging() {
+        let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));
+        let res = tokio::time::timeout(std::time::Duration::from_secs(30), super::execute_code("while (true) {}", bridge, None))
+            .await
+            .expect("sandbox must stop runaway loops");
+        assert!(!res.success);
+        assert!(res.error.unwrap_or_default().to_lowercase().contains("loop"));
     }
 }

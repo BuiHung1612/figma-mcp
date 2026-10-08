@@ -887,9 +887,7 @@ mod tests {
 
     #[test]
     fn streamed_flat_nodes_index_descendants_and_direct_typography() {
-        let mut index = FigmaIndex::default();
-        index.page_id = Some("page-1".into());
-        index.dirty = true;
+        let mut index = FigmaIndex { page_id: Some("page-1".into()), dirty: true, ..Default::default() };
         index.merge_chunk(&[
             json!({"id":"root","name":"Frame","type":"FRAME","parentId":null,"childIds":["child"]}),
             json!({"id":"child","name":"Label","type":"TEXT","parentId":"root","childIds":[],"content":"Searchable","textStyle":{"fontFamily":"Inter"},"fontSize":15.5,"fontWeight":"Demi"}),
