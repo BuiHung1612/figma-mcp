@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.0.2] — 2026-10-08
+
+### Fixed
+- UI lifecycle regression test handles both LF and Windows CRLF checkout line endings, preventing the Windows release build from failing.
+
 ## [5.0.1] — 2026-10-08
 
 ### Fixed

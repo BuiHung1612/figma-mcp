@@ -739,9 +739,9 @@ test('style names share in-flight reads and refresh after invalidation or a fail
   assert.equal((await r.getStyleNameMapAsync()).Paint, 'Newest');
 });
 
-test('UI reload clears previous timers, listeners and socket while keeping inline controls available', () => {
+for (const lineEnding of ['\n', '\r\n']) test(`UI reload clears previous timers, listeners and socket while keeping inline controls available (${lineEnding === '\n' ? 'LF' : 'CRLF'})`, () => {
   const html = readFileSync('plugin-runtime/ui.html', 'utf8');
-  const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const source = html.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/\r?\n/g, lineEnding);
   const timers = new Set();
   let timerId = 0, socketCloses = 0, cancelledRaf = 0;
   const elements = new Map();
@@ -778,7 +778,9 @@ test('UI reload clears previous timers, listeners and socket while keeping inlin
     console, navigator: {}, fetch: () => new Promise(() => {}), parent: { postMessage() {} },
     requestAnimationFrame: () => 42, cancelAnimationFrame: () => cancelledRaf++ });
   for (let i = 0; i < 3; i++) {
-    vm.runInContext(source.replace("\n    initConnection();\n", "\n    sessionId = 's'; connectWs();\n"), r);
+    const entryPoint = /^( {4})initConnection\(\);(?=\r?$)/m;
+    assert.match(source, entryPoint, 'startup entry point must be replaced by the socket fixture');
+    vm.runInContext(source.replace(entryPoint, "$1sessionId = 's'; connectWs();"), r);
     assert.equal(timers.size, 1, 'only current stats interval remains');
     assert.equal(window.listeners.get('focus').size, 1);
     assert.equal(document.listeners.get('keydown').size, 1);
