@@ -64,6 +64,8 @@ handlers.read_nodes = async function(params) {
   }
   var limit = p.limit === undefined ? 200 : p.limit;
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("limit must be an integer from 1 to 500");
+  var maxBytes = p.maxBytes;
+  if (maxBytes !== undefined && (!Number.isInteger(maxBytes) || maxBytes < 1024 || maxBytes > 1000000)) throw new Error("maxBytes must be an integer from 1024 to 1000000");
   var state;
   if (p.cursor !== undefined) {
     if (typeof p.cursor !== "string" || !nodeReadCursors.has(p.cursor)) throw new Error("Cursor expired; start a new read_nodes request");
@@ -96,11 +98,11 @@ handlers.read_nodes = async function(params) {
       stack: [{ children: roots, next: 0, depth: 0, parentId: root === page || !root.parent || root.parent.type === "PAGE" ? null : root.parent.id }] };
   }
   if (state.pageId !== figma.currentPage.id || state.revision !== nodeRevision) throw new Error("Cursor expired after a page or document change");
-  var nodes = [], instances = [];
-  while (state.stack.length && nodes.length < limit && state.visited < 50000) {
+  var nodes = [], instances = [], bytes = 0, byteLimitReached = false;
+  while (state.stack.length && nodes.length < limit && state.visited < 50000 && !byteLimitReached) {
     var started = Date.now();
     withInstanceVisibility(state.options.includeHidden, function() {
-      while (state.stack.length && nodes.length < limit && state.visited < 50000) {
+      while (state.stack.length && nodes.length < limit && state.visited < 50000 && !byteLimitReached) {
         if (Date.now() - started >= 8) break;
         var cursor = state.stack[state.stack.length - 1];
         if (cursor.next >= cursor.children.length) { state.stack.pop(); continue; }
@@ -110,6 +112,9 @@ handlers.read_nodes = async function(params) {
         var children = !opaque && "children" in node ? node.children : [];
         var info = readNodeRecord(node, children, cursor.parentId, state.options.fields, opaque);
         info.childrenLoaded = !opaque && (!children.length || cursor.depth < state.options.depth);
+        var size = JSON.stringify(info).replace(/[\u0080-\u07ff]/g, "xx").replace(/[\u0800-\uffff]/g, "xxx").length;
+        if (maxBytes !== undefined && nodes.length && bytes + size > maxBytes) { cursor.next--; byteLimitReached = true; break; }
+        bytes += size;
         nodes.push(info);
         state.visited++;
         if (node.type === "INSTANCE" && state.options.fields.indexOf("component") !== -1) instances.push({ info: info, node: node });
@@ -119,7 +124,7 @@ handlers.read_nodes = async function(params) {
         if (Date.now() - started >= 8) break;
       }
     });
-    if (state.stack.length && nodes.length < limit) await yieldToUI(0);
+    if (state.stack.length && nodes.length < limit && !byteLimitReached) await yieldToUI(0);
     if (state.pageId !== figma.currentPage.id || state.revision !== nodeRevision) throw new Error("Document changed during read; retry read_nodes");
   }
   // Remove exhausted ancestors so the final page does not need an empty follow-up.
@@ -135,5 +140,6 @@ handlers.read_nodes = async function(params) {
   }
   return { schemaVersion: 4, pageId: state.pageId, revision: state.revision, scope: state.options,
     nodes: nodes, nextCursor: nextCursor, complete: !state.stack.length, totalRead: state.visited,
+    byteLimitReached: byteLimitReached, oversizedNode: maxBytes !== undefined && bytes > maxBytes,
     budgetReached: state.stack.length > 0 && state.visited >= 50000, componentResolution: componentResolution };
 };

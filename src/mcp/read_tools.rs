@@ -15,6 +15,10 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
         None => return ToolResult::error("'operation' is required"),
     };
 
+    if raw_operation == "get_spec" {
+        return super::spec::get_spec(bridge, args).await;
+    }
+
     let operation = match raw_operation {
         "get_design" | "get_node_detail" | "get_design_context" | "read_nodes" | "inspect_node" | "inspect" | "get_node_info" | "node_detail" => "read_nodes",
         "get_tokens" | "tokens" if args.get("format").is_some() => "get_tokens",
@@ -61,7 +65,7 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
             }
         }
         return match bridge.send_operation("read_nodes", op_params, session_id).await {
-            Ok(data) => ToolResult::text(data.to_string()),
+            Ok(data) => ToolResult::text(crate::mcp::semantic_optimizer::compress_tree(&data, args["detail"].as_str().is_some_and(|d| d != "full")).to_string()),
             Err(error) => ToolResult::error(error),
         };
     }

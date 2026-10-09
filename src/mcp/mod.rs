@@ -6,6 +6,7 @@ pub mod project_tools;
 pub mod protocol;
 pub mod read_tools;
 pub mod semantic_optimizer;
+pub mod spec;
 pub mod server;
 pub mod state_engine;
 pub mod tokens;

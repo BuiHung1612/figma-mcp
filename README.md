@@ -487,3 +487,21 @@ node scripts/build-plugin.js
 ## 📄 License
 
 MIT © [BuiHung1612](https://github.com/BuiHung1612) — Free to use, modify, and distribute. See [LICENSE](LICENSE) for details.
+
+### Bounded design specs
+
+Use `figma_read` with `operation: "get_spec"` instead of loading a full frame into the model context:
+
+```json
+{"operation":"get_spec","nodeId":"1467:84778","mode":"overview","sessionId":"<tab-id>"}
+```
+
+- `overview` defaults to depth 2, returning section IDs for discovery. It does **not** claim deep text coverage.
+- Read each section with `mode: "spec"`; `mode: "detail"` reads one node at depth 0. `fields` can select geometry/layout or content/text independently.
+- `maxBytes` defaults to 24000 raw node bytes per page. Continue `nextCursor` with the same `sessionId`, mode and optional byte budget. No records are dropped. A single large node, response metadata and resolved component references can exceed this target.
+- Exact repeated style bundles use `_compression.styles`; repeated node properties use `templates`. Decode template references first, then style references. Identity, topology, copy, geometry, variants and mixed text remain reconstructable. This is property sharing, not heuristic merging of visually similar subtrees.
+- `coverage.subtreeComplete` distinguishes a complete deep read from exhausted pagination at a shallow depth. Counts describe the returned page, not unread descendants.
+- Pass `outputPath` on a fresh request to save **all pages of the requested scope** as raw JSON and return only coverage/path. A shallow overview export remains shallow. Raw data is also available through the existing session cache and node-ID reads.
+- Existing `read_nodes` remains raw by default; `detail: "compact"` enables lossless shared-style compression. It also accepts `maxBytes`.
+
+`figma_prepare_design` now follows expanded instance pagination for text and reports separate text/asset coverage. Default compact output omits the redundant `colorPalette`; use `detail: "full"` to retain it. Pass `outputPath` to save the grounding pack plus raw design records outside context. Asset export caps and failures are reported; exported icons do not imply all assets were inspected.

@@ -236,26 +236,22 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
         return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
     }
 
-    // 1. Fetch deep design context
-    let mut op_params = json!({});
-    if let Some(id) = node_id {
-        op_params["id"] = json!(id);
-    }
-    op_params["expandInstances"] = json!(true);
-    let design_context = match bridge.send_operation("get_design_context", op_params, session_id).await {
+    let mut params = json!({"depth":"full","expandInstances":true,"limit":500,
+        "fields":["geometry","content","text","style","layout","tokens","component"]});
+    if let Some(id) = node_id { params["id"] = json!(id); }
+    let design_context = match super::spec::read_all(&bridge, params, session_id).await {
         Ok(data) => data,
         Err(e) => return ToolResult::error(format!("Failed to retrieve design context: {}", e)),
     };
-
-    let resolved_id = design_context.get("nodeId")
-        .or_else(|| design_context.get("id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let resolved_name = design_context.get("name").and_then(|v| v.as_str()).unwrap_or("Screen").to_string();
-
-    // 2. Extract 100% of visible text elements
-    let all_texts = crate::mcp::design_pack::extract_all_text_elements(&design_context);
+    if design_context["scope"]["id"] == design_context["pageId"] || design_context["nodes"].as_array().is_none_or(Vec::is_empty) {
+        return ToolResult::error("Select a frame or provide nodeId before preparing a design.");
+    }
+    let root = &design_context["nodes"][0];
+    let resolved_id = root["id"].as_str().unwrap_or("").to_string();
+    let resolved_name = root["name"].as_str().unwrap_or("Screen").to_string();
+    let all_texts: Vec<_> = design_context["nodes"].as_array().into_iter().flatten()
+        .flat_map(crate::mcp::design_pack::extract_all_text_elements).collect();
+    let text_coverage = super::spec::coverage(&design_context);
 
     // 3. Batch export all vector icons to local project assets folder
     let mut export_params = json!({});
@@ -263,6 +259,7 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
         export_params["nodeId"] = json!(resolved_id);
     }
     let mut warnings = Vec::new();
+    if text_coverage["subtreeComplete"] != true { warnings.push("Text traversal is incomplete; read remaining scope before implementation.".to_string()); }
     let raw_assets = match bridge.send_operation("export_assets", export_params, session_id).await {
         Ok(data) => data,
         Err(e) => {
@@ -288,17 +285,18 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
     let mut exported_icons = Vec::new();
     if let Some(icons_arr) = raw_assets.get("icons").and_then(|v| v.as_array()) {
         let dir_path = std::path::Path::new(icon_dir);
-        let _ = tokio::fs::create_dir_all(dir_path).await;
-
+        if let Err(e) = tokio::fs::create_dir_all(dir_path).await { return ToolResult::error(e.to_string()); }
+        let mut saved = Vec::new();
         for item in icons_arr {
             let file_name = item.get("fileName").and_then(|v| v.as_str()).unwrap_or("icon.svg");
             if let Some(svg_content) = item.get("svg").and_then(|v| v.as_str()) {
-                let file_path = dir_path.join(file_name);
-                let _ = tokio::fs::write(&file_path, svg_content).await;
+                match tokio::fs::write(dir_path.join(file_name), svg_content).await {
+                    Ok(()) => saved.push(item.clone()),
+                    Err(e) => warnings.push(format!("Could not save {}: {}", file_name, e)),
+                }
             }
         }
-
-        exported_icons = crate::mcp::design_pack::generate_icon_specs(icons_arr, args["_importIconDir"].as_str().unwrap_or(icon_dir));
+        exported_icons = crate::mcp::design_pack::generate_icon_specs(&saved, args["_importIconDir"].as_str().unwrap_or(icon_dir));
     }
 
     // 4. Capture Canvas Visual Screenshot
@@ -363,7 +361,7 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
         checklist.push(format!("Import and render {} extracted SVG icons from '{}'", exported_icons.len(), icon_dir));
     }
     if !all_texts.is_empty() {
-        checklist.push(format!("Verify all {} visible text elements match Figma typography exactly", all_texts.len()));
+        checklist.push(format!("Verify {} extracted text elements; check coverage.text.subtreeComplete before claiming all text is covered", all_texts.len()));
     }
     if !color_palette.is_empty() {
         checklist.push(format!("Use {} exact resolved design token colors (no guessing)", color_palette.len()));
@@ -371,6 +369,7 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
 
     let result_pack = json!({
         "success": true,
+        "coverage": {"text":text_coverage,"assets":{"discovered":raw_assets["discovered"],"inspected":raw_assets["inspected"],"exportedIcons":exported_icons.len(),"failures":raw_assets["failures"],"complete":raw_assets.get("icons").and_then(Value::as_array).is_some_and(|icons| icons.len() == exported_icons.len()) && raw_assets.get("truncated").and_then(Value::as_bool) == Some(false) && raw_assets.get("failures").and_then(Value::as_array).is_some_and(Vec::is_empty)}},
         "nodeId": resolved_id,
         "nodeName": resolved_name,
         "screenshotPreviewPath": local_screenshot_path,
@@ -386,5 +385,17 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
         "instructionForAI": "DO NOT guess or invent icons or colors. Use the exact exported SVG components listed in 'exportedIcons'. Refer to 'resolvedColorTokens' for exact semantic-to-hex mappings. Ensure every text in 'allVisibleTexts' is accounted for."
     });
 
-    ToolResult::text(serde_json::to_string_pretty(&result_pack).unwrap_or_default())
+    let mut result_pack = result_pack;
+    if args["detail"].as_str() != Some("full") {
+        result_pack.as_object_mut().unwrap().remove("colorPalette");
+    }
+    if let Some(path) = args["outputPath"].as_str() {
+        let path = std::path::Path::new(path);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await { return ToolResult::error(e.to_string()); }
+        }
+        if let Err(e) = tokio::fs::write(path, json!({"pack":result_pack,"design":design_context}).to_string()).await { return ToolResult::error(e.to_string()); }
+        return ToolResult::text(json!({"savedTo":std::fs::canonicalize(path).unwrap_or(path.to_path_buf()),"coverage":result_pack["coverage"],"nodeId":resolved_id,"screenshotPreviewPath":local_screenshot_path,"warnings":result_pack["warnings"]}).to_string());
+    }
+    ToolResult::text(result_pack.to_string())
 }

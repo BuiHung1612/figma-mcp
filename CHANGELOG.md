@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.1.0] — 2026-10-09
+
+### Added
+- Bounded `get_spec` overview, section spec and node detail reads with lossless shared styles/component templates and exact instance overrides.
+- Byte-targeted pagination and raw JSON exports outside the model context.
+- Explicit subtree, text, component-resolution and asset coverage.
+
+### Fixed
+- `figma_prepare_design` expands instances and follows every text page instead of reporting partial text as complete.
+- Preserve copy whitespace and direct canonical text line heights; report icon save failures.
+
+### Changed
+- Compact `read_nodes` shares repeated styles; raw output remains the default.
+- Compact grounding packs omit the duplicate color palette; `detail: "full"` retains it.
+
 ## [5.0.2] — 2026-10-08
 
 ### Fixed

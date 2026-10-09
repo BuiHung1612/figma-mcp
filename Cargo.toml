@@ -1,6 +1,6 @@
 [package]
 name = "figma-rust-mcp"
-version = "5.0.2"
+version = "5.1.0"
 edition = "2021"
 authors = ["BuiHung1612"]
 description = "High-performance Rust MCP bridge for Figma"

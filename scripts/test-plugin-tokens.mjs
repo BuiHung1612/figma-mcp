@@ -812,3 +812,23 @@ test('creating a paint style invalidates the style names before the next design 
   await r.handlers.createPaintStyle({ name: 'Brand/New', color: '#ff0000' });
   assert.equal((await r.getStyleNameMapAsync())['new-style'], 'Brand/New');
 });
+
+test('byte-bounded reads paginate without dropping unicode, oversized nodes or descendants', async () => {
+  const page = {id:'page',type:'PAGE'};
+  const frame = {id:'frame',name:'Frame',type:'FRAME',parent:page};
+  frame.children = Array.from({length:12},(_,i)=>({id:`text:${i}`,name:'Label',type:'TEXT',parent:frame,
+    characters:i === 4 ? '漢'.repeat(2000) : 'é'.repeat(100),visible:true}));
+  page.children = [frame];
+  const r = runtime({root:{id:"root"},currentPage:page,getNodeByIdAsync:async()=>frame});
+  let read = await r.handlers.read_nodes({id:'frame',expandInstances:true,maxBytes:1024,limit:500});
+  const all = [...read.nodes]; let oversized = false, pages = 1;
+  while(read.nextCursor) {
+    assert.ok(pages++ < 20);
+    read = await r.handlers.read_nodes({cursor:read.nextCursor,maxBytes:1024,limit:500});
+    oversized ||= read.oversizedNode; all.push(...read.nodes);
+  }
+  assert.equal(read.complete,true); assert.equal(oversized,true);
+  assert.deepEqual(plain(all.map(n=>n.id)),['frame',...frame.children.map(n=>n.id)]);
+  assert.equal(all[5].content,'漢'.repeat(2000));
+  await assert.rejects(r.handlers.read_nodes({id:'frame',maxBytes:0}),/maxBytes/);
+});

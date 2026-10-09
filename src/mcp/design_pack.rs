@@ -94,9 +94,8 @@ fn traverse_text(node: &Value, out: &mut Vec<TextElement>) {
             .or_else(|| node.get("characters"))
             .or_else(|| node.get("content"))
             .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        if !text_content.is_empty() {
+            .unwrap_or("");
+        if !text_content.trim().is_empty() {
             let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let font_size = text_obj
@@ -122,6 +121,7 @@ fn traverse_text(node: &Value, out: &mut Vec<TextElement>) {
             let line_height = text_obj
                 .and_then(|v| v.get("lineHeight"))
                 .or_else(|| node.get("typography").and_then(|t| t.get("lineHeight")))
+                .or_else(|| node.get("lineHeight"))
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
@@ -198,6 +198,14 @@ fn sanitize_svg_component_name(name: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn canonical_text_keeps_copy_spacing_and_direct_line_height() {
+        let texts = extract_all_text_elements(&serde_json::json!({"type":"TEXT","id":"t","content":"  Label\n", "fontSize":15.5,"fontWeight":"Regular","lineHeight":"125%"}));
+        assert_eq!(texts[0].text,"  Label\n");
+        assert_eq!(texts[0].line_height.as_deref(),Some("125%"));
+        assert_eq!(texts[0].font_size,Some(15.5));
+    }
 
     #[test]
     fn text_pack_preserves_flat_weights_and_mixed_runs_without_guessed_defaults() {

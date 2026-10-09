@@ -135,13 +135,15 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "operation": {
                         "type": "string",
                         "enum": [
-                            "get_selection", "read_nodes", "get_page_nodes", "screenshot", "export_svg",
+                            "get_selection", "read_nodes", "get_spec", "get_page_nodes", "screenshot", "export_svg",
                             "get_styles", "get_local_components", "get_viewport", "get_variables", "get_tokens",
                             "get_css", "get_component_map",
                             "get_unmapped_components", "export_image", "search_nodes", "scan_design"
                         ],
                         "description": "read_nodes: canonical flat node API with fields, depth, expandInstances and cursor. Returns schemaVersion, nodes, scope, revision, nextCursor and complete. Default fields are geometry and content; text adds typography including mixed runs. Tokens returns raw bindings/style IDs. Instances remain opaque unless expandInstances=true. Cursors expire after edits; continue with cursor and limit only. Other operations provide selection, styles/tokens, CSS, components, exports and scoped design summaries.",
                     },
+                    "mode": {"type":"string","enum":["overview","spec","detail"],"description":"get_spec: overview (default) reads depth 2 to discover sections; spec reads a section deeply; detail reads one node. Exact shared styles/templates preserve overrides."},
+                    "maxBytes": {"type":"integer","minimum":1024,"maximum":1000000,"description":"Raw node byte target per page; default 24000 for get_spec. One oversized node and metadata/component resolution can exceed it. Continue nextCursor; no nodes are dropped."},
                     "fields": { "type":"array", "items":{"type":"string","enum":["geometry","content","text","style","layout","tokens","component"]}, "minItems":1, "description":"Requested node groups; default geometry/content. Identity and topology are always returned." },
                     "cursor": { "type":"string", "description":"Opaque continuation from read_nodes. Send cursor and limit only; expired cursors require restarting." },
                     "expandInstances": { "type":"boolean", "description":"Expand instance descendants; default false (instances report opaque=true); scan_design defaults true." },
@@ -151,8 +153,8 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "depth": { "oneOf":[{"type":"integer","minimum":0,"maximum":256},{"type":"string","enum":["full"]}], "description":"read_nodes depth: page default 0, frame default full (256)." },
                     "limit": { "type":"integer", "minimum":1, "maximum":500, "description":"Nodes per read_nodes response; default 200." },
                     "format": { "type": "string", "description": "Image format for export_image: 'png' (default) or 'jpg'." },
-                    "detail": { "type": "string", "description": "Detail level for get_design/get_selection: 'full' (default) bypasses Rust compression; 'compact'/'minimal' use shared styles when smaller. Merge _compression.styles[node.styleRef] into referenced nodes. Plugin detail/depth/node budgets still apply." },
-                    "outputPath": { "type": "string", "description": "Optional file path to save exported SVG/image directly to disk (for export_svg, export_image, or screenshot)." },
+                    "detail": { "type": "string", "description": "Detail level for read_nodes/get_design/get_selection: 'full' (default) bypasses Rust compression; 'compact'/'minimal' use shared styles when smaller. Merge _compression.styles[node.styleRef] into referenced nodes. Plugin detail/depth/node budgets still apply." },
+                    "outputPath": { "type": "string", "description": "get_spec: save the complete requested raw scope to JSON and return coverage only. Also saves export_svg/export_image/screenshot." },
                     "includeHidden": { "type": "boolean", "description": "Include invisible nodes (visible:false) in results. Default false — hidden layers are skipped to reduce noise." },
                     "maxNodes": { "type": "number", "description": "Node budget for get_design/get_selection (default 3000) and scan_design (default 50000). Subtrees past it are summarized and meta.nodesTruncated is set — raise it for one big frame, lower it to keep the payload small." },
                     "precision": { "type": "string", "enum": ["exact", "rounded"], "description": "Geometry precision for read operations. Full/exact preserves fractional Figma coordinates; rounded is smaller and uses integer geometry." },
@@ -403,10 +405,12 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_prepare_design".to_string(),
-            description: "⭐ PRIMARY & MANDATORY FIRST STEP when user gives a Figma link or asks to build/update frontend code from Figma. Single-call All-In-One Grounding Pack: (1) Captures high-res visual screenshot, (2) Auto-exports all SVG icons directly into your project assets folder with generated import statements, (3) Extracts 100% of visible text elements without missing headers/badges/dates, and (4) Maps existing codebase components. Call THIS tool first instead of raw figma_read to eliminate icon guessing and missing UI elements.".to_string(),
+            description: "⭐ PRIMARY & MANDATORY FIRST STEP when user gives a Figma link or asks to build/update frontend code from Figma. Single-call All-In-One Grounding Pack: (1) Captures high-res visual screenshot, (2) Auto-exports all SVG icons directly into your project assets folder with generated import statements, (3) Reads visible text through expanded, paginated instances with explicit coverage, and (4) Maps existing codebase components. Call THIS tool first instead of raw figma_read to eliminate icon guessing and missing UI elements.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "detail": {"type":"string","enum":["compact","full"],"description":"Default compact omits the duplicate colorPalette; full retains it."},
+                    "outputPath": {"type":"string","description":"Save the grounding pack and raw design nodes to JSON outside model context; return coverage, screenshot path and warnings only."},
                     "nodeId": {
                         "type": "string",
                         "description": "Target Figma frame / screen node ID (omit to use active selection)."

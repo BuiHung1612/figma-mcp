@@ -4,6 +4,13 @@ use std::collections::BTreeMap;
 // Keep node identity, geometry, text and hierarchy inline. Only exact style
 // bundles are shared; no heuristic state aggregation or default pruning.
 const STYLE_FIELDS: &[&str] = &[
+    "paintData",
+    "cornerRadius", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius",
+    "strokeAlign", "strokeWeight", "constraints",
+    "layoutMode", "layoutWrap", "counterAxisSpacing",
+    "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+    "primaryAxisAlignItems", "counterAxisAlignItems", "primaryAxisSizingMode", "counterAxisSizingMode",
+    "layoutAlign", "layoutGrow", "layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical",
     "fill",
     "fills",
     "stroke",
