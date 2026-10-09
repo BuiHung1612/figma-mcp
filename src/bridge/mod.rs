@@ -160,6 +160,9 @@ async fn probe_port(client: &reqwest::Client, port: u16) -> PortProbe {
     let url = format!("http://127.0.0.1:{port}/plugin/version");
     match client.get(&url).timeout(std::time::Duration::from_millis(500)).send().await {
         Err(e) if e.is_connect() => PortProbe::Free,
+        // Windows retries SYN on a refused localhost port and only fails after ~2s, so a
+        // free port times out here. Let the bind decide: it fails if the port is really held.
+        Err(e) if e.is_timeout() => PortProbe::Free,
         Err(_) => PortProbe::Taken("a process that does not answer HTTP".into()),
         Ok(res) => match res.json::<Value>().await {
             Ok(v) if v["name"] == "figma-rust-mcp" && v["version"] == env!("CARGO_PKG_VERSION") => PortProbe::Same,

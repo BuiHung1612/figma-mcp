@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.1.1] — 2026-10-09
+
+### Fixed
+- Bridge startup on Windows no longer skips free ports: a version probe that times out (Windows retries SYN on refused localhost ports for ~2s) is treated as free and the bind decides.
+
 ## [5.1.0] — 2026-10-09
 
 ### Added
