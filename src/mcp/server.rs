@@ -87,6 +87,16 @@ pub(super) async fn save_export_to_disk(
     }))
 }
 
+/// Raster exports without an outputPath go to a temp file; the model gets the path, not base64.
+pub(super) async fn save_export_to_temp(data: &Value, default_ext: &str) -> Option<Result<Value, String>> {
+    data.get("base64").and_then(Value::as_str)?;
+    let ext = data["format"].as_str().unwrap_or(default_ext).to_lowercase();
+    let node = data["nodeId"].as_str().unwrap_or("export").replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let path = std::env::temp_dir().join("figma-rust-mcp").join("exports").join(format!("{node}-{stamp}.{ext}"));
+    Some(save_export_to_disk(&path.to_string_lossy(), data, &ext).await)
+}
+
 pub(super) fn is_supported_read_operation(operation: &str) -> bool {
     matches!(
         operation,
@@ -178,10 +188,17 @@ pub async fn handle_jsonrpc_request(
 }
 
 pub async fn run_mcp_server(bridge: BridgeHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let reader = BufReader::new(stdin);
+    let reader = BufReader::new(tokio::io::stdin());
     let mut lines = reader.lines();
+    // Requests run concurrently (the per-tab tool_lock keeps each tab ordered);
+    // one writer task keeps response lines from interleaving on stdout.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let writer = tokio::spawn(async move {
+        let mut stdout = tokio::io::stdout();
+        while let Some(line) = out_rx.recv().await {
+            if stdout.write_all(line.as_bytes()).await.is_err() || stdout.flush().await.is_err() { break; }
+        }
+    });
 
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim();
@@ -193,20 +210,22 @@ pub async fn run_mcp_server(bridge: BridgeHandle) -> Result<(), Box<dyn std::err
             Ok(r) => r,
             Err(e) => {
                 let err_resp = JsonRpcResponse::error(None, -32700, format!("Parse error: {}", e));
-                let resp_str = serde_json::to_string(&err_resp)? + "\n";
-                stdout.write_all(resp_str.as_bytes()).await?;
-                stdout.flush().await?;
+                let _ = out_tx.send(serde_json::to_string(&err_resp)? + "\n");
                 continue;
             }
         };
 
-        if let Some(resp) = handle_jsonrpc_request(bridge.clone(), req).await {
-            let resp_str = serde_json::to_string(&resp)? + "\n";
-            stdout.write_all(resp_str.as_bytes()).await?;
-            stdout.flush().await?;
-        }
+        let (bridge, out_tx) = (bridge.clone(), out_tx.clone());
+        tokio::spawn(async move {
+            if let Some(resp) = handle_jsonrpc_request(bridge, req).await {
+                if let Ok(resp_str) = serde_json::to_string(&resp) { let _ = out_tx.send(resp_str + "\n"); }
+            }
+        });
     }
 
+    // Finish in-flight requests before exiting.
+    drop(out_tx);
+    let _ = writer.await;
     Ok(())
 }
 
@@ -495,6 +514,11 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                     if let Some(output_path) = args.get("outputPath").and_then(|v| v.as_str()) {
                         match save_export_to_disk(output_path, &data, &format).await {
                             Ok(disk_res) => ToolResult::text(serde_json::to_string(&disk_res).unwrap_or_default()),
+                            Err(e) => ToolResult::error(e),
+                        }
+                    } else if let Some(saved) = save_export_to_temp(&data, &format).await {
+                        match saved {
+                            Ok(disk_res) => ToolResult::text(disk_res.to_string()),
                             Err(e) => ToolResult::error(e),
                         }
                     } else {

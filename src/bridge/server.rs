@@ -37,9 +37,15 @@ fn is_read_operation(operation: &str) -> bool {
         "getcomponentproperties" | "getreactions" | "readnodes")
 }
 
+/// Viewport/selection changes touch no document nodes, so they keep the index ready.
+fn is_mutating_operation(operation: &str) -> bool {
+    let key: String = operation.chars().filter(char::is_ascii_alphanumeric).flat_map(char::to_lowercase).collect();
+    !is_read_operation(operation) && !matches!(key.as_str(), "setviewport" | "setselection")
+}
+
 fn read_cache_key(operation: &str, params: &Value) -> Option<String> {
     // Cache exact live responses, never infer a detail contract from compact nodes.
-    // ponytail: 64 entries per tab; add a byte budget if large trees dominate memory.
+    // ponytail: 64 entries / 32MB per tab, sized by serializing under the bridge lock; size outside the lock if inserts show up in profiles.
     if matches!(operation, "get_styles" | "get_variables" | "get_variable_tokens")
         || (matches!(operation, "get_design" | "get_node_detail" | "get_design_context" | "read_nodes")
         && params.get("cursor").is_none()
@@ -114,6 +120,49 @@ mod read_cache_tests {
         assert!(state.inner.lock().await.sessions["s"].index.as_ref().unwrap().dirty);
     }
 
+    #[tokio::test]
+    async fn writes_request_resync_and_index_becomes_ready_again() {
+        let state = BridgeState::new(0);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut session = Session::new("s".into(), None);
+        session.ws_tx = Some(tx);
+        let mut idx = crate::bridge::index::FigmaIndex::from_raw("s", "f", &json!([{"id":"a","type":"FRAME"}]), None, None, None, 0);
+        idx.page_id = Some("page".into());
+        session.index = Some(idx);
+        state.inner.lock().await.sessions.insert("s".into(), session);
+        let reply = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Message>, state: BridgeState| {
+            let Message::Text(request) = rx.try_recv().unwrap() else { panic!("expected request") };
+            let id = serde_json::from_str::<Value>(&request).unwrap()["id"].as_str().unwrap().to_string();
+            tokio::spawn(async move {
+                let mut inner = state.inner.lock().await;
+                inner.sessions.get_mut("s").unwrap().pending.remove(&id).unwrap().sender.send(Ok(json!({}))).unwrap();
+            })
+        };
+        // Viewport changes keep the index ready and request nothing.
+        let view = tokio::spawn({ let s = state.clone(); async move { s.send_operation("set_viewport", json!({}), Some("s")).await } });
+        while rx.is_empty() { tokio::task::yield_now().await; }
+        reply(&mut rx, state.clone()).await.unwrap();
+        view.await.unwrap().unwrap();
+        assert!(rx.try_recv().is_err());
+        assert!(state.inner.lock().await.sessions["s"].index.as_ref().unwrap().is_ready());
+        // A write marks the index dirty, then asks for a resync once it settles.
+        let write = tokio::spawn({ let s = state.clone(); async move { s.send_operation("create", json!({}), Some("s")).await } });
+        while rx.is_empty() { tokio::task::yield_now().await; }
+        reply(&mut rx, state.clone()).await.unwrap();
+        write.await.unwrap().unwrap();
+        let Message::Text(request) = rx.try_recv().unwrap() else { panic!("expected resync") };
+        assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["type"], "index-resync");
+        assert!(state.inner.lock().await.op_to_session.is_empty());
+        for event in [json!({"type":"index-start","scanId":"2","pageId":"page","revision":0,"scope":{"id":"page"}}),
+            json!({"type":"index-chunk","scanId":"2","pageId":"page","revision":0,"nodes":[{"id":"a","type":"FRAME","parentId":null}]}),
+            json!({"type":"index-update","scanId":"2","pageId":"page","revision":0,"data":{"complete":true}})] {
+            state.receive_index_event("s", &event).await;
+        }
+        let inner = state.inner.lock().await;
+        assert!(inner.sessions["s"].index.as_ref().unwrap().is_ready());
+        assert!(!inner.sessions["s"].resync_requested);
+    }
+
     #[test]
     fn cache_keys_preserve_detail_contract_and_exclude_selection_and_exports() {
         assert_ne!(read_cache_key("get_design", &json!({"id":"1:1", "detail":"full"})),
@@ -163,7 +212,7 @@ mod read_cache_tests {
             "s", "f", &json!([{"id":"1:1", "name":"Card", "type":"FRAME", "indexDetail":"minimal"}]), None, None, None, 0));
         let params = json!({"id":"1:1", "detail":"full"});
         let data = json!({"id":"1:1", "resolvedPaints": []});
-        session.read_cache.insert(read_cache_key("get_design_context", &params).unwrap(), data.clone());
+        session.cache_read(read_cache_key("get_design_context", &params).unwrap(), data.clone());
         state.inner.lock().await.sessions.insert("s".into(), session);
         assert!(state.get_index_node(Some("s"), "1:1").await.is_none());
         assert_eq!(state.search_index_nodes(Some("s"), "Card", None, 10).await.unwrap().len(), 1);
@@ -210,6 +259,20 @@ pub struct BridgeInner {
     pub mcp_sse_clients: HashMap<String, tokio::sync::mpsc::UnboundedSender<JsonRpcResponse>>,
     pub tasks: HashMap<String, TaskBinding>,
     pub last_cleanup_at: u64,
+}
+
+impl BridgeInner {
+    /// Drop idle disconnected sessions (and their tasks) at most every 30s.
+    pub fn expire_sessions(&mut self, now: u64) {
+        if now.saturating_sub(self.last_cleanup_at) <= 30_000 { return; }
+        self.last_cleanup_at = now;
+        self.sessions.retain(|_, s| {
+            s.is_connected() || !s.queue.is_empty() || !s.pending.is_empty()
+                || now.saturating_sub(s.last_poll_at) < super::session::SESSION_EXPIRE_MS
+        });
+        let sessions: std::collections::HashSet<_> = self.sessions.keys().cloned().collect();
+        self.tasks.retain(|_, task| sessions.contains(&task.session_id));
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -408,12 +471,13 @@ impl BridgeState {
             let cache_key = if self.task_scope.is_none() && (!node_read || active_node) {
                 read_cache_key(operation, &params)
             } else { None };
-            let writes_pending = session.pending.values().any(|p| !is_read_operation(&p.op.operation));
+            let writes_pending = session.pending.values().any(|p| is_mutating_operation(&p.op.operation));
             if !writes_pending {
                 if let Some(value) = cache_key.as_ref().and_then(|key| session.cached_read(key)) {
                     session.cache_hits += 1;
                     tracing::debug!(operation, session_id = %sid, "Rust read cache hit");
-                    return Ok(value);
+                    drop(inner);
+                    return Ok(Value::clone(&value));
                 }
                 if let Some(idx) = session.index.as_ref().filter(|idx| !idx.tokens_dirty && !idx.dirty && idx.stats.indexed_at_ms > 0) {
                     let cached = match operation {
@@ -430,7 +494,7 @@ impl BridgeState {
                     }
                 }
             }
-            if !is_read_operation(operation) {
+            if is_mutating_operation(operation) {
                 if operation == "modify" {
                     if let Some(id) = params["id"].as_str() {
                         session.invalidate_nodes(&[id.to_string()]);
@@ -511,8 +575,26 @@ impl BridgeState {
         // Await with timeout
         let started = std::time::Instant::now();
         let response = tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await;
-        if let Some(session) = self.inner.lock().await.sessions.get_mut(&target_sid) {
-            session.bridge_time_ms += started.elapsed().as_millis() as u64;
+        {
+            let mut inner = self.inner.lock().await;
+            // Every exit path (reply, timeout, dropped sender) releases the op mapping.
+            inner.op_to_session.remove(&op_id);
+            if let Some(session) = inner.sessions.get_mut(&target_sid) {
+                session.bridge_time_ms += started.elapsed().as_millis() as u64;
+                if response.is_err() {
+                    session.pending.remove(&op_id);
+                    session.queue.retain(|q| q.id != op_id);
+                }
+                // A write left the index dirty; once writes settle, ask the plugin
+                // for a fresh page snapshot so the index becomes ready again.
+                if is_mutating_operation(operation) && !session.resync_requested
+                    && session.index.as_ref().is_some_and(|idx| idx.dirty)
+                    && !session.pending.values().any(|p| is_mutating_operation(&p.op.operation)) {
+                    if let Some(tx) = &session.ws_tx {
+                        session.resync_requested = tx.send(Message::Text(json!({"type":"index-resync"}).to_string())).is_ok();
+                    }
+                }
+            }
         }
         match response {
             Ok(Ok(val)) => {
@@ -532,7 +614,7 @@ impl BridgeState {
                     let mut inner = self.inner.lock().await;
                     if let Some(session) = inner.sessions.get_mut(&target_sid) {
                         if session.cache_revision == cache_revision
-                            && !session.pending.values().any(|p| !is_read_operation(&p.op.operation))
+                            && !session.pending.values().any(|p| is_mutating_operation(&p.op.operation))
                             && (operation != "read_nodes" || data["nextCursor"].is_null())
                         {
                             session.cache_read(key, data.clone());
@@ -566,17 +648,7 @@ impl BridgeState {
                 val
             },
             Ok(Err(_)) => Err("Operation cancelled or bridge closed".to_string()),
-            Err(_) => {
-                // Timeout clean up
-                let mut inner = self.inner.lock().await;
-                if let Some(sid) = inner.op_to_session.remove(&op_id) {
-                    if let Some(s) = inner.sessions.get_mut(&sid) {
-                        s.pending.remove(&op_id);
-                        s.queue.retain(|q| q.id != op_id);
-                    }
-                }
-                Err(format!("Operation \"{}\" timed out after {}ms", operation, timeout_ms))
-            }
+            Err(_) => Err(format!("Operation \"{}\" timed out after {}ms", operation, timeout_ms)),
         }
     }
 
@@ -610,9 +682,10 @@ impl BridgeState {
         }
     }
 
-    pub(super) async fn update_changed_nodes(&self, sid: &str, nodes: &[Value], deleted: &[String]) {
+    pub(super) async fn update_changed_nodes(&self, sid: &str, page: Option<&str>, nodes: &[Value], deleted: &[String]) {
         let mut inner = self.inner.lock().await;
         if let Some(session) = inner.sessions.get_mut(sid) {
+            if session.index.as_ref().is_some_and(|idx| idx.page_id.as_deref() != page) { return; }
             let ids: Vec<_> = nodes.iter().flat_map(|n| [n["id"].as_str(),n["parentId"].as_str()])
                 .flatten().filter(|id| session.index.as_ref().is_some_and(|idx| idx.nodes.contains_key(*id)))
                 .map(str::to_owned).chain(deleted.iter().cloned()).collect();
@@ -695,6 +768,7 @@ impl BridgeState {
                     return;
                 }
                 let (_, mut nodes, scope) = session.pending_index.take().unwrap();
+                session.resync_requested = false;
                 if nodes.revision < session.node_revision { resync = true; }
                 else {
                     let data = &event["data"];
@@ -714,6 +788,7 @@ impl BridgeState {
                         session.index = Some(metadata);
                         session.invalidate_reads();
                     } else if let Some(idx) = &mut session.index {
+                        idx.drop_missing_children(&nodes.nodes);
                         for node in nodes.nodes.into_values() {
                             if let Some(data) = node.full_data { idx.merge_projected_nodes(&[data]); }
                         }
@@ -722,7 +797,6 @@ impl BridgeState {
                         idx.stats.duration_ms = metadata.stats.duration_ms;
                     }
                     session.node_revision = session.node_revision.max(revision.unwrap_or(0));
-                    session.resync_requested = false;
                 }
                 if let Some(tx) = &session.ws_tx {
                     let _ = tx.send(Message::Text(json!({"type":"index-ack", "scanId":event["scanId"],
@@ -857,10 +931,11 @@ impl BridgeState {
         inner.sessions.get(&sid).and_then(|s| s.active_selection.clone())
     }
 
-    pub async fn apply_delta(&self, session_id: &str, node_id: &str, delta: &Value) {
+    pub async fn apply_delta(&self, session_id: &str, page: Option<&str>, node_id: &str, delta: &Value) {
         let mut inner = self.inner.lock().await;
         if let Some(session) = inner.sessions.get_mut(session_id) {
-            session.invalidate_reads();
+            if session.index.as_ref().is_some_and(|idx| idx.page_id.as_deref() != page) { return; }
+            session.invalidate_nodes(&[node_id.to_string()]);
             if let Some(ref mut idx) = session.index {
                 idx.apply_delta(node_id, delta);
             }

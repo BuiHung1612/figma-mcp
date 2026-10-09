@@ -603,7 +603,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma Rust MCP</span>
-            <span class="brand-ver" id="runtime-version">v5.1.1</span>
+            <span class="brand-ver" id="runtime-version">v6.0.0</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -1622,6 +1622,10 @@
               window.__FIGMA_RUST_MCP_VER = serverVer;
               window.__FIGMA_RUST_MCP_RUNTIME_HASH = req.runtimeHash;
             } else if (window.__FIGMA_RUST_MCP_VER !== serverVer || (req.runtimeHash && window.__FIGMA_RUST_MCP_RUNTIME_HASH && req.runtimeHash !== window.__FIGMA_RUST_MCP_RUNTIME_HASH)) {
+              // window survives document.write, so record what we reload into;
+              // otherwise every later server-hello reloads again, forever.
+              window.__FIGMA_RUST_MCP_VER = serverVer;
+              window.__FIGMA_RUST_MCP_RUNTIME_HASH = req.runtimeHash;
               log("⚡ Server updated to v" + serverVer + " — Hot reloading in 500ms…", "info");
               setTimeout(function() {
                 triggerHotReload(currentPort);
@@ -1787,11 +1791,12 @@
       }
 
       try {
-        await fetch(BRIDGE + "/response", {
+        var res = await fetch(BRIDGE + "/response", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: body
         });
+        if (!res.ok) log("Response rejected: HTTP " + res.status, "err");
       } catch (e) {
         log("Response failed: " + e.message, "err");
       }

@@ -78,18 +78,40 @@ function solidStroke(hex, strokeOpacity) {
 
 // ── Variable & Token Deep Resolver ───────────────────────────────────────────
 var variableCache = new Map();
+var stalledVariableLookups = [];
+
+// Some Figma variable lookups (e.g. an alias into a library this file can no
+// longer reach) never settle. Bound them so one lookup can't stall a request
+// and, through the serial request queue, every request after it.
+function settleWithin(promise, ms, fallback, label) {
+  return new Promise(function(resolve) {
+    var timer = setTimeout(function() {
+      if (label && stalledVariableLookups.length < 50) stalledVariableLookups.push(label);
+      resolve(fallback);
+    }, ms);
+    Promise.resolve(promise).then(
+      function(v) { clearTimeout(timer); resolve(v); },
+      function() { clearTimeout(timer); resolve(fallback); });
+  });
+}
 
 async function getVariableSafeAsync(id) {
   if (!id) return null;
   if (variableCache.has(id)) return variableCache.get(id);
   try {
     if (figma.variables && typeof figma.variables.getVariableByIdAsync === "function") {
-      var v = await figma.variables.getVariableByIdAsync(id);
-      if (v) variableCache.set(id, v);
+      var v = await settleWithin(figma.variables.getVariableByIdAsync(id), 2000, null, "variable " + id);
+      // Cache misses too, so an unreachable id costs one timeout per runtime.
+      variableCache.set(id, v || null);
       return v;
     }
   } catch(e) {}
   return null;
+}
+
+function getVariableCollectionSafeAsync(id) {
+  if (!id || !figma.variables || typeof figma.variables.getVariableCollectionByIdAsync !== "function") return Promise.resolve(null);
+  return settleWithin(figma.variables.getVariableCollectionByIdAsync(id), 2000, null, "collection " + id);
 }
 
 // Recursively resolves a variable (and its VARIABLE_ALIAS chains) to concrete primitive value & hex
@@ -113,12 +135,6 @@ async function resolveVariableValueAsync(variableOrId, contextNodeOrModeMap, dep
   }
 
   if (!variable || !variable.valuesByMode) return null;
-  // Node consumers have inherited modes across collections. Let Figma resolve
-  // the value; manual mode-id reuse across an alias chain is not valid.
-  var consumerValue;
-  if (contextNodeOrModeMap && contextNodeOrModeMap.resolvedVariableModes && typeof variable.resolveForConsumer === "function") {
-    consumerValue = variable.resolveForConsumer(contextNodeOrModeMap).value;
-  }
 
   // Determine active mode
   var modeId = null;
@@ -134,12 +150,21 @@ async function resolveVariableValueAsync(variableOrId, contextNodeOrModeMap, dep
   }
   var availableModes = Object.keys(variable.valuesByMode);
   if (!modeId || variable.valuesByMode[modeId] === undefined) {
-    var collection = await figma.variables.getVariableCollectionByIdAsync(colId);
+    var collection = await getVariableCollectionSafeAsync(colId);
     modeId = collection ? collection.defaultModeId : (availableModes.length === 1 ? availableModes[0] : null);
   }
   if (!modeId) return null;
 
-  var rawVal = consumerValue !== undefined ? consumerValue : variable.valuesByMode[modeId];
+  // Walk aliases through each collection's active mode so alias names are
+  // reported; Figma's resolveForConsumer only supplies the final value.
+  var rawVal = variable.valuesByMode[modeId];
+  var isAliasVal = rawVal && typeof rawVal === "object" && rawVal.type === "VARIABLE_ALIAS";
+  if (!isAliasVal && contextNodeOrModeMap && contextNodeOrModeMap.resolvedVariableModes && typeof variable.resolveForConsumer === "function") {
+    try {
+      var consumerValue = variable.resolveForConsumer(contextNodeOrModeMap).value;
+      if (consumerValue !== undefined) rawVal = consumerValue;
+    } catch (e) {}
+  }
   if (rawVal === undefined || rawVal === null) return null;
 
   // If alias, follow recursively down to primitive token
@@ -197,9 +222,10 @@ function isMixed(value) {
   return typeof value === "symbol";
 }
 
+// Top-most visible SOLID paint (Figma paint arrays are ordered bottom→top).
 function firstSolidHex(paints) {
   if (!paints || isMixed(paints) || !paints.length) return null;
-  for (var i = 0; i < paints.length; i++) {
+  for (var i = paints.length - 1; i >= 0; i--) {
     if (paints[i].type === "SOLID" && paints[i].visible !== false) {
       return colorToCss(paints[i].color, paints[i].opacity);
     }
@@ -328,17 +354,6 @@ function normalizeNodeId(id) {
   return clean;
 }
 
-var allPagesLoaded = false;
-async function ensureAllPagesLoaded() {
-  if (allPagesLoaded) return;
-  if (typeof figma.loadAllPagesAsync === "function") {
-    try {
-      await figma.loadAllPagesAsync();
-      allPagesLoaded = true;
-    } catch(e) {}
-  }
-}
-
 function getNodeNotFoundContext(id, name) {
   var currentPageName = figma.currentPage ? figma.currentPage.name : "unknown";
   var availablePages = figma.root && figma.root.children ? figma.root.children.map(function(p) { return p.name; }).join(", ") : "none";
@@ -415,28 +430,8 @@ async function findNodeByIdAsync(id) {
     if (s.id === cleanId || s.id === id) return cacheNode(s);
   }
 
-  // 4. Fallback: If not found and pages are lazily loaded, load all pages and retry
-  if (!allPagesLoaded && typeof figma.loadAllPagesAsync === "function") {
-    await ensureAllPagesLoaded();
-    try {
-      var retryNode = await figma.getNodeByIdAsync(cleanId);
-      if (!retryNode && cleanId !== id) retryNode = await figma.getNodeByIdAsync(id);
-      if (retryNode && !retryNode.removed) return cacheNode(retryNode);
-    } catch(e) {}
-  }
-
-  // 5. Fallback for instance sub-layer IDs (e.g. "I2715:40862;123:456")
-  if (cleanId.indexOf(";") !== -1) {
-    var parts = cleanId.split(";");
-    for (var p = 0; p < parts.length; p++) {
-      var partId = parts[p].replace(/^I/, "");
-      try {
-        var subNode = await figma.getNodeByIdAsync(partId);
-        if (subNode && !subNode.removed) return cacheNode(subNode);
-      } catch(e) {}
-    }
-  }
-
+  // Instance sub-layer ids ("I1:2;3:4") resolve in step 2 when the sublayer
+  // exists; a missing sublayer must not fall back to its outer instance.
   return null;
 }
 
@@ -459,8 +454,12 @@ function findNodeByName(name) {
       var page = figma.root.children[p];
       if (page === figma.currentPage) continue;
       if (page.name === name) return page;
-      var pageFound = page.findOne ? page.findOne(function(n) { return n.name === name; }) : null;
-      if (pageFound) return cacheNode(pageFound);
+      // ponytail: sync callers (incl. get_design_context) can't await page.loadAsync(),
+      // so only already-loaded pages are searched; unloaded pages throw and are skipped.
+      try {
+        var pageFound = page.findOne ? page.findOne(function(n) { return n.name === name; }) : null;
+        if (pageFound) return cacheNode(pageFound);
+      } catch (e) {}
     }
   }
 
@@ -505,6 +504,31 @@ function withInstanceVisibility(includeHidden, read) {
   var previous = figma.skipInvisibleInstanceChildren;
   figma.skipInvisibleInstanceChildren = !includeHidden;
   try { return read(); } finally { figma.skipInvisibleInstanceChildren = previous; }
+}
+
+// Depth-first walk with an explicit stack that yields to the UI every ~8ms
+// (same slicing as read_nodes). Instance visibility is re-applied per slice.
+// visit(node, ctx) returns "skip" (no children), "stop" (end walk), or a new
+// ctx for the node's children (undefined keeps the current ctx).
+async function walkTreeSliced(roots, includeHidden, visit, ctx) {
+  var stack = [{ children: roots, next: 0, ctx: ctx }], stopped = false;
+  while (stack.length && !stopped) {
+    var started = Date.now();
+    withInstanceVisibility(includeHidden, function() {
+      while (stack.length && Date.now() - started < 8) {
+        var cursor = stack[stack.length - 1];
+        if (cursor.next >= cursor.children.length) { stack.pop(); continue; }
+        var node = cursor.children[cursor.next++];
+        if (!node || typeof node !== "object" || node.removed || (!includeHidden && node.visible === false)) continue;
+        var r = visit(node, cursor.ctx);
+        if (r === "stop") { stopped = true; return; }
+        if (r === "skip" || !("children" in node)) continue;
+        var children = node.children;
+        if (children && children.length) stack.push({ children: children, next: 0, ctx: r === undefined ? cursor.ctx : r });
+      }
+    });
+    if (stack.length && !stopped) await yieldToUI(0);
+  }
 }
 
 // Flexible operation handler resolver with camelCase/snake_case and alias support

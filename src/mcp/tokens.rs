@@ -198,8 +198,10 @@ pub fn background_css(
             paint_css(visible[0], width, height)?,
         )));
     }
+    // Figma lists paints bottom→top; CSS lists background layers top→bottom.
     let layers = visible
         .iter()
+        .rev()
         .map(|p| {
             let css = paint_css(p, width, height)?;
             Ok(if p["type"] == "SOLID" {
@@ -256,7 +258,8 @@ pub fn effect_css(effects: &[Value]) -> Result<BTreeMap<String, String>, String>
                     } else {
                         "backdrop-filter"
                     },
-                    format!("blur({}px)", number(field(e, "radius")?)),
+                    // Dev Mode emits blur(radius / 2) for Figma blur radii.
+                    format!("blur({}px)", number(field(e, "radius")? / 2.0)),
                 )
             }
             _ => return Err(format!("Unsupported effect {}", e["type"])),
@@ -426,7 +429,7 @@ fn build_tokens(
             // cannot be converted once for arbitrary aspect ratios; keep raw data.
             let mut layers = Vec::new();
             let mut convertible = true;
-            for paint in &visible {
+            for paint in visible.iter().rev() {
                 if paint["type"] == "GRADIENT_LINEAR" {
                     let row = &paint["gradientTransform"][0];
                     if row[0].as_f64().unwrap_or(0.0).abs() > 1e-12
@@ -516,7 +519,7 @@ fn build_tokens(
                             .push(format!("{name}: progressive blur requires SVG"));
                         continue;
                     }
-                    let css = format!("blur({}px)", number(field(e, "radius")?));
+                    let css = format!("blur({}px)", number(field(e, "radius")? / 2.0));
                     if e["type"] == "LAYER_BLUR" {
                         filters.push(css);
                     } else {
@@ -685,7 +688,7 @@ mod tests {
         assert!(css.contains("--app-color-brand-overlay: rgba(255, 0, 0, 0.5);"));
         assert!(css.contains("--app-background-brand-fade: linear-gradient(90deg"));
         assert!(css.contains("rgba(255, 0, 0, 0.25) 0%"));
-        assert!(css.contains("--app-backdrop-filter-elevation-card: blur(12px);"));
+        assert!(css.contains("--app-backdrop-filter-elevation-card: blur(6px);"));
         assert!(css.contains("600 16px/1.5 \"Inter\""));
         assert!(css.contains("--app-letter-spacing-text-body: 0.02em;"));
         assert!(css.contains("GRADIENT_DIAMOND requires SVG"));
@@ -759,7 +762,8 @@ mod tests {
             json!({"type":"SOLID","color":"#00f"}),
         ];
         let (_, css) = background_css(&layers, 100.0, 100.0).unwrap().unwrap();
-        assert!(css.starts_with("linear-gradient(rgba(255, 0, 0"));
+        // The last Figma paint (#00f) is on top, so it is the first CSS layer.
+        assert!(css.starts_with("linear-gradient(#0000ff"), "{css}");
         let set = build_tokens(
             &json!({"paintStyles": [{"name":"Diagonal","paints":[p]}]}),
             &json!({}),

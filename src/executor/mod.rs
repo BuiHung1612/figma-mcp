@@ -20,6 +20,10 @@ use std::sync::Arc;
 
 /// Per-loop iteration cap so a runaway `while (true) {}` errors out instead of pinning a blocking thread forever.
 pub const LOOP_ITERATION_LIMIT: u64 = 1_000_000;
+/// Wall-clock cap for one figma_write script, including bridge round-trips.
+pub const SCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+const MAX_LOG_LINES: usize = 200;
+const MAX_LOG_BYTES: usize = 16 << 10;
 
 pub enum HostRequest {
     Op {
@@ -88,6 +92,7 @@ pub async fn execute_code(
     let http_client = http_client();
 
     let host_handler = tokio::spawn(async move {
+        let (mut log_bytes, mut dropped_logs) = (0usize, 0usize);
         while let Some(req) = rx.recv().await {
             match req {
                 HostRequest::Op { operation, params, resp } => {
@@ -151,10 +156,18 @@ pub async fn execute_code(
                         _ => msg,
                     };
                     if let Ok(mut l) = logs_collector.lock() {
-                        l.push(line);
+                        if l.len() < MAX_LOG_LINES && log_bytes + line.len() <= MAX_LOG_BYTES {
+                            log_bytes += line.len();
+                            l.push(line);
+                        } else {
+                            dropped_logs += 1;
+                        }
                     }
                 }
             }
+        }
+        if dropped_logs > 0 {
+            if let Ok(mut l) = logs_collector.lock() { l.push(format!("…{dropped_logs} more lines")); }
         }
     });
 
@@ -415,6 +428,7 @@ figma.loadIconIn = async (iconName, opts = {}) => {
 "##;
 
         if let Err(e) = context.eval(Source::from_bytes(prelude)) {
+            HOST_TX.with(|cell| *cell.borrow_mut() = None);
             return (false, None, Some(format!("Sandbox initialization failed: {}", e)));
         }
 
@@ -429,7 +443,7 @@ figma.loadIconIn = async (iconName, opts = {}) => {
             }
         });
 
-        match eval_res {
+        let out = match eval_res {
             Ok(js_val) => {
                 let result_val: Option<Value> = if js_val.is_undefined() || js_val.is_null() {
                     None
@@ -437,8 +451,10 @@ figma.loadIconIn = async (iconName, opts = {}) => {
                     Some(Value::String(s.to_std_string_escaped()))
                 } else if let Some(b) = js_val.as_boolean() {
                     Some(Value::Bool(b))
+                } else if let Some(n) = js_val.as_number() {
+                    Some(json!(n))
                 } else {
-                    js_val.as_number().map(|n| json!(n))
+                    js_val.to_json(&mut context).ok()
                 };
 
                 (true, result_val, None)
@@ -450,11 +466,20 @@ figma.loadIconIn = async (iconName, opts = {}) => {
                 }
                 (false, None, Some(err_msg))
             }
-        }
+        };
+        // Drop the sender so the host handler drains trailing logs and exits.
+        HOST_TX.with(|cell| *cell.borrow_mut() = None);
+        out
     });
 
-    let (success, result, error) = eval_task.await.unwrap_or_else(|e| (false, None, Some(format!("Execution task panicked: {}", e))));
-    host_handler.abort();
+    let (success, result, error) = match tokio::time::timeout(SCRIPT_DEADLINE, eval_task).await {
+        Ok(Ok(out)) => { let _ = host_handler.await; out }
+        Ok(Err(e)) => { host_handler.abort(); (false, None, Some(format!("Execution task panicked: {}", e))) }
+        Err(_) => {
+            host_handler.abort();
+            (false, None, Some(format!("Script exceeded the {}s deadline", SCRIPT_DEADLINE.as_secs())))
+        }
+    };
 
     let captured_logs = logs.lock().unwrap().clone();
 
@@ -476,5 +501,16 @@ mod tests {
             .expect("sandbox must stop runaway loops");
         assert!(!res.success);
         assert!(res.error.unwrap_or_default().to_lowercase().contains("loop"));
+    }
+
+    #[tokio::test]
+    async fn returns_objects_keeps_trailing_logs_and_caps_log_volume() {
+        let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));
+        let res = super::execute_code("console.log('last'); return {a: [1, 'x']};", bridge.clone(), None).await;
+        assert_eq!(res.result, Some(serde_json::json!({"a": [1, "x"]})));
+        assert_eq!(res.logs, ["last"]);
+        let res = super::execute_code("for (let i = 0; i < 300; i++) console.log(i);", bridge, None).await;
+        assert_eq!(res.logs.len(), super::MAX_LOG_LINES + 1);
+        assert_eq!(res.logs.last().unwrap(), "…100 more lines");
     }
 }

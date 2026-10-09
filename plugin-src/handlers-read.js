@@ -81,6 +81,7 @@ handlers.get_selection = async function(params) {
   });
   // mainComponent is async-only under documentAccess: dynamic-page — resolve
   // every collected INSTANCE after the (synchronous) tree walk.
+  await resolvePendingVariablesAsync(walkState);
   var instanceInfo = await resolveInstanceComponents(instanceCollector);
   return {
     nodes: trees,
@@ -122,6 +123,7 @@ handlers.get_design = async function(params) {
     var tree = withInstanceVisibility(!filterInvisible, function() {
       return extractDesignTree(root, 0, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState);
     });
+    await resolvePendingVariablesAsync(walkState);
     var instanceInfo = await resolveInstanceComponents(instanceCollector);
 
     // SVG inlining: opt-in via inlineIcons/inlineSvg to avoid multi-second freezes on large designs
@@ -230,10 +232,9 @@ handlers.scan_design = async function(params) {
   var opaqueInstances = 0;
 
   // section = the top-level child whose subtree we are inside (null at the root)
+  // Visited by walkTreeSliced (hidden nodes already skipped there).
   function walkCount(node, section) {
-    if (!node || typeof node !== "object") return;
-    if (!scanIncludeHidden && node.visible === false) return;
-    if (summary.totalNodes >= maxNodes) { nodeBudgetHit = true; return; }
+    if (summary.totalNodes >= maxNodes) { nodeBudgetHit = true; return "stop"; }
     summary.totalNodes++;
 
     // Collect text
@@ -323,41 +324,37 @@ handlers.scan_design = async function(params) {
       }
     }
 
-    // Recurse
     if (node.type === "INSTANCE" && !expand) {
       if ("children" in node && node.children.length) opaqueInstances++;
-      return;
-    }
-    var children = "children" in node ? node.children : [];
-    if (Array.isArray(children)) {
-      for (var i = 0; i < children.length && !nodeBudgetHit; i++) walkCount(children[i], section);
+      return "skip";
     }
   }
 
-  // Build the sections up front so the walk can attribute icons/images/text to
-  // the top-level child they actually live under.
-  withInstanceVisibility(scanIncludeHidden, function() {
-    var rootChildren = root.type === "INSTANCE" && !expand ? [] : ("children" in root ? root.children : []);
-    if (Array.isArray(rootChildren) && "children" in root) {
-      summary.totalNodes++;  // the root itself
-      for (var ci = 0; ci < rootChildren.length && !nodeBudgetHit; ci++) {
-        var child = rootChildren[ci];
-        if (!scanIncludeHidden && child.visible === false) continue;
-        var section = {
-          id: child.id, name: child.name, type: child.type,
-          x: numberValue(child.x), y: numberValue(child.y),
-          width: numberValue(child.width), height: numberValue(child.height),
-          childCount: ("children" in child && Array.isArray(child.children)) ? child.children.length : 0,
-          iconCount: 0,
-          imageCount: 0,
-        };
-        summary.sections.push(section);
-        walkCount(child, section);
-      }
-    } else {
-      walkCount(root, null);
-    }
+  // Build each section when its top-level child is reached so the walk can
+  // attribute icons/images/text to the top-level child they live under.
+  var rootChildren = withInstanceVisibility(scanIncludeHidden, function() {
+    return root.type === "INSTANCE" && !expand ? [] : ("children" in root ? root.children : []);
   });
+  if (Array.isArray(rootChildren) && "children" in root) {
+    summary.totalNodes++;  // the root itself
+    await walkTreeSliced(rootChildren, scanIncludeHidden, function(child, section) {
+      if (section) return walkCount(child, section);
+      if (summary.totalNodes >= maxNodes) { nodeBudgetHit = true; return "stop"; }
+      section = {
+        id: child.id, name: child.name, type: child.type,
+        x: numberValue(child.x), y: numberValue(child.y),
+        width: numberValue(child.width), height: numberValue(child.height),
+        childCount: ("children" in child && Array.isArray(child.children)) ? child.children.length : 0,
+        iconCount: 0,
+        imageCount: 0,
+      };
+      summary.sections.push(section);
+      var r = walkCount(child, section);
+      return r === undefined ? section : r;
+    }, null);
+  } else {
+    await walkTreeSliced([root], scanIncludeHidden, walkCount, null);
+  }
 
   await resolveInstanceComponents(instanceEntries);
 
@@ -470,12 +467,9 @@ handlers.search_nodes = async function(params) {
     return true;
   }
 
+  // Visited by walkTreeSliced (hidden nodes skipped unless includeHidden).
   function walkAndMatch(node) {
-    // Guard: 'in' operator requires a non-null object — null/undefined/primitives crash here
-    if (!node || typeof node !== "object") return;
-    // Skip invisible nodes unless caller explicitly requests hidden elements
-    if (!criteria.includeHidden && node.visible === false) return;
-    if (results.length >= maxResults) return;
+    if (results.length >= maxResults) return "stop";
     try {
       if (matchNode(node)) {
         var info = {
@@ -505,12 +499,7 @@ handlers.search_nodes = async function(params) {
         results.push(info);
       }
     } catch(e) { /* skip inaccessible nodes */ }
-    if (node && typeof node === "object" && "children" in node && Array.isArray(node.children)) {
-      for (var i = 0; i < node.children.length; i++) {
-        if (results.length >= maxResults) return;
-        walkAndMatch(node.children[i]);
-      }
-    }
+    if (results.length >= maxResults) return "stop";
   }
 
   // Search scope: specific node or current page (no cross-page load — too slow on large files)
@@ -519,7 +508,7 @@ handlers.search_nodes = async function(params) {
   else if (p.name) root = findNodeByName(p.name);
   else root = figma.currentPage;
 
-  walkAndMatch(root);
+  if (root) await walkTreeSliced([root], !!criteria.includeHidden, walkAndMatch, null);
 
   return {
     results: results,
@@ -599,6 +588,18 @@ function uint8ArrayToBase64(bytes) {
 }
 
 // screenshot — export node as PNG base64 (v1.2.5)
+// Clamp raster export scale to 4x and the longest output side to 4096px so a
+// large frame cannot produce a multi-hundred-MB PNG.
+var MAX_EXPORT_SCALE = 4, MAX_EXPORT_DIM = 4096;
+function clampExportScale(node, scale) {
+  var s = Number(scale);
+  if (!(s > 0)) s = 1;
+  s = Math.min(s, MAX_EXPORT_SCALE);
+  var longest = Math.max(node.width || 0, node.height || 0);
+  if (longest * s > MAX_EXPORT_DIM) s = MAX_EXPORT_DIM / longest;
+  return s;
+}
+
 handlers.screenshot = async function(params) {
   var id = params && params.id ? params.id : null;
   var nodeName = params && params.name ? params.name : null;
@@ -637,6 +638,7 @@ handlers.screenshot = async function(params) {
   var savedViewport = forceRenderNode(node, params);
 
   try {
+    s = clampExportScale(node, s);
     var bytes = await node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: s } });
     restoreViewport(savedViewport);
   } catch(exportErr) {
@@ -671,7 +673,8 @@ handlers.screenshot = async function(params) {
       nodeId: node.id,
       nodeName: node.name,
       width: node.width,
-      height: node.height
+      height: node.height,
+      scale: s
     };
     if (annotations.length) resObj.annotations = annotations;
     return resObj;
@@ -770,6 +773,7 @@ handlers.export_image = async function(params) {
 
   // BUG-05 fix: same as screenshot — force render before export, then put the
   // user's viewport back where it was.
+  scale = clampExportScale(node, scale);
   var savedViewport = forceRenderNode(node, params);
   var bytes;
   try {
@@ -787,6 +791,7 @@ handlers.export_image = async function(params) {
     nodeId: node.id,
     nodeName: node.name,
     sizeBytes: bytes.length,
+    scale: scale,
   };
 };
 

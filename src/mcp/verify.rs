@@ -13,6 +13,53 @@ fn css_font_weight(value: &str) -> Option<u16> {
     }
 }
 
+pub(crate) fn px(v: &Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str()?.trim().trim_end_matches("px").parse().ok())
+}
+
+/// CSS box shorthand (1–4 values), arrays, numbers or {top,right,bottom,left} → [t, r, b, l].
+pub(crate) fn box4(v: &Value) -> Option<[f64; 4]> {
+    if let Some(n) = px(v) { return Some([n; 4]); }
+    let parts: Vec<f64> = if let Some(s) = v.as_str() {
+        s.split_whitespace().map(|p| px(&Value::from(p))).collect::<Option<_>>()?
+    } else if let Some(a) = v.as_array() {
+        a.iter().map(px).collect::<Option<_>>()?
+    } else {
+        let o = v.as_object()?;
+        return Some([px(o.get("top")?)?, px(o.get("right")?)?, px(o.get("bottom")?)?, px(o.get("left")?)?]);
+    };
+    match parts[..] {
+        [a] => Some([a; 4]),
+        [a, b] => Some([a, b, a, b]),
+        [a, b, c] => Some([a, b, c, b]),
+        [a, b, c, d] => Some([a, b, c, d]),
+        _ => None,
+    }
+}
+
+fn fmt_box(b: [f64; 4]) -> String {
+    b.iter().map(|v| format!("{}px", crate::mcp::color::number(*v))).collect::<Vec<_>>().join(" ")
+}
+
+fn actual_box(computed: &HashMap<String, String>, shorthand: &str, longhands: [&str; 4]) -> Option<[f64; 4]> {
+    let sides: Option<Vec<f64>> = longhands.iter().map(|k| computed.get(*k).and_then(|v| px(&Value::from(v.as_str())))).collect();
+    if let Some(s) = sides { return Some([s[0], s[1], s[2], s[3]]); }
+    computed.get(shorthand).and_then(|v| box4(&Value::from(v.as_str())))
+}
+
+/// Concrete colour behind a node's fill: token references (`var(--x)`) fall back
+/// to the resolved top-most solid paint so they can still be compared.
+pub(crate) fn solid_fill(spec: &Value) -> Option<String> {
+    let fill = spec.get("fill").and_then(Value::as_str);
+    if let Some(f) = fill.filter(|f| !f.starts_with("var(")) { return Some(f.to_string()); }
+    if let Some(v) = spec.pointer("/backgroundCss/value").and_then(Value::as_str) {
+        if spec.pointer("/backgroundCss/property").and_then(Value::as_str) == Some("background-color") { return Some(v.to_string()); }
+    }
+    spec.get("paintData").or_else(|| spec.get("fills")).and_then(Value::as_array)?
+        .iter().rev().find(|p| p["visible"] != false && p["type"] == "SOLID")
+        .and_then(|p| p.get("color").and_then(Value::as_str)).map(str::to_string)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayoutMetric {
     pub name: String,
@@ -57,6 +104,16 @@ pub fn compare_design_metrics(
     computed_styles: &HashMap<String, String>,
 ) -> (Vec<LayoutMetric>, Vec<LayoutMetric>, Vec<String>, f64) {
     let figma_spec = figma_spec.get("context").unwrap_or(figma_spec);
+    // Accept the plugin's get_design_context shape (size/layout/borderRadius),
+    // the index's to_css_spec shape (css map) and flat Figma fields.
+    let css = figma_spec.get("css").cloned().unwrap_or(Value::Null);
+    let spec_width = figma_spec.get("width").and_then(px).or_else(|| figma_spec.pointer("/size/width").and_then(px));
+    let spec_height = figma_spec.get("height").and_then(px).or_else(|| figma_spec.pointer("/size/height").and_then(px));
+    let spec_padding = figma_spec.get("padding").or_else(|| figma_spec.pointer("/layout/padding")).or_else(|| css.get("padding")).and_then(box4);
+    let spec_gap = figma_spec.get("itemSpacing").and_then(px)
+        .or_else(|| figma_spec.pointer("/layout/gap").and_then(px)).or_else(|| css.get("gap").and_then(px));
+    let spec_radius = figma_spec.get("cornerRadius").or_else(|| figma_spec.get("borderRadius")).or_else(|| css.get("border-radius")).and_then(box4);
+    let is_text = figma_spec.get("type").and_then(Value::as_str) == Some("TEXT");
     let typography = figma_spec.get("text").filter(|v| v.is_object())
         .or_else(|| figma_spec.get("typography")).unwrap_or(figma_spec);
     let mut layout_metrics = Vec::new();
@@ -67,7 +124,7 @@ pub fn compare_design_metrics(
     let mut matched_checks = 0;
 
     // 1. Width & Height comparison
-    if let Some(w) = figma_spec.get("width").and_then(|v| v.as_f64()) {
+    if let Some(w) = spec_width {
         total_checks += 1;
         let actual_w = computed_styles.get("width").cloned();
         let is_match = actual_w.as_ref().is_some_and(|val| {
@@ -88,7 +145,7 @@ pub fn compare_design_metrics(
         }
     }
 
-    if let Some(h) = figma_spec.get("height").and_then(|v| v.as_f64()) {
+    if let Some(h) = spec_height {
         total_checks += 1;
         let actual_h = computed_styles.get("height").cloned();
         let is_match = actual_h.as_ref().is_some_and(|val| {
@@ -109,25 +166,16 @@ pub fn compare_design_metrics(
         }
     }
 
-    // 2. Padding comparison
-    if let Some(padding) = figma_spec.get("padding") {
+    // 2. Padding comparison (per side, 1px tolerance)
+    if let Some(expected) = spec_padding {
         total_checks += 1;
-        let actual_pad = computed_styles.get("padding").cloned();
-        let expected_pad = if let Some(p) = padding.as_f64() {
-            format!("{}px", p)
-        } else if let Some(arr) = padding.as_array() {
-            arr.iter().map(|v| format!("{}px", v.as_f64().unwrap_or(0.0))).collect::<Vec<_>>().join(" ")
-        } else {
-            padding.to_string()
-        };
-
-        let is_match = actual_pad.as_ref() == Some(&expected_pad);
-        if is_match { matched_checks += 1; } else {
-            fixes.push(format!("Adjust padding to `{}`", expected_pad));
+        let actual = actual_box(computed_styles, "padding", ["padding-top", "padding-right", "padding-bottom", "padding-left"]);
+        if actual.is_some_and(|a| a.iter().zip(expected).all(|(a, e)| (a - e).abs() <= 1.0)) { matched_checks += 1; } else {
+            fixes.push(format!("Adjust padding to `{}`", fmt_box(expected)));
             layout_metrics.push(LayoutMetric {
                 name: "padding".to_string(),
-                figma_value: Some(expected_pad),
-                actual_value: actual_pad,
+                figma_value: Some(fmt_box(expected)),
+                actual_value: actual.map(fmt_box),
                 is_matched: false,
                 difference: Some("Padding mismatch".to_string()),
             });
@@ -135,13 +183,11 @@ pub fn compare_design_metrics(
     }
 
     // 3. Item Spacing / Gap
-    if let Some(gap) = figma_spec.get("itemSpacing").and_then(|v| v.as_f64()) {
+    if let Some(gap) = spec_gap {
         total_checks += 1;
-        let actual_gap = computed_styles.get("gap").cloned();
-        let is_match = actual_gap.as_ref().is_some_and(|val| {
-            let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
-            (px - gap).abs() <= 1.0
-        });
+        let actual_gap = computed_styles.get("gap").or_else(|| computed_styles.get("column-gap")).cloned();
+        // CSS reports an unset gap as "normal" (0 for flex).
+        let is_match = (px(&Value::from(actual_gap.as_deref().unwrap_or("normal"))).unwrap_or(0.0) - gap).abs() <= 1.0;
 
         if is_match { matched_checks += 1; } else {
             fixes.push(format!("Set flex gap: `gap-[{}px]`", gap));
@@ -155,23 +201,19 @@ pub fn compare_design_metrics(
         }
     }
 
-    // 4. Border Radius
-    if let Some(radius) = figma_spec.get("cornerRadius").and_then(|v| v.as_f64()) {
+    // 4. Border Radius (per corner: top-left, top-right, bottom-right, bottom-left)
+    if let Some(expected) = spec_radius {
         total_checks += 1;
-        let actual_r = computed_styles.get("border-radius").or_else(|| computed_styles.get("borderRadius")).cloned();
-        let is_match = actual_r.as_ref().is_some_and(|val| {
-            let px = val.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
-            (px - radius).abs() <= 1.0
-        });
-
-        if is_match { matched_checks += 1; } else {
-            fixes.push(format!("Set border radius: `rounded-[{}px]`", radius));
+        let actual = actual_box(computed_styles, "border-radius", ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"])
+            .or_else(|| computed_styles.get("borderRadius").and_then(|v| box4(&Value::from(v.as_str()))));
+        if actual.is_some_and(|a| a.iter().zip(expected).all(|(a, e)| (a - e).abs() <= 1.0)) { matched_checks += 1; } else {
+            fixes.push(format!("Set border radius: `{}`", fmt_box(expected)));
             style_metrics.push(LayoutMetric {
                 name: "borderRadius".to_string(),
-                figma_value: Some(format!("{}px", radius)),
-                actual_value: actual_r,
+                figma_value: Some(fmt_box(expected)),
+                actual_value: actual.map(fmt_box),
                 is_matched: false,
-                difference: Some(format!("Expected {}px radius", radius)),
+                difference: Some("Border radius mismatch".to_string()),
             });
         }
     }
@@ -219,9 +261,12 @@ pub fn compare_design_metrics(
     }
 
     // 6. Color / Fill
-    if let Some(hex) = figma_spec.get("fill").and_then(|v| v.as_str()) {
+    // A TEXT node's fill is its glyph colour, compared against CSS `color`.
+    if let Some(hex) = solid_fill(figma_spec).or_else(|| typography.get("color").and_then(Value::as_str).filter(|c| !c.starts_with("var(")).map(str::to_string)) {
+        let hex = hex.as_str();
+        let (css_key, camel) = if is_text { ("color", "color") } else { ("background-color", "backgroundColor") };
         total_checks += 1;
-        let actual_bg = computed_styles.get("background-color").or_else(|| computed_styles.get("backgroundColor")).cloned();
+        let actual_bg = computed_styles.get(css_key).or_else(|| computed_styles.get(camel)).cloned();
         let is_match = actual_bg.as_ref().is_some_and(|actual| {
             match (crate::mcp::color::Rgba::parse(&serde_json::json!(hex)), crate::mcp::color::Rgba::parse(&serde_json::json!(actual))) {
                 (Ok(expected), Ok(actual)) => expected.matches(actual),
@@ -230,9 +275,9 @@ pub fn compare_design_metrics(
         });
 
         if is_match { matched_checks += 1; } else {
-            fixes.push(format!("Fix background / fill color to `{}`", hex));
+            fixes.push(format!("Fix {css_key} to `{}`", hex));
             style_metrics.push(LayoutMetric {
-                name: "backgroundColor".to_string(),
+                name: camel.to_string(),
                 figma_value: Some(hex.to_string()),
                 actual_value: actual_bg,
                 is_matched: false,
@@ -366,6 +411,29 @@ mod tests {
         assert!(style_diffs.is_empty());
         assert!(fixes.is_empty());
         assert_eq!(percentage, 100.0);
+    }
+
+    /// Real `get_design_context` output: size, padding, gap and radius live
+    /// under size/layout/borderRadius and must all be checked.
+    #[test]
+    fn plugin_context_layout_is_verified() {
+        let spec: Value = serde_json::from_str(include_str!("../../tests/fixtures/design-context-checkout.json")).unwrap();
+        let good = HashMap::from([("width".into(), "1512px".into()), ("height".into(), "1116px".into()),
+            ("padding".into(), "40px 16px 80px".into()), ("gap".into(), "40px".into()), ("border-radius".into(), "6px".into())]);
+        let (layout, style, _, pct) = compare_design_metrics(&spec, &good);
+        assert!(layout.is_empty() && style.is_empty(), "{layout:?} {style:?}");
+        assert_eq!(pct, 100.0);
+        let bad = HashMap::from([("width".into(), "1512px".into()), ("height".into(), "1116px".into()),
+            ("padding".into(), "16px".into()), ("gap".into(), "24px".into()), ("border-radius".into(), "6px".into())]);
+        let (layout, _, _, pct) = compare_design_metrics(&spec, &bad);
+        assert!(layout.iter().any(|m| m.name == "padding") && layout.iter().any(|m| m.name == "gap"), "{layout:?}");
+        assert!(pct < 100.0);
+        // A TEXT node's colour is checked against CSS `color`, through its token's resolved paint.
+        let text = &spec["context"]["children"][1];
+        assert_eq!(text["type"], "TEXT");
+        let expected = solid_fill(text).unwrap();
+        let (_, style, _, _) = compare_design_metrics(text, &HashMap::from([("color".into(), expected)]));
+        assert!(!style.iter().any(|m| m.name == "color"), "{style:?}");
     }
 
     #[test]

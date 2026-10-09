@@ -210,6 +210,14 @@ async fn bind_bridge_server(port: u16) -> Result<BridgeState, String> {
     bench::mark_ready();
     let state = BridgeState::new(port);
     let app = http::create_router(state.clone());
+    let expiry = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            expiry.inner.lock().await.expire_sessions(server::now_ms());
+        }
+    });
 
     let app_v4 = app.clone();
     tokio::spawn(async move {

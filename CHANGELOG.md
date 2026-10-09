@@ -1,5 +1,26 @@
 # Changelog
 
+## [6.0.0] — 2026-10-09
+
+### Breaking
+- `search_nodes` (figma_read / figma_index) returns a compact projection (id, name, type, parentId, size, text ≤200 chars, componentName); `limit` is clamped to 100.
+- `figma_export_asset` / `export_image` without `outputPath` write the image to the temp folder and return its path instead of inline base64.
+- `figma_get_tokens`: blur effects export as `blur(radius / 2)` (Figma Dev Mode convention); multi-paint backgrounds list the top Figma paint first.
+
+### Fixed
+- `figma_to_code` rendered an empty `<div />`: it read the plugin's wrapper instead of `context`, and `characters` instead of `text.content`.
+- Codegen: FIXED/FILL/HUG sizing, min/max, absolute positioning (incl. inside groups), per-corner radii, exact Tailwind values, stroke weight/sides/OUTSIDE, valid blur classes, opacity, blend, clip, rotation, line-height, letter-spacing, alignment, case, decoration, truncation, mixed-style runs, image fills, grid and wrap row gaps; text is escaped; HTML/Vue emit `class` and closed tags; React Native and SwiftUI emit styles; shadcn matching uses whole words.
+- `get_design_context`: token names match exported CSS variables, token bindings are reported, subtrees are no longer cut at depth 4 (depth/maxNodes with `summary.complete`).
+- `figma_verify_ui` checks size, per-side padding, gap and per-corner radius from plugin and index specs; text colour is compared with `color`.
+- Plugin reads: variables resolve in the node's mode and include library aliases, letter-spacing % converts to px, mixed text reports case/weight/links, hidden layers no longer leak, variant reads no longer throw, grid/sizing/min-max in node detail and `get_css`, CSS rotation/weight fixes.
+- Index no longer stays "not ready" after any write; scoped rescans drop deleted layers; deterministic search order.
+- Hot reload looped forever after a server update (stale runtime hash), spawning a new tab session every few seconds.
+- A Figma variable lookup that never settles (e.g. unreachable library alias) froze every later request; lookups are bounded and the request queue has a watchdog.
+
+### Changed
+- Large plugin replies are no longer kept in the replay cache; read cache has a 32MB budget; long tree walks yield to Figma's main thread; exports clamp scale and size.
+- `/response` accepts up to 64MB; stdio MCP requests run concurrently; script logs are capped; scripts return objects as JSON.
+
 ## [5.1.1] — 2026-10-09
 
 ### Fixed

@@ -1,9 +1,31 @@
 //! `figma_read`, `figma_rules` and `figma_index`, split out of `server::handle_tool_call_inner`.
 
 use super::protocol::ToolResult;
-use super::server::{is_supported_read_operation, save_export_to_disk};
+use super::server::{is_supported_read_operation, save_export_to_disk, save_export_to_temp};
 use crate::bridge::BridgeHandle;
 use serde_json::{json, Value};
+
+fn clamp_limit(args: &Value, default: u64, max: u64) -> usize {
+    args["limit"].as_u64().unwrap_or(default).clamp(1, max) as usize
+}
+
+/// Cap the raw component catalogue so a large library cannot flood the model context.
+fn cap_components(data: &mut Value, limit: usize) {
+    let mut truncated = false;
+    for key in ["components", "componentSets"] {
+        if let Some(list) = data.get_mut(key).and_then(Value::as_array_mut) {
+            truncated |= list.len() > limit;
+            list.truncate(limit);
+        }
+    }
+    if truncated { data["truncated"] = json!(true); }
+}
+
+fn without(value: impl serde::Serialize, keys: &[&str]) -> Value {
+    let mut value = serde_json::to_value(value).unwrap_or_default();
+    if let Some(obj) = value.as_object_mut() { for key in keys { obj.remove(*key); } }
+    value
+}
 
 pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult {
     let raw_operation = match args.get("operation")
@@ -72,10 +94,10 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
     if operation == "search_nodes" {
         let query = args["query"].as_str().unwrap_or("");
         let node_type = args.get("type").or_else(|| args.get("nodeType")).and_then(Value::as_str);
-        let limit = args["limit"].as_u64().unwrap_or(30) as usize;
+        let limit = clamp_limit(&args, 30, 100);
         let results = bridge.search_index_nodes(session_id, query, node_type, limit).await;
         let stats = bridge.get_index_stats(session_id).await;
-        let nodes = results.unwrap_or_default();
+        let nodes: Vec<Value> = results.unwrap_or_default().iter().map(|n| n.search_summary()).collect();
         return ToolResult::text(json!({"query":query,"nodes":nodes,"count":nodes.len(),
             "cached":true,"scope":stats.as_ref().map(|stats| &stats.scopes),
             "complete":stats.as_ref().is_some_and(|stats| stats.complete),
@@ -100,6 +122,7 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
                         } else if operation == "get_local_components" && idx.stats.components_indexed {
                             if let Some(data) = &idx.raw_components {
                                 let mut data = data.clone();
+                                cap_components(&mut data, clamp_limit(&args, 200, 500));
                                 data["cached"] = json!(true);
                                 return ToolResult::text(serde_json::to_string(&data).unwrap_or_default());
                             }
@@ -189,7 +212,13 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
 
     let output_path = args.get("outputPath").and_then(|v| v.as_str());
     match bridge.send_operation(operation, op_params, session_id).await {
-        Ok(data) => {
+        Ok(mut data) => {
+            if operation == "get_local_components" { cap_components(&mut data, clamp_limit(&args, 200, 500)); }
+            if matches!(operation, "export_image" | "export_node" | "exportNode") && output_path.is_none() {
+                if let Some(saved) = save_export_to_temp(&data, "png").await {
+                    return match saved { Ok(disk_res) => ToolResult::text(disk_res.to_string()), Err(e) => ToolResult::error(e) };
+                }
+            }
             if let Some(out_path) = output_path {
                 if ["export_image", "export_svg", "screenshot"].contains(&operation) {
                     match save_export_to_disk(out_path, &data, "png").await {
@@ -266,8 +295,11 @@ pub(super) async fn figma_rules(bridge: BridgeHandle, args: Value) -> ToolResult
                     if !idx.variables.is_empty() {
                         lines.push("## Variables & Tokens".to_string());
                         lines.push("```".to_string());
-                        for v in &idx.variables {
+                        for v in idx.variables.iter().take(200) {
                             lines.push(format!("{}.{} ({})", v.collection_name, v.name, v.resolved_type));
+                        }
+                        if idx.variables.len() > 200 {
+                            lines.push(format!("…and {} more", idx.variables.len() - 200));
                         }
                         lines.push("```".to_string());
                         lines.push("".to_string());
@@ -366,10 +398,13 @@ pub(super) async fn figma_rules(bridge: BridgeHandle, args: Value) -> ToolResult
                         }
                     }
                     lines.push("```".to_string());
-                    for v in vars {
+                    for v in vars.iter().take(200) {
                         let v_name = v.get("name").and_then(|val| val.as_str()).unwrap_or_default();
                         let v_type = v.get("resolvedType").and_then(|val| val.as_str()).unwrap_or_default();
                         lines.push(format!("{} ({})", v_name, v_type));
+                    }
+                    if vars.len() > 200 {
+                        lines.push(format!("…and {} more", vars.len() - 200));
                     }
                     lines.push("```".to_string());
                     lines.push("".to_string());
@@ -523,11 +558,12 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
         "search_nodes" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let node_type = args.get("nodeType").and_then(|v| v.as_str());
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
+            let limit = clamp_limit(&args, 30, 100);
 
             match bridge.search_index_nodes(session_id, query, node_type, limit).await {
                 Some(results) => {
                     let stats = bridge.get_index_stats(session_id).await;
+                    let results: Vec<Value> = results.iter().map(|n| n.search_summary()).collect();
                     let out = json!({
                         "query": query,
                         "nodeType": node_type,
@@ -537,7 +573,7 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
                         "scope": stats.as_ref().map(|stats| &stats.scopes),
                         "complete": stats.as_ref().is_some_and(|stats| stats.complete),
                     });
-                    ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                    ToolResult::text(out.to_string())
                 }
                 None => {
                     ToolResult::text(json!({"results":[], "count":0, "scope":[], "complete":false,
@@ -562,7 +598,7 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
                 }
                 None => {
                     match bridge.send_operation("get_local_components", json!({}), session_id).await {
-                        Ok(data) => ToolResult::text(serde_json::to_string_pretty(&data).unwrap_or_default()),
+                        Ok(mut data) => { cap_components(&mut data, clamp_limit(&args, 200, 500)); ToolResult::text(data.to_string()) },
                         Err(e) => ToolResult::error(e),
                     }
                 }
@@ -572,17 +608,21 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
         "search_styles" => {
             let name = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let style_type = args.get("styleType").and_then(|v| v.as_str());
+            let limit = clamp_limit(&args, 50, 200);
 
             match bridge.search_index_styles(session_id, name, style_type).await {
                 Some(results) => {
+                    let styles: Vec<Value> = results.iter().take(limit).map(|s| without(s, &["source"])).collect();
                     let out = json!({
                         "query": name,
                         "styleType": style_type,
-                        "count": results.len(),
+                        "count": styles.len(),
+                        "total": results.len(),
+                        "truncated": results.len() > limit,
                         "cached": true,
-                        "styles": results,
+                        "styles": styles,
                     });
-                    ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                    ToolResult::text(out.to_string())
                 }
                 None => {
                     match bridge.send_operation("get_styles", json!({}), session_id).await {
@@ -596,17 +636,21 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
         "search_variables" => {
             let name = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let collection = args.get("collection").and_then(|v| v.as_str());
+            let limit = clamp_limit(&args, 50, 200);
 
             match bridge.search_index_variables(session_id, name, collection).await {
                 Some(results) => {
+                    let variables: Vec<Value> = results.iter().take(limit).map(|v| without(v, &["source", "modes"])).collect();
                     let out = json!({
                         "query": name,
                         "collection": collection,
-                        "count": results.len(),
+                        "count": variables.len(),
+                        "total": results.len(),
+                        "truncated": results.len() > limit,
                         "cached": true,
-                        "variables": results,
+                        "variables": variables,
                     });
-                    ToolResult::text(serde_json::to_string_pretty(&out).unwrap_or_default())
+                    ToolResult::text(out.to_string())
                 }
                 None => {
                     match bridge.send_operation("get_variables", json!({}), session_id).await {
@@ -651,7 +695,7 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
                             None => return ToolResult::error("Streamed index was not received; retry refresh."),
                         }
                     } else {
-                        let idx = crate::bridge::index::FigmaIndex::from_raw(
+                        let mut idx = crate::bridge::index::FigmaIndex::from_raw(
                             &sid,
                             file_name,
                             page_nodes,
@@ -660,6 +704,7 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
                             comps,
                             start_ms,
                         );
+                        idx.page_id = data["pageId"].as_str().map(str::to_owned);
                         let stats = idx.stats.clone();
                         if let BridgeHandle::Direct(ref state) = bridge {
                             state.update_index(&sid, idx).await;
@@ -679,5 +724,21 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
         }
 
         _ => ToolResult::error(format!("Unknown figma_index operation: '{}'. Available: status, search_nodes, get_node, search_components, search_styles, search_variables, refresh", operation)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_are_clamped_and_component_catalogue_is_capped() {
+        assert_eq!(clamp_limit(&json!({"limit": 100_000}), 30, 100), 100);
+        assert_eq!(clamp_limit(&json!({"limit": 0}), 30, 100), 1);
+        assert_eq!(clamp_limit(&json!({}), 30, 100), 30);
+        let mut data = json!({"components": [1, 2, 3], "componentSets": [1]});
+        cap_components(&mut data, 2);
+        assert_eq!(data, json!({"components": [1, 2], "componentSets": [1], "truncated": true}));
+        assert_eq!(without(json!({"id": 1, "source": {}, "modes": []}), &["source", "modes"]), json!({"id": 1}));
     }
 }

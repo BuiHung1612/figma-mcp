@@ -41,7 +41,7 @@ function collectTextContent(node, maxItems) {
   if (!maxItems) maxItems = 10;
   var texts = [];
   function walk(n) {
-    if (!n || typeof n !== "object") return;
+    if (!n || typeof n !== "object" || n.visible === false) return;
     if (texts.length >= maxItems) return;
     if (n.type === "TEXT") {
       var t = n.characters;
@@ -60,7 +60,7 @@ function collectIconNames(node, maxItems) {
   if (!maxItems) maxItems = 10;
   var icons = [];
   function walk(n) {
-    if (!n || typeof n !== "object") return;
+    if (!n || typeof n !== "object" || n.visible === false) return;
     if (icons.length >= maxItems) return;
     if (isLikelyIcon(n)) icons.push(n.name);
     if ("children" in n && Array.isArray(n.children)) {
@@ -69,6 +69,23 @@ function collectIconNames(node, maxItems) {
   }
   walk(node);
   return icons;
+}
+
+// Letter spacing in px: Figma PERCENT is relative to the font size.
+function letterSpacingPx(ls, fontSize) {
+  if (!ls || !ls.value) return undefined;
+  if (ls.unit === "PERCENT") {
+    if (typeof fontSize !== "number") return undefined;
+    return Math.round(ls.value / 100 * fontSize * 1000) / 1000;
+  }
+  return ls.value;
+}
+
+function lineHeightOut(lh) {
+  if (!lh) return undefined;
+  if (lh.unit === "PERCENT") return Math.round(lh.value * 100) / 100 + "%";
+  if (lh.unit === "PIXELS") return lh.value;
+  return undefined;
 }
 
 // Resolve the typography of a TEXT node into plain values, unwrapping
@@ -80,10 +97,15 @@ function resolveTextStyle(node, opts) {
   var out = { mixed: false };
 
   try { out.content = node.characters; } catch(e) {}
+  try {
+    if (typeof node.maxLines === "number") out.maxLines = node.maxLines;
+    if (node.textTruncation && node.textTruncation !== "DISABLED") out.textTruncation = node.textTruncation;
+  } catch(e) {}
 
   var mixed = isMixed(node.fontSize) || isMixed(node.fontName) ||
               isMixed(node.fills)    || isMixed(node.letterSpacing) ||
-              isMixed(node.lineHeight) || isMixed(node.textDecoration);
+              isMixed(node.lineHeight) || isMixed(node.textDecoration) ||
+              isMixed(node.textCase);
 
   if (!mixed) {
     try {
@@ -92,9 +114,11 @@ function resolveTextStyle(node, opts) {
       if (node.fontName && node.fontName.style) out.fontWeight = node.fontName.style;
       var hex = getFillHex(node);
       if (hex) out.fill = hex;
-      if (node.lineHeight && node.lineHeight.unit === "PERCENT") out.lineHeight = Math.round(node.lineHeight.value) + "%";
-      else if (node.lineHeight && node.lineHeight.unit === "PIXELS") out.lineHeight = node.lineHeight.value;
-      if (node.letterSpacing && node.letterSpacing.value) out.letterSpacing = node.letterSpacing.value;
+      if (typeof node.fontWeight === "number") out.fontWeightNumeric = node.fontWeight;
+      var lh = lineHeightOut(node.lineHeight);
+      if (lh !== undefined) out.lineHeight = lh;
+      var lsPx = letterSpacingPx(node.letterSpacing, node.fontSize);
+      if (lsPx !== undefined) out.letterSpacing = lsPx;
       if (node.textDecoration && node.textDecoration !== "NONE") out.textDecoration = node.textDecoration;
       if (node.textCase && node.textCase !== "ORIGINAL") {
         out.textCase = node.textCase;
@@ -117,7 +141,12 @@ function resolveTextStyle(node, opts) {
   var segs = null;
   try {
     if (typeof node.getStyledTextSegments === "function") {
-      segs = node.getStyledTextSegments(["fontSize", "fontName", "fills", "letterSpacing", "lineHeight", "textDecoration"]);
+      var segFields = ["fontSize", "fontName", "fills", "letterSpacing", "lineHeight", "textDecoration"];
+      try {
+        segs = node.getStyledTextSegments(segFields.concat(["textCase", "fontWeight", "textStyleId", "fillStyleId", "hyperlink"]));
+      } catch(eFields) {
+        segs = node.getStyledTextSegments(segFields);
+      }
     }
   } catch(e) {}
 
@@ -131,9 +160,14 @@ function resolveTextStyle(node, opts) {
       }
       var segHex = firstSolidHex(s.fills);
       if (segHex) seg.fill = segHex;
-      if (s.lineHeight && s.lineHeight.unit === "PERCENT") seg.lineHeight = Math.round(s.lineHeight.value) + "%";
-      else if (s.lineHeight && s.lineHeight.unit === "PIXELS") seg.lineHeight = s.lineHeight.value;
-      if (s.letterSpacing && s.letterSpacing.value) seg.letterSpacing = s.letterSpacing.value;
+      if (typeof s.fontWeight === "number") seg.fontWeightNumeric = s.fontWeight;
+      var segLh = lineHeightOut(s.lineHeight);
+      if (segLh !== undefined) seg.lineHeight = segLh;
+      var segLs = letterSpacingPx(s.letterSpacing, s.fontSize);
+      if (segLs !== undefined) seg.letterSpacing = segLs;
+      if (s.textStyleId && typeof s.textStyleId === "string") seg.textStyleId = s.textStyleId;
+      if (s.fillStyleId && typeof s.fillStyleId === "string") seg.fillStyleId = s.fillStyleId;
+      if (s.hyperlink) seg.hyperlink = s.hyperlink;
       if (s.textDecoration && s.textDecoration !== "NONE") seg.textDecoration = s.textDecoration;
       if (s.textCase && s.textCase !== "ORIGINAL") seg.textCase = s.textCase;
       return seg;
@@ -142,7 +176,7 @@ function resolveTextStyle(node, opts) {
     // describe values shared by every run, never a guess from the first run.
     out.segments = mapped;
     var head = mapped[0];
-    ["fontSize", "fontFamily", "fontWeight", "fill", "lineHeight", "letterSpacing", "textDecoration", "textCase"].forEach(function(key) {
+    ["fontSize", "fontFamily", "fontWeight", "fontWeightNumeric", "fill", "lineHeight", "letterSpacing", "textDecoration", "textCase"].forEach(function(key) {
       if (head[key] !== undefined && mapped.every(function(seg) { return seg[key] === head[key]; })) out[key] = head[key];
     });
     if (out.textCase !== undefined) {
@@ -166,7 +200,7 @@ function resolveTextStyle(node, opts) {
     var fallbackHex = getFillHex(node);
     if (fallbackHex) out.fill = fallbackHex;
     try {
-      if (node.textCase && node.textCase !== "ORIGINAL") {
+      if (node.textCase && !isMixed(node.textCase) && node.textCase !== "ORIGINAL") {
         out.textCase = node.textCase;
         if (node.textCase === "UPPER") out.textTransform = "uppercase";
         else if (node.textCase === "LOWER") out.textTransform = "lowercase";
@@ -187,76 +221,121 @@ async function buildVariableResolverMapAsync(forceRefresh) {
   if (!forceRefresh && cachedVariableResolverMap && (now - cachedVariableResolverMapTime < 15000)) {
     return cachedVariableResolverMap;
   }
-  var map = { byId: {}, byName: {} };
+  // Raw variables are kept so each node resolves with its own active mode
+  // (node.resolvedVariableModes), not the collection default.
+  var map = { raw: {}, defaultModes: {} };
   try {
     if (typeof figma.variables !== "undefined" && typeof figma.variables.getLocalVariablesAsync === "function") {
       var vars = await figma.variables.getLocalVariablesAsync();
-      var rawMap = {};
       for (var i = 0; i < vars.length; i++) {
-        var v = vars[i];
-        if (v && v.id) rawMap[v.id] = v;
+        if (vars[i] && vars[i].id) map.raw[vars[i].id] = vars[i];
       }
-      var defaultModeByCollection = {};
       var collections = await figma.variables.getLocalVariableCollectionsAsync();
       for (var ci = 0; ci < collections.length; ci++) {
-        defaultModeByCollection[collections[ci].id] = collections[ci].defaultModeId;
-      }
-
-      function resolveVarValue(v, depth) {
-        if (!v || depth > 6) return null;
-        var defaultVal = null;
-        if (v.valuesByMode) {
-          var defaultModeId = defaultModeByCollection[v.variableCollectionId];
-          if (defaultModeId && Object.prototype.hasOwnProperty.call(v.valuesByMode, defaultModeId)) {
-            defaultVal = v.valuesByMode[defaultModeId];
-          } else {
-            var modeKeys = Object.keys(v.valuesByMode);
-            if (modeKeys.length > 0) defaultVal = v.valuesByMode[modeKeys[0]];
-          }
-        }
-        if (defaultVal && typeof defaultVal === "object" && defaultVal.type === "VARIABLE_ALIAS" && defaultVal.id) {
-          var targetVar = rawMap[defaultVal.id];
-          if (targetVar) {
-            var targetRes = resolveVarValue(targetVar, depth + 1);
-            return {
-              isAlias: true,
-              targetId: targetVar.id,
-              targetName: targetVar.name,
-              primitiveName: (targetRes && targetRes.primitiveName) ? targetRes.primitiveName : targetVar.name,
-              resolvedValue: targetRes ? targetRes.resolvedValue : null,
-            };
-          }
-        }
-        if (defaultVal && typeof defaultVal === "object" && "r" in defaultVal && "g" in defaultVal && "b" in defaultVal) {
-          return { isAlias: false, resolvedValue: rgbToHex(defaultVal), primitiveName: v.name };
-        }
-        if (typeof defaultVal === "number" || typeof defaultVal === "string" || typeof defaultVal === "boolean") {
-          return { isAlias: false, resolvedValue: defaultVal, primitiveName: v.name };
-        }
-        return { isAlias: false, resolvedValue: defaultVal, primitiveName: v.name };
-      }
-
-      for (var j = 0; j < vars.length; j++) {
-        var vr = vars[j];
-        if (!vr || !vr.id) continue;
-        var res = resolveVarValue(vr, 0);
-        var item = {
-          id: vr.id,
-          name: vr.name,
-          resolvedType: vr.resolvedType,
-          isAlias: res ? res.isAlias : false,
-          targetName: res ? res.targetName : null,
-          primitiveName: res ? res.primitiveName : vr.name,
-          resolvedValue: res ? res.resolvedValue : null,
-        };
-        map.byId[vr.id] = item;
-        map.byName[vr.name] = item;
+        map.defaultModes[collections[ci].id] = collections[ci].defaultModeId;
       }
     }
   } catch(e) {}
   cachedVariableResolverMap = map;
   cachedVariableResolverMapTime = now;
   return map;
+}
+
+// Fetch variables missing from map.raw (library variables) and every alias
+// target they reference, so resolveBoundVariable can run synchronously.
+async function ensureVariablesAsync(map, ids) {
+  if (!map || !figma.variables || typeof figma.variables.getVariableByIdAsync !== "function") return;
+  var queue = ids.slice(), guard = 0;
+  while (queue.length && guard++ < 2000) {
+    var id = queue.pop();
+    var v = map.raw[id];
+    if (!v) {
+      if (map.raw.hasOwnProperty(id)) continue;
+      try { v = await getVariableSafeAsync(id); } catch(e) { v = null; }
+      map.raw[id] = v || null;
+      if (!v) continue;
+      var colId = v.variableCollectionId;
+      if (colId && map.defaultModes[colId] === undefined) {
+        map.defaultModes[colId] = null;
+        try {
+          var col = await getVariableCollectionSafeAsync(colId);
+          if (col) map.defaultModes[colId] = col.defaultModeId;
+        } catch(e) {}
+      }
+    }
+    var vals = v.valuesByMode || {};
+    for (var m in vals) {
+      var val = vals[m];
+      if (val && typeof val === "object" && val.type === "VARIABLE_ALIAS" && val.id && !map.raw.hasOwnProperty(val.id)) queue.push(val.id);
+    }
+  }
+}
+
+// Value of a variable in the consumer's active mode for its collection.
+function variableModeValue(map, v, modes) {
+  var vals = v.valuesByMode || {};
+  var colId = v.variableCollectionId;
+  var modeId = modes && modes[colId];
+  if (modeId === undefined || !vals.hasOwnProperty(modeId)) modeId = map.defaultModes[colId];
+  if (modeId === undefined || modeId === null || !vals.hasOwnProperty(modeId)) modeId = Object.keys(vals)[0];
+  return modeId === undefined ? undefined : vals[modeId];
+}
+
+// Resolve a bound variable for a node: { id, name, type, value?, aliasTarget?, primitiveName? }.
+// Synchronous — returns null when the variable is not in map.raw yet.
+function resolveBoundVariable(map, varId, modes) {
+  var v = map && map.raw[varId];
+  if (!v) return null;
+  var out = { id: varId, name: v.name, type: v.resolvedType };
+  var cur = v, seen = {};
+  for (var d = 0; d < 8 && cur && !seen[cur.id]; d++) {
+    seen[cur.id] = true;
+    var val = variableModeValue(map, cur, modes);
+    if (val && typeof val === "object" && val.type === "VARIABLE_ALIAS") {
+      cur = map.raw[val.id];
+      if (cur === undefined) out.pending = true; // alias target not fetched yet
+      if (!cur) return out;
+      if (!out.aliasTarget) out.aliasTarget = cur.name;
+      out.primitiveName = cur.name;
+      continue;
+    }
+    if (val && typeof val === "object" && "r" in val && "g" in val && "b" in val) out.value = rgbToHex(val, val.a);
+    else if (val !== undefined && val !== null) out.value = val;
+    return out;
+  }
+  return out;
+}
+
+function nodeVariableModes(node) {
+  try { return node.resolvedVariableModes || null; } catch(e) { return null; }
+}
+
+// Library variables bound in the tree are unknown during the synchronous
+// walk; fetch them afterwards and fill the placeholder entries in place.
+async function resolvePendingVariablesAsync(walkState) {
+  var pending = walkState && walkState.pendingVariables;
+  if (!pending || !pending.length || !walkState.variableMap) return;
+  var ids = pending.map(function(p) { return p.entry.id; });
+  await ensureVariablesAsync(walkState.variableMap, ids);
+  for (var i = 0; i < pending.length; i++) {
+    var res = resolveBoundVariable(walkState.variableMap, pending[i].entry.id, pending[i].modes);
+    if (!res) continue;
+    var e = pending[i].entry;
+    e.name = res.name; e.type = res.type;
+    if (res.value !== null && res.value !== undefined) e.value = res.value;
+    if (res.aliasTarget) e.aliasTarget = res.aliasTarget;
+    if (pending[i].primary) applyBoundToken(pending[i].info, pending[i].key, res.name);
+  }
+  walkState.pendingVariables = [];
+}
+
+function applyBoundToken(info, bvk, name) {
+  if (!name) return;
+  if (bvk === "fills" || bvk === "fill") info.fillToken = name;
+  else if (bvk === "strokes" || bvk === "stroke") info.strokeToken = name;
+  else if (bvk === "itemSpacing") { info.gapToken = name; if (info.layout) info.layout.gapToken = name; }
+  else if (bvk === "paddingTop" || bvk === "paddingBottom" || bvk === "paddingLeft" || bvk === "paddingRight") { info.paddingToken = name; if (info.layout) info.layout.paddingToken = name; }
+  else if (bvk === "topLeftRadius" || bvk === "cornerRadius") info.radiusToken = name;
 }
 
 // ── Clean Variant & Component Properties Parser ──
@@ -460,6 +539,17 @@ function applyStrokeWeight(node, info) {
 // walkState: optional { remaining, truncated, absolute, precise } — `remaining` is a node
 //   budget so one huge frame can't produce a multi-MB payload; subtrees past the
 //   budget are summarized like the depth limit and `truncated` is set.
+// Siblings reached after the node budget ran out become cheap stubs instead
+// of full extractions.
+function extractChildOrStub(c, depth, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState) {
+  if (walkState && typeof walkState.remaining === "number" && walkState.remaining <= 0) {
+    if (!c || (filterInvisible && c.visible === false)) return null;
+    walkState.truncated = true;
+    return { id: c.id, name: c.name, type: c.type, childCount: "children" in c ? c.children.length : 0, stub: "nodeBudget" };
+  }
+  return extractDesignTree(c, depth, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState);
+}
+
 function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState) {
   if (!node || typeof node !== "object") return null;
   if (depth === undefined) depth = 0;
@@ -511,7 +601,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         walkState.truncated = true;
       } else {
         info.children = minimalChildren
-          .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })
+          .map(function(c) { return extractChildOrStub(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })
           .filter(Boolean);
       }
     }
@@ -522,7 +612,8 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   try {
     if ("fills" in node && node.fills && !isMixed(node.fills) && node.fills.length) {
       var fills = node.fills;
-      info.paintData = fills.map(serializePaint);
+      var paintData = fills.map(serializePaint);
+      info.paintData = paintData;
       if (fills.length === 1 && fills[0].type === "SOLID" && fills[0].visible !== false) {
         info.fill = rgbToHex(fills[0].color, fills[0].opacity);
         if (tokenCollector && info.fill) tokenCollector.colors.add(info.fill);
@@ -533,7 +624,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
         info.fills = [];
         for (var fi = 0; fi < fills.length; fi++) {
           var f = fills[fi];
-          var fd = serializePaint(f);
+          var fd = paintData[fi];
           if (tokenCollector && fd.color) tokenCollector.colors.add(fd.color);
           if (tokenCollector && fd.gradientStops) fd.gradientStops.forEach(function(stop) { tokenCollector.colors.add(stop.color); });
           info.fills.push(fd);
@@ -545,8 +636,11 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
   // ── Stroke (all strokes, not just first solid) ──
   try {
     if ("strokes" in node && node.strokes && !isMixed(node.strokes) && node.strokes.length) {
-      var strokes = node.strokes;
-      if (strokes.length === 1 && strokes[0].type === "SOLID") {
+      var strokes = node.strokes.filter(function(st) { return st.visible !== false; });
+      if (isFull) info.strokeData = node.strokes.map(serializePaint);
+      if (!strokes.length) {
+        // All strokes hidden — nothing rendered.
+      } else if (strokes.length === 1 && strokes[0].type === "SOLID") {
         info.stroke = rgbToHex(strokes[0].color, strokes[0].opacity);
         if (tokenCollector && info.stroke) tokenCollector.colors.add(info.stroke);
         applyStrokeWeight(node, info);
@@ -601,7 +695,8 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
     if (node.boundVariables) {
       var bv = {};
       var bvKeys = Object.keys(node.boundVariables);
-      var varMap = (walkState && walkState.variableMap) ? walkState.variableMap.byId : null;
+      var varMap = walkState ? walkState.variableMap : null;
+      var modes = nodeVariableModes(node);
       for (var bvi = 0; bvi < bvKeys.length; bvi++) {
         var bvk = bvKeys[bvi];
         var binding = node.boundVariables[bvk];
@@ -611,26 +706,22 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
           for (var bi = 0; bi < bindings.length; bi++) {
             var bObj = bindings[bi];
             if (!bObj || !bObj.id) continue;
-            var vInfo = varMap && varMap[bObj.id] ? varMap[bObj.id] : null;
+            var vInfo = varMap ? resolveBoundVariable(varMap, bObj.id, modes) : null;
+            var entry = { id: bObj.id };
             if (vInfo) {
-              var entry = { id: bObj.id, name: vInfo.name, type: vInfo.resolvedType };
-              if (vInfo.resolvedValue !== null && vInfo.resolvedValue !== undefined) entry.value = vInfo.resolvedValue;
-              if (vInfo.isAlias && vInfo.targetName) entry.aliasTarget = vInfo.targetName;
-              resolvedList.push(entry);
-            } else {
-              resolvedList.push({ id: bObj.id });
+              entry.name = vInfo.name; entry.type = vInfo.type;
+              if (vInfo.value !== null && vInfo.value !== undefined) entry.value = vInfo.value;
+              if (vInfo.aliasTarget) entry.aliasTarget = vInfo.aliasTarget;
             }
+            if (varMap && walkState && (!vInfo || vInfo.pending)) {
+              if (!walkState.pendingVariables) walkState.pendingVariables = [];
+              walkState.pendingVariables.push({ entry: entry, modes: modes, info: info, key: bvk, primary: resolvedList.length === 0 });
+            }
+            resolvedList.push(entry);
           }
           if (resolvedList.length > 0) {
             bv[bvk] = Array.isArray(binding) ? resolvedList : resolvedList[0];
-            var primaryEntry = resolvedList[0];
-            if (primaryEntry && primaryEntry.name) {
-              if (bvk === "fills" || bvk === "fill") info.fillToken = primaryEntry.name;
-              else if (bvk === "strokes" || bvk === "stroke") info.strokeToken = primaryEntry.name;
-              else if (bvk === "itemSpacing") info.gapToken = primaryEntry.name;
-              else if (bvk === "paddingTop" || bvk === "paddingBottom" || bvk === "paddingLeft" || bvk === "paddingRight") info.paddingToken = primaryEntry.name;
-              else if (bvk === "topLeftRadius" || bvk === "cornerRadius") info.radiusToken = primaryEntry.name;
-            }
+            if (resolvedList[0].name) applyBoundToken(info, bvk, resolvedList[0].name);
           }
         }
       }
@@ -832,6 +923,10 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
       info.childCount = children.length;
       if (walkState && walkState.skipChildSummary) {
         info.childrenTruncated = "indexDiff";
+      } else if (budgetSpent) {
+        // Budget gone: no subtree text/icon walks either.
+        info.childrenTruncated = "nodeBudget";
+        walkState.truncated = true;
       } else {
         var texts = collectCapped(collectTextContent, node, 15);
         if (texts.items.length) info.textContent = texts.items;
@@ -844,7 +939,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
       }
     } else {
       var rawChildren = children
-        .map(function(c) { return extractDesignTree(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })
+        .map(function(c) { return extractChildOrStub(c, depth + 1, maxDepth, detailLevel, filterInvisible, tokenCollector, instanceCollector, walkState); })
         .filter(Boolean);
       info.children = rawChildren;
     }

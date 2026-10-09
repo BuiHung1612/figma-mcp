@@ -111,13 +111,18 @@ function onSelectionChange() {
       var selectedId = sel[0].id;
       selectionIndexTimer = setTimeout(function() {
         if (figma.currentPage.selection[0] && figma.currentPage.selection[0].id === selectedId) {
-          handlers.index_scan({ id: selectedId, deferComponents: true, silent: true }).catch(function() {});
+          // Re-selecting an unchanged node needs no rescan.
+          var scanKey = selectedId + "@" + nodeRevision;
+          if (scanKey === lastSelectionScanKey) return;
+          lastSelectionScanKey = scanKey;
+          handlers.index_scan({ id: selectedId, deferComponents: true, silent: true }).catch(function() { lastSelectionScanKey = null; });
         }
       }, 150);
     }
   } catch (e) {}
 }
 
+var lastSelectionScanKey = null;
 figma.on("selectionchange", onSelectionChange);
 
 // Broadcast granular document changes to invalidate or incrementally update index cache
@@ -293,7 +298,11 @@ function stringifyForBridge(data) {
 var bridgeReplies = new Map();
 function sendBridgeReply(reply) {
   reply.sessionId = currentSessionId;
-  bridgeReplies.set(reply.id, reply);
+  // Large replies (base64 screenshots, big trees) are not cached: 256 of them
+  // would pin hundreds of MB. A replay of those simply re-runs the request.
+  var size = typeof reply.dataJson === "string" ? reply.dataJson.length : 0;
+  if (size < 262144) bridgeReplies.set(reply.id, reply);
+  else bridgeReplies.delete(reply.id);
   // ponytail: replay cache covers the last 256 requests in this runtime;
   // durable replay after a plugin restart needs a persisted operation journal.
   if (bridgeReplies.size > 256) bridgeReplies.delete(bridgeReplies.keys().next().value);
@@ -400,7 +409,7 @@ async function handlePluginRequest(request) {
         return;
       }
       var targetNode = sel[0];
-      var scale = request.scale || 2;
+      var scale = clampExportScale(targetNode, request.scale || 2);
       var bytes = await targetNode.exportAsync({
         format: "PNG",
         constraint: { type: "SCALE", value: scale }
@@ -409,7 +418,7 @@ async function handlePluginRequest(request) {
         type: "selection-image-exported",
         nodeId: targetNode.id,
         nodeName: targetNode.name,
-        bytes: Array.from(bytes)
+        bytes: bytes
       });
     } catch (err) {
       figma.notify("Export failed: " + (err && err.message ? err.message : String(err)), { error: true });
@@ -455,9 +464,30 @@ async function handlePluginRequest(request) {
   }
  }
 
+// Requests run one at a time. A handler that never settles (a Figma API
+// promise that never resolves) would otherwise block every later request
+// forever; once the bridge has timed it out (get_op_timeout in
+// src/bridge/server.rs), move the queue on.
+function requestWatchdogMs(request) {
+  var op = request && request.operation;
+  return op === "screenshot" || op === "scan_design" || op === "export_image" || op === "batch" ? 90000 : 60000;
+}
+
 var pluginRequestTail = Promise.resolve();
 figma.ui.onmessage = function(request) {
-  var result = pluginRequestTail.then(function() { return handlePluginRequest(request); });
+  // A hot reload must not wait behind a stuck request: it is the way out of one.
+  if (request && request.type === "EVAL_MAIN_CODE") return handlePluginRequest(request);
+  var result = pluginRequestTail.then(function() {
+    return new Promise(function(resolve, reject) {
+      var watchdog = setTimeout(function() {
+        console.warn("[figma-rust-mcp] " + (request && request.operation) + " still running after bridge timeout; continuing queue");
+        resolve();
+      }, requestWatchdogMs(request));
+      handlePluginRequest(request).then(
+        function(v) { clearTimeout(watchdog); resolve(v); },
+        function(e) { clearTimeout(watchdog); reject(e); });
+    });
+  });
   pluginRequestTail = result.catch(function() {});
   return result;
 };

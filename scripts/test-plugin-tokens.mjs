@@ -10,7 +10,7 @@ import { configureAgent, detectAgents } from '../bin/agent-config.js';
 import { parse as parseJsonc } from 'jsonc-parser';
 
 function runtime(figma = {}) {
-  const context = vm.createContext({ figma, handlers: {}, console, setTimeout, Map, Set, Uint8Array });
+  const context = vm.createContext({ figma, handlers: {}, console, setTimeout, clearTimeout, Map, Set, Uint8Array });
   for (const file of ['utils', 'token-helpers', 'read-helpers', 'handlers-read-detail', 'handlers-read', 'handlers-tokens', 'handlers-write-ops', 'node-reader']) {
     vm.runInContext(readFileSync(`plugin-src/${file}.js`, 'utf8'), context, { filename: file });
   }
@@ -161,12 +161,13 @@ test('export_node validates format and works through batch and aliases', async (
   assert.match(batch.results[1].error, /supports PNG/);
 });
 
-test('multiple paints preserve top-first ordering and node opacity stays separate', () => {
+test('multiple paints: Figma bottom→top becomes CSS top-first; top-most solid wins', () => {
   const r = runtime();
-  const paints = [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: .5 }, { type: 'SOLID', color: { r: 0, g: 0, b: 1 }, opacity: 1 }].map(r.serializePaint);
-  const css = r.paintsToCss(paints, 200, 100);
-  assert.match(css.value, /^linear-gradient\(rgba\(255, 0, 0, 0.5\)/);
-  assert.match(css.value, /linear-gradient\(#0000ff, #0000ff\)$/);
+  const raw = [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: .5 }, { type: 'SOLID', color: { r: 0, g: 0, b: 1 }, opacity: 1 }];
+  const css = r.paintsToCss(raw.map(r.serializePaint), 200, 100);
+  assert.match(css.value, /^linear-gradient\(#0000ff, #0000ff\)/);
+  assert.match(css.value, /linear-gradient\(rgba\(255, 0, 0, 0.5\), rgba\(255, 0, 0, 0.5\)\)$/);
+  assert.equal(r.firstSolidHex(raw), '#0000ff');
 });
 
 test('UI badge uses release version initially and follows the server on reconnect', () => {
@@ -600,6 +601,32 @@ test('plugin tab IDs differ for the same document and request replay does not wr
   assert.ok(messages.filter(msg => msg.id).every(msg => msg.sessionId === first.currentSessionId));
 });
 
+test('a runtime hash change hot-reloads once, not on every later server-hello', () => {
+  const html = readFileSync('plugin-runtime/ui.html', 'utf8');
+  const source = html.slice(html.indexOf('    function connectWs()'), html.indexOf('    async function startLongPoll()'));
+  const sockets = [];
+  let reloads = 0;
+  class Socket {
+    static OPEN = 1;
+    constructor(url) { this.url = url; this.readyState = 1; sockets.push(this); }
+    close() {} send() {}
+  }
+  const r = vm.createContext({
+    uiDisposed: false, ws: null, wsConnected: false, sessionId: 'tab-a', fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730',
+    WebSocket: Socket, setInterval: () => 1, clearInterval: () => {}, setTimeout: () => { reloads++; return 1; }, clearTimeout: () => {},
+    sendRuntimeCapabilities: () => {}, consecutiveErrors: 0, everConnected: false, retryTimer: null, polling: true,
+    setStatus: () => {}, log: () => {}, currentPort: 41730, READ_OPS: [], updateRuntimeVersion: () => {},
+    activeIndexScan: null, startLongPoll: () => {}, dispatchToMain: () => {}, window: {},
+  });
+  vm.runInContext(source, r);
+  r.connectWs(); sockets[0].onopen();
+  const hello = hash => sockets[0].onmessage({ data: JSON.stringify({ type: 'server-hello', version: '5.1.0', runtimeHash: hash }) });
+  hello('a'); assert.equal(reloads, 0);
+  hello('b'); assert.equal(reloads, 1);
+  // window survives the reload's document.write; the same server must not reload it again.
+  hello('b'); hello('b'); assert.equal(reloads, 1);
+});
+
 test('old UI socket callbacks cannot clear or dispatch through a replacement socket', () => {
   const html = readFileSync('plugin-runtime/ui.html', 'utf8');
   const source = html.slice(html.indexOf('    function connectWs()'), html.indexOf('    async function startLongPoll()'));
@@ -634,7 +661,7 @@ test('tree reads preserve Regular font weight, collect Regular font tokens, and 
     getLocalTextStylesAsync: async () => [{ id: 'S:text-1', name: 'Lato/18px/regular' }],
     getLocalEffectStylesAsync: async () => [],
   };
-  const context = vm.createContext({ figma, handlers: {}, console, setTimeout, Map, Set, Uint8Array });
+  const context = vm.createContext({ figma, handlers: {}, console, setTimeout, clearTimeout, Map, Set, Uint8Array });
   for (const file of ['utils', 'svg-path-helpers', 'paint-and-effects', 'token-helpers', 'read-helpers', 'handlers-read-detail', 'handlers-read']) {
     vm.runInContext(readFileSync(`plugin-src/${file}.js`, 'utf8'), context, { filename: file });
   }
@@ -831,4 +858,87 @@ test('byte-bounded reads paginate without dropping unicode, oversized nodes or d
   assert.deepEqual(plain(all.map(n=>n.id)),['frame',...frame.children.map(n=>n.id)]);
   assert.equal(all[5].content,'漢'.repeat(2000));
   await assert.rejects(r.handlers.read_nodes({id:'frame',maxBytes:0}),/maxBytes/);
+});
+
+test('letter spacing PERCENT converts to px; line-height percent keeps decimals', () => {
+  const r = runtime();
+  const node = { id: '1:1', type: 'TEXT', characters: 'Hi', fontSize: 20, fontName: { family: 'Inter', style: 'Regular' },
+    letterSpacing: { unit: 'PERCENT', value: -2.5 }, lineHeight: { unit: 'PERCENT', value: 137.456 } };
+  const style = r.resolveTextStyle(node);
+  assert.equal(style.letterSpacing, -0.5);
+  assert.equal(style.lineHeight, '137.46%');
+  assert.equal(r.resolveTextStyle({ ...node, letterSpacing: { unit: 'PIXELS', value: 1.2 } }).letterSpacing, 1.2);
+});
+
+test('blur effects emit half the Figma radius', () => {
+  const r = runtime();
+  const css = r.effectsToCss([{ type: 'LAYER_BLUR', radius: 8 }, { type: 'BACKGROUND_BLUR', radius: 20 }]);
+  assert.equal(css.filter, 'blur(4px)');
+  assert.equal(css.backdropFilter, 'blur(10px)');
+});
+
+test('findNodeByIdAsync returns null for a missing instance sublayer, not its parent instance', async () => {
+  const instance = { id: '2715:40862', type: 'INSTANCE' };
+  const r = runtime({ root: { id: '0:0' }, currentPage: { id: '0:1', selection: [] },
+    getNodeByIdAsync: async id => (id === instance.id ? instance : null) });
+  assert.equal(await r.findNodeByIdAsync('I2715:40862;123:456'), null);
+  assert.equal(await r.findNodeByIdAsync('2715:40862'), instance);
+});
+
+test('bound variables resolve in the node mode and report library aliases', async () => {
+  const cols = [{ id: 'sem', defaultModeId: 'light' }, { id: 'lib', defaultModeId: 'l1' }];
+  const local = [{ id: 'bg', name: 'bg/surface', variableCollectionId: 'sem', resolvedType: 'COLOR',
+    valuesByMode: { light: { type: 'VARIABLE_ALIAS', id: 'white' }, dark: { type: 'VARIABLE_ALIAS', id: 'black' } } }];
+  const library = [
+    { id: 'white', name: 'gray/0', variableCollectionId: 'lib', resolvedType: 'COLOR', valuesByMode: { l1: { r: 1, g: 1, b: 1, a: 1 } } },
+    { id: 'black', name: 'gray/900', variableCollectionId: 'lib', resolvedType: 'COLOR', valuesByMode: { l1: { r: 0, g: 0, b: 0, a: 1 } } },
+  ];
+  const r = runtime({ variables: {
+    getLocalVariablesAsync: async () => local, getLocalVariableCollectionsAsync: async () => cols.slice(0, 1),
+    getVariableByIdAsync: async id => library.find(v => v.id === id) || local.find(v => v.id === id),
+    getVariableCollectionByIdAsync: async id => cols.find(c => c.id === id),
+  } });
+  const node = { id: '1:1', name: 'Card', type: 'RECTANGLE', width: 10, height: 10, x: 0, y: 0,
+    fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }], boundVariables: { fills: [{ id: 'bg' }] },
+    resolvedVariableModes: { sem: 'dark' } };
+  const map = await r.buildVariableResolverMapAsync(true);
+  const walkState = { variableMap: map, remaining: 10, budget: 10 };
+  const tree = r.extractDesignTree(node, 0, 5, 'full', true, null, null, walkState);
+  await r.resolvePendingVariablesAsync(walkState);
+  const entry = plain(tree.boundVariables.fills[0]);
+  assert.equal(entry.name, 'bg/surface');
+  assert.equal(entry.aliasTarget, 'gray/900');
+  assert.equal(entry.value, '#000000');
+  assert.equal(tree.fillToken, 'bg/surface');
+  // Second walk: library variables are cached, resolved synchronously.
+  const light = r.extractDesignTree({ ...node, resolvedVariableModes: { sem: 'light' } }, 0, 5, 'full', true, null, null, { variableMap: map, remaining: 10, budget: 10 });
+  assert.equal(light.boundVariables.fills[0].value, '#ffffff');
+  assert.equal(light.boundVariables.fills[0].aliasTarget, 'gray/0');
+});
+
+test('resolveVariableValueAsync reports alias names for node consumers', async () => {
+  const cols = [{ id: 'sem', defaultModeId: 'light' }, { id: 'prim', defaultModeId: 'p' }];
+  const vars = [
+    { id: 'a', name: 'text/primary', variableCollectionId: 'sem', resolvedType: 'COLOR', valuesByMode: { light: { type: 'VARIABLE_ALIAS', id: 'b' }, dark: { type: 'VARIABLE_ALIAS', id: 'c' } },
+      resolveForConsumer: () => ({ value: { r: 1, g: 1, b: 1, a: 1 } }) },
+    { id: 'b', name: 'gray/900', variableCollectionId: 'prim', resolvedType: 'COLOR', valuesByMode: { p: { r: 0, g: 0, b: 0, a: 1 } } },
+    { id: 'c', name: 'gray/0', variableCollectionId: 'prim', resolvedType: 'COLOR', valuesByMode: { p: { r: 1, g: 1, b: 1, a: 1 } } },
+  ];
+  const r = runtime({ variables: { getVariableByIdAsync: async id => vars.find(v => v.id === id), getVariableCollectionByIdAsync: async id => cols.find(c => c.id === id) } });
+  const res = await r.resolveVariableValueAsync(vars[0], { resolvedVariableModes: { sem: 'dark', prim: 'p' } });
+  assert.equal(res.type, 'ALIAS');
+  assert.equal(res.primitiveName, 'gray/0');
+  assert.equal(res.hex, '#ffffff');
+});
+
+test('get_variables finishes when Figma never answers a library alias lookup', async () => {
+  const sem = { id: 'V:2', name: 'bg/primary', resolvedType: 'COLOR', variableCollectionId: 'C:2',
+    valuesByMode: { l: { type: 'VARIABLE_ALIAS', id: 'VariableID:lib/1' } }, scopes: [] };
+  const col = { id: 'C:2', name: 'Sem', defaultModeId: 'l', modes: [{ modeId: 'l', name: 'Light' }], variableIds: ['V:2'] };
+  const r = runtime({ variables: {
+    getLocalVariableCollectionsAsync: async () => [col], getLocalVariablesAsync: async () => [sem],
+    getVariableByIdAsync: () => new Promise(() => {}), getVariableCollectionByIdAsync: async () => col } });
+  const out = plain(await r.handlers.get_variables());
+  assert.equal(out.collections[0].variables[0].values.l.resolvedValue, null);
+  assert.ok(out.diagnostics.some(d => /did not answer variable VariableID:lib\/1/.test(d.message)), JSON.stringify(out.diagnostics));
 });

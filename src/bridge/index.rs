@@ -154,17 +154,32 @@ impl FigmaIndex {
     }
 
     pub fn remove_node(&mut self, id: &str) {
+        if let Some(parent) = self.nodes.get(id).and_then(|n| n.parent_id.clone()) {
+            if let Some(parent) = self.nodes.get_mut(&parent) { parent.children.retain(|child| child != id); }
+        }
         let mut stack = vec![id.to_string()];
         let mut removed = std::collections::HashSet::new();
         while let Some(id) = stack.pop() {
-            if !removed.insert(id.clone()) { continue; }
             self.pending_nodes.remove(&id);
             if let Some(node) = self.nodes.remove(&id) { stack.extend(node.children); }
-            self.top_level_frames.retain(|n| n != &id);
+            removed.insert(id);
         }
-        for node in self.nodes.values_mut() { node.children.retain(|id| !removed.contains(id)); }
+        self.top_level_frames.retain(|n| !removed.contains(n));
         self.stats.total_nodes = self.nodes.len();
     }
+
+    /// Before merging a scoped rescan, drop old children that a rescanned
+    /// parent no longer lists (deleted in Figma), with their subtrees.
+    pub fn drop_missing_children(&mut self, scanned: &HashMap<String, IndexNode>) {
+        let stale: Vec<String> = scanned.values()
+            .filter(|new| new.full_data.as_ref().is_some_and(|data| data["childIds"].is_array()))
+            .filter_map(|new| self.nodes.get(&new.id).map(|old| (new, old)))
+            .flat_map(|(new, old)| old.children.iter()
+                .filter(|child| !new.children.contains(child) && !scanned.contains_key(*child)).cloned())
+            .collect();
+        for id in stale { self.remove_node(&id); }
+    }
+
     pub fn cache_components(&mut self, data: &Value) {
         self.components.clear();
         self.ingest_components(data);
@@ -610,7 +625,7 @@ impl FigmaIndex {
 
     pub fn search_nodes(&self, query: &str, node_type: Option<&str>, limit: usize) -> Vec<&IndexNode> {
         let q = query.to_lowercase();
-        self.nodes.values()
+        let mut matches: Vec<&IndexNode> = self.nodes.values()
             .filter(|n| {
                 if self.pending_nodes.contains(&n.id) { return false; }
                 if let Some(t) = node_type { if !n.node_type.eq_ignore_ascii_case(t) { return false; } }
@@ -618,8 +633,11 @@ impl FigmaIndex {
                     || n.name.to_lowercase().contains(&q)
                     || n.characters.as_deref().map(|c| c.to_lowercase().contains(&q)).unwrap_or(false)
             })
-            .take(limit)
-            .collect()
+            .collect();
+        // HashMap order is random; sort so repeated searches return the same page.
+        matches.sort_unstable_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+        matches.truncate(limit);
+        matches
     }
 
     pub fn get_node(&self, id: &str) -> Option<&IndexNode> { self.nodes.get(id).filter(|_| !self.pending_nodes.contains(id)) }
@@ -678,6 +696,22 @@ fn text_style_from_node(node: &Value) -> Option<Value> {
 }
 
 impl IndexNode {
+    /// Small search-result projection: no full_data or paint/effect payloads.
+    pub fn search_summary(&self) -> Value {
+        let mut out = serde_json::json!({"id": self.id, "name": self.name, "type": self.node_type,
+            "parentId": self.parent_id, "width": self.width, "height": self.height});
+        if let Some(text) = &self.characters {
+            out["characters"] = match text.char_indices().nth(200) {
+                Some((cut, _)) => Value::String(format!("{}…", &text[..cut])),
+                None => Value::String(text.clone()),
+            };
+        }
+        if let Some(name) = self.full_data.as_ref().and_then(|d| d.get("componentName").or_else(|| d.get("mainComponentName"))) {
+            out["componentName"] = name.clone();
+        }
+        out
+    }
+
     pub fn has_details(&self) -> bool {
         self.full_data.as_ref().is_none_or(|data| data["indexDetail"] != "minimal")
     }
@@ -935,6 +969,26 @@ mod tests {
         assert!(!index.nodes.contains_key("t"));
         assert!(!index.apply_patch_batch(3, 4, &[]));
         assert!(!index.is_ready());
+    }
+
+    #[test]
+    fn scoped_rescan_drops_deleted_descendants_and_search_is_sorted() {
+        let mut idx = FigmaIndex::from_raw("s","f",&json!([
+            {"id":"a","type":"FRAME","children":[
+                {"id":"keep","name":"B","type":"TEXT","content":"x".repeat(300)},
+                {"id":"gone","name":"A","type":"FRAME","children":[{"id":"deep","type":"TEXT"}]}]}]),None,None,None,0);
+        let mut scan = FigmaIndex::default();
+        scan.merge_chunk(&[json!({"id":"a","type":"FRAME","parentId":null,"childIds":["keep"]}),
+            json!({"id":"keep","name":"B","type":"TEXT","parentId":"a"})]);
+        idx.drop_missing_children(&scan.nodes);
+        assert!(!idx.nodes.contains_key("gone") && !idx.nodes.contains_key("deep"));
+        assert_eq!(idx.nodes["a"].children, vec!["keep"]);
+        for n in 0..5 { idx.upsert_node(&json!({"id":format!("n{n}"),"name":format!("Z{}", 4 - n),"type":"FRAME","parentId":"a"})); }
+        let names: Vec<_> = idx.search_nodes("z", Some("FRAME"), 3).iter().map(|n| n.name.clone()).collect();
+        assert_eq!(names, ["Z0","Z1","Z2"]);
+        let summary = idx.nodes["keep"].search_summary();
+        assert_eq!(summary["characters"].as_str().unwrap().chars().count(), 201);
+        assert!(summary.get("fills").is_none() && summary.get("full_data").is_none());
     }
 
     #[test]

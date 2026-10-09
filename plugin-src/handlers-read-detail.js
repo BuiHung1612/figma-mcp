@@ -78,7 +78,12 @@ handlers.get_node_detail = async function(params) {
       var dStrokes = node.strokes;
       var strokeBindings = (node.boundVariables && node.boundVariables.strokes) ? (Array.isArray(node.boundVariables.strokes) ? node.boundVariables.strokes : [node.boundVariables.strokes]) : [];
 
-      if (dStrokes.length === 1 && dStrokes[0].type === "SOLID") {
+      // Full paint data for every stroke (gradients/images included).
+      detail.strokeData = dStrokes.map(serializePaint);
+      var anyVisibleStroke = dStrokes.some(function(st) { return st.visible !== false; });
+      if (!anyVisibleStroke) {
+        // Hidden strokes: keep strokeData only, no border.
+      } else if (dStrokes.length === 1 && dStrokes[0].type === "SOLID") {
         detail.stroke = rgbToHex(dStrokes[0].color, dStrokes[0].opacity);
         if (dStrokes[0].opacity !== undefined && dStrokes[0].opacity !== 1) {
           detail.strokeOpacity = Math.round(dStrokes[0].opacity * 1000) / 1000;
@@ -101,6 +106,7 @@ handlers.get_node_detail = async function(params) {
         detail.strokes = [];
         for (var si = 0; si < dStrokes.length; si++) {
           var s = dStrokes[si];
+          if (s.visible === false) continue;
           var sd = { type: s.type };
           if (s.type === "SOLID") sd.color = rgbToHex(s.color, s.opacity);
           if (s.opacity !== undefined && s.opacity !== 1) sd.opacity = Math.round(s.opacity * 1000) / 1000;
@@ -121,11 +127,13 @@ handlers.get_node_detail = async function(params) {
           detail.strokes.push(sd);
         }
       }
-      applyStrokeWeight(node, detail);
-      if (detail.strokeWeight === undefined && typeof node.strokeWeight === "number") {
-        detail.strokeWeight = node.strokeWeight;
+      if (anyVisibleStroke) {
+        applyStrokeWeight(node, detail);
+        if (detail.strokeWeight === undefined && typeof node.strokeWeight === "number") {
+          detail.strokeWeight = node.strokeWeight;
+        }
+        detail.strokeAlign = node.strokeAlign;
       }
-      detail.strokeAlign = node.strokeAlign;
     }
   } catch(e) {}
 
@@ -157,8 +165,16 @@ handlers.get_node_detail = async function(params) {
 
   // Layout / padding
   try {
-    if (node.layoutMode && node.layoutMode !== "NONE") {
-      var alignMap = { "MIN": "flex-start", "CENTER": "center", "MAX": "flex-end", "SPACE_BETWEEN": "space-between" };
+    if (node.layoutMode === "GRID") {
+      detail.css = {
+        display: "grid",
+        padding: node.paddingTop + "px " + node.paddingRight + "px " + node.paddingBottom + "px " + node.paddingLeft + "px",
+      };
+      ["gridRowCount", "gridColumnCount", "gridRowGap", "gridColumnGap"].forEach(function(k) {
+        try { if (typeof node[k] === "number") detail.css[k] = node[k]; } catch(eg) {}
+      });
+    } else if (node.layoutMode && node.layoutMode !== "NONE") {
+      var alignMap = { "MIN": "flex-start", "CENTER": "center", "MAX": "flex-end", "SPACE_BETWEEN": "space-between", "BASELINE": "baseline" };
       detail.css = {
         display: "flex",
         flexDirection: node.layoutMode === "HORIZONTAL" ? "row" : "column",
@@ -167,8 +183,17 @@ handlers.get_node_detail = async function(params) {
         justifyContent: alignMap[node.primaryAxisAlignItems] || node.primaryAxisAlignItems,
         padding: node.paddingTop + "px " + node.paddingRight + "px " + node.paddingBottom + "px " + node.paddingLeft + "px",
       };
+      if (node.layoutWrap === "WRAP") {
+        detail.css.flexWrap = "wrap";
+        if (typeof node.counterAxisSpacing === "number") detail.css.rowGap = node.counterAxisSpacing + "px";
+      }
     }
   } catch(e) {}
+  // Child sizing / positioning inside the parent's layout.
+  ["layoutSizingHorizontal", "layoutSizingVertical", "layoutPositioning", "minWidth", "maxWidth", "minHeight", "maxHeight"].forEach(function(k) {
+    try { if (node[k] !== undefined && node[k] !== null) detail[k] = node[k]; } catch(e) {}
+  });
+  try { if (node.parent && node.parent.layoutMode) detail.parentLayoutMode = node.parent.layoutMode; } catch(e) {}
 
   // Text properties — resolveTextStyle unwraps figma.mixed on multi-style text
   if (node.type === "TEXT") {
@@ -179,6 +204,7 @@ handlers.get_node_detail = async function(params) {
       detail.fontSize = textStyle.fontSize !== undefined ? textStyle.fontSize + "px" : null;
       detail.fontFamily = textStyle.fontFamily || null;
       detail.fontWeight = textStyle.fontWeight || null;
+      if (textStyle.fontWeightNumeric) detail.fontWeightNumeric = textStyle.fontWeightNumeric;
       if (textStyle.lineHeight !== undefined) {
         detail.lineHeight = typeof textStyle.lineHeight === "number" ? textStyle.lineHeight + "px" : textStyle.lineHeight;
       } else if (!isMixed(node.lineHeight) && node.lineHeight && node.lineHeight.unit === "AUTO") {
@@ -338,21 +364,44 @@ handlers.get_css = async function(params) {
   var detail = await handlers.get_node_detail(params);
   var lines = [];
 
-  // Position — only emit absolute positioning for non-auto-layout nodes (flex children use flow)
-  if (!detail.css) {
+  // Position — absolute unless the node flows inside an auto-layout parent.
+  var parentMode = detail.parentLayoutMode;
+  var inFlow = parentMode && parentMode !== "NONE" && detail.layoutPositioning !== "ABSOLUTE";
+  if (!inFlow) {
     lines.push("position: absolute;");
     if (detail.x !== undefined) lines.push("left: " + detail.x + "px;");
     if (detail.y !== undefined) lines.push("top: " + detail.y + "px;");
   }
-  if (detail.width !== undefined) lines.push("width: " + detail.width + "px;");
-  if (detail.height !== undefined) lines.push("height: " + detail.height + "px;");
+  // HUG → intrinsic size (no fixed dimension); FILL → flex: 1 on the parent's
+  // main axis, 100% on its cross axis.
+  var flexGrow = false;
+  [["width", detail.layoutSizingHorizontal, "HORIZONTAL"], ["height", detail.layoutSizingVertical, "VERTICAL"]].forEach(function(dim) {
+    if (detail[dim[0]] === undefined || (inFlow && dim[1] === "HUG")) return;
+    if (inFlow && dim[1] === "FILL") {
+      if (parentMode === dim[2]) flexGrow = true;
+      else lines.push(dim[0] + ": 100%;");
+      return;
+    }
+    lines.push(dim[0] + ": " + detail[dim[0]] + "px;");
+  });
+  if (flexGrow) lines.push("flex: 1 0 0;");
+  if (detail.minWidth) lines.push("min-width: " + detail.minWidth + "px;");
+  if (detail.maxWidth) lines.push("max-width: " + detail.maxWidth + "px;");
+  if (detail.minHeight) lines.push("min-height: " + detail.minHeight + "px;");
+  if (detail.maxHeight) lines.push("max-height: " + detail.maxHeight + "px;");
 
-  // Layout (flex)
+  // Layout (flex / grid)
   if (detail.css) {
     var c = detail.css;
     if (c.display) lines.push("display: " + c.display + ";");
+    if (c.gridColumnCount) lines.push("grid-template-columns: repeat(" + c.gridColumnCount + ", 1fr);");
+    if (c.gridRowCount) lines.push("grid-template-rows: repeat(" + c.gridRowCount + ", auto);");
+    if (c.gridRowGap) lines.push("row-gap: " + c.gridRowGap + "px;");
+    if (c.gridColumnGap) lines.push("column-gap: " + c.gridColumnGap + "px;");
     if (c.flexDirection) lines.push("flex-direction: " + c.flexDirection + ";");
+    if (c.flexWrap) lines.push("flex-wrap: " + c.flexWrap + ";");
     if (c.gap) lines.push("gap: " + c.gap + ";");
+    if (c.rowGap) lines.push("row-gap: " + c.rowGap + ";");
     if (c.alignItems) lines.push("align-items: " + c.alignItems + ";");
     if (c.justifyContent) lines.push("justify-content: " + c.justifyContent + ";");
     if (c.padding && c.padding !== "0px 0px 0px 0px") lines.push("padding: " + c.padding + ";");
@@ -397,9 +446,12 @@ handlers.get_css = async function(params) {
   if (detail.color) lines.push("color: " + detail.color + ";");
   if (detail.fontSize) lines.push("font-size: " + detail.fontSize + ";");
   if (detail.fontFamily) lines.push("font-family: \"" + detail.fontFamily + "\", sans-serif;");
-  if (detail.fontWeight) {
-    var weightMap = { "Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400, "Medium": 500, "SemiBold": 600, "Bold": 700, "ExtraBold": 800, "Black": 900 };
-    var wNum = weightMap[detail.fontWeight] || detail.fontWeight;
+  if (detail.fontWeightNumeric || detail.fontWeight) {
+    // Prefer Figma's numeric weight; else map the style name ("Semi Bold Italic" → SemiBold).
+    var weightMap = { "thin": 100, "hairline": 100, "extralight": 200, "ultralight": 200, "light": 300, "regular": 400, "normal": 400, "book": 400, "": 400,
+      "medium": 500, "semibold": 600, "demibold": 600, "bold": 700, "extrabold": 800, "ultrabold": 800, "black": 900, "heavy": 900 };
+    var styleKey = String(detail.fontWeight || "").toLowerCase().replace(/italic|oblique/g, "").replace(/[\s_-]/g, "");
+    var wNum = detail.fontWeightNumeric || weightMap[styleKey] || detail.fontWeight;
     lines.push("font-weight: " + wNum + ";");
   }
   if (detail.lineHeight) lines.push("line-height: " + detail.lineHeight + ";");
@@ -409,7 +461,11 @@ handlers.get_css = async function(params) {
   if (detail.textTransform) lines.push("text-transform: " + detail.textTransform + ";");
 
   // Rotation
-  if (detail.rotation) lines.push("transform: rotate(" + detail.rotation + "deg);");
+  // Figma rotation is counter-clockwise around the top-left; CSS rotate() is clockwise.
+  if (detail.rotation) {
+    lines.push("transform: rotate(" + (-detail.rotation) + "deg);");
+    lines.push("transform-origin: top left;");
+  }
 
   // Overflow clip — reuse clipsContent resolved in get_node_detail (no second node fetch)
   if (detail.clipsContent) lines.push("overflow: hidden;");
@@ -466,18 +522,32 @@ handlers.get_design_context = async function(params) {
     tStyles.forEach(function(s) { styleNameMap[s.id] = s.name; });
   } catch(e) {}
 
-  // Resolve fill to token name or hex
+  // Same rule as sanitize_token_name in src/mcp/tokens.rs, so var(--x) here
+  // matches the custom properties figma_get_tokens exports.
+  function tokenCssName(name) {
+    var s = String(name).trim().replace(/[\/ _.]/g, "-"), out = "";
+    for (var ci = 0; ci < s.length; ci++) {
+      var ch = s.charAt(ci);
+      if (ch === "-" || /[0-9]/.test(ch) || ch.toLowerCase() !== ch.toUpperCase()) out += ch;
+    }
+    return out.replace(/^-+|-+$/g, "").toLowerCase();
+  }
+
+  // Resolve fill to token name or hex. Paint styles export as --color-<name>.
   function resolveFill(nd) {
     if (!nd) return null;
     try {
-      if (nd.fillStyleId && styleNameMap[nd.fillStyleId]) return "var(--" + styleNameMap[nd.fillStyleId].replace(/\//g, "-") + ")";
+      if (nd.fillStyleId && styleNameMap[nd.fillStyleId]) return "var(--color-" + tokenCssName(styleNameMap[nd.fillStyleId]) + ")";
       if (nd.boundVariables && nd.boundVariables.fills) {
-        var bvf = Array.isArray(nd.boundVariables.fills) ? nd.boundVariables.fills[0] : nd.boundVariables.fills;
-        if (bvf && bvf.id && varNameMap[bvf.id]) return "var(--" + varNameMap[bvf.id].replace(/\//g, "-") + ")";
+        var bvf = Array.isArray(nd.boundVariables.fills) ? nd.boundVariables.fills[nd.boundVariables.fills.length - 1] : nd.boundVariables.fills;
+        if (bvf && bvf.id && varNameMap[bvf.id]) return "var(--" + tokenCssName(varNameMap[bvf.id]) + ")";
       }
       return getFillHex(nd);
     } catch(e) { return null; }
   }
+  var maxDepth = params && typeof params.depth === "number" ? params.depth : 32;
+  var nodeBudget = params && typeof params.maxNodes === "number" ? params.maxNodes : 3000;
+  var visited = 0, truncated = 0;
 
   var ctxInstances = [];
 
@@ -485,25 +555,52 @@ handlers.get_design_context = async function(params) {
   function nodeContext(nd, depth) {
     if (!nd || nd.visible === false) return null;
     var ctx = { id: nd.id, name: nd.name, type: nd.type };
+    visited++;
 
     // Layout
     try {
       if (nd.layoutMode && nd.layoutMode !== "NONE") {
-        var alignMap = { "MIN": "flex-start", "CENTER": "center", "MAX": "flex-end", "SPACE_BETWEEN": "space-between" };
-        ctx.layout = {
-          display: "flex",
-          flexDirection: nd.layoutMode === "HORIZONTAL" ? "row" : "column",
-          gap: nd.itemSpacing + "px",
-          alignItems: alignMap[nd.counterAxisAlignItems] || nd.counterAxisAlignItems,
-          justifyContent: alignMap[nd.primaryAxisAlignItems] || nd.primaryAxisAlignItems,
-          padding: nd.paddingTop + "px " + nd.paddingRight + "px " + nd.paddingBottom + "px " + nd.paddingLeft + "px",
-          wrap: nd.layoutWrap === "WRAP" ? "wrap" : "nowrap",
-        };
+        var alignMap = { "MIN": "flex-start", "CENTER": "center", "MAX": "flex-end", "SPACE_BETWEEN": "space-between", "BASELINE": "baseline" };
+        var pad = nd.paddingTop + "px " + nd.paddingRight + "px " + nd.paddingBottom + "px " + nd.paddingLeft + "px";
+        if (nd.layoutMode === "GRID") {
+          ctx.layout = { display: "grid", padding: pad };
+          if (typeof nd.gridColumnCount === "number") ctx.layout.columns = nd.gridColumnCount;
+          if (typeof nd.gridRowCount === "number") ctx.layout.rows = nd.gridRowCount;
+          if (typeof nd.gridColumnGap === "number") ctx.layout.columnGap = nd.gridColumnGap + "px";
+          if (typeof nd.gridRowGap === "number") ctx.layout.rowGap = nd.gridRowGap + "px";
+        } else {
+          ctx.layout = {
+            display: "flex",
+            flexDirection: nd.layoutMode === "HORIZONTAL" ? "row" : "column",
+            gap: nd.primaryAxisAlignItems === "SPACE_BETWEEN" ? "0px" : nd.itemSpacing + "px",
+            alignItems: alignMap[nd.counterAxisAlignItems] || nd.counterAxisAlignItems,
+            justifyContent: alignMap[nd.primaryAxisAlignItems] || nd.primaryAxisAlignItems,
+            padding: pad,
+            wrap: nd.layoutWrap === "WRAP" ? "wrap" : "nowrap",
+          };
+          if (nd.layoutWrap === "WRAP" && typeof nd.counterAxisSpacing === "number") ctx.layout.rowGap = nd.counterAxisSpacing + "px";
+        }
       }
     } catch(e) {}
 
-    // Size
+    // Size and how this node sizes/positions inside its parent
     try { ctx.size = { width: nd.width, height: nd.height }; } catch(e) {}
+    try {
+      var parentAuto = nd.parent && nd.parent.layoutMode && nd.parent.layoutMode !== "NONE";
+      if (nd.layoutSizingHorizontal) ctx.sizing = { horizontal: nd.layoutSizingHorizontal, vertical: nd.layoutSizingVertical };
+      if (depth > 0 && (!parentAuto || nd.layoutPositioning === "ABSOLUTE")) {
+        // Children of a GROUP are positioned in the enclosing frame's space.
+        var gp = nd.parent && nd.parent.type === "GROUP" ? nd.parent : null;
+        ctx.position = { type: "absolute", x: gp ? nd.x - gp.x : nd.x, y: gp ? nd.y - gp.y : nd.y };
+      }
+      ["minWidth", "maxWidth", "minHeight", "maxHeight"].forEach(function(k) {
+        if (typeof nd[k] === "number") { ctx.constraints = ctx.constraints || {}; ctx.constraints[k] = nd[k]; }
+      });
+      if (nd.rotation) ctx.rotation = nd.rotation;
+      if (nd.clipsContent === true) ctx.clipsContent = true;
+      if (nd.isMask === true) ctx.isMask = true;
+      if (nd.blendMode && nd.blendMode !== "PASS_THROUGH" && nd.blendMode !== "NORMAL") ctx.blendMode = nd.blendMode;
+    } catch(e) {}
 
     // Fill (token-resolved)
     var fillVal = resolveFill(nd);
@@ -528,8 +625,8 @@ handlers.get_design_context = async function(params) {
           var bvk = bvKeys[bvi];
           var binding = nd.boundVariables[bvk];
           var bindId = binding ? (Array.isArray(binding) ? (binding[0] ? binding[0].id : null) : binding.id) : null;
-          if (bindId && varMap[bindId]) {
-            var vName = varMap[bindId].name;
+          if (bindId && varNameMap[bindId]) {
+            var vName = varNameMap[bindId];
             if (bvk === "fills" || bvk === "fill") ctx.fillToken = vName;
             else if (bvk === "strokes" || bvk === "stroke") ctx.strokeToken = vName;
             else if (bvk === "itemSpacing") ctx.gapToken = vName;
@@ -542,7 +639,8 @@ handlers.get_design_context = async function(params) {
 
     // Stroke
     try {
-      if (nd.strokes && nd.strokes.length && nd.strokes[0].type === "SOLID") {
+      var topStroke = nd.strokes && !isMixed(nd.strokes) ? nd.strokes.filter(function(s) { return s.visible !== false; }).pop() : null;
+      if (topStroke && topStroke.type === "SOLID") {
         var swWeight = nd.strokeWeight;
         if (isMixed(swWeight)) {
           var swSides = {};
@@ -552,16 +650,20 @@ handlers.get_design_context = async function(params) {
           if (typeof nd.strokeLeftWeight === "number") swSides.left = nd.strokeLeftWeight;
           swWeight = Object.keys(swSides).length ? swSides : "mixed";
         }
-        ctx.stroke = { color: rgbToHex(nd.strokes[0].color, nd.strokes[0].opacity), weight: swWeight };
-        if (nd.strokes[0].opacity !== undefined && nd.strokes[0].opacity !== 1) {
-          ctx.stroke.opacity = Math.round(nd.strokes[0].opacity * 1000) / 1000;
+        ctx.stroke = { color: rgbToHex(topStroke.color, topStroke.opacity), weight: swWeight };
+        if (nd.strokeAlign) ctx.stroke.align = nd.strokeAlign;
+        if (nd.dashPattern && nd.dashPattern.length) ctx.stroke.dashed = true;
+        if (topStroke.opacity !== undefined && topStroke.opacity !== 1) {
+          ctx.stroke.opacity = Math.round(topStroke.opacity * 1000) / 1000;
         }
       }
     } catch(e) {}
 
     // Corner radius
     try {
-      if ("cornerRadius" in nd && nd.cornerRadius) ctx.borderRadius = nd.cornerRadius + "px";
+      if ("cornerRadius" in nd && isMixed(nd.cornerRadius)) {
+        ctx.borderRadius = nd.topLeftRadius + "px " + nd.topRightRadius + "px " + nd.bottomRightRadius + "px " + nd.bottomLeftRadius + "px";
+      } else if ("cornerRadius" in nd && nd.cornerRadius) ctx.borderRadius = nd.cornerRadius + "px";
     } catch(e) {}
 
     // Opacity / effects
@@ -580,6 +682,7 @@ handlers.get_design_context = async function(params) {
         if (ndText.fontSize !== undefined) ctx.text.fontSize = ndText.fontSize;
         ctx.text.fontFamily = ndText.fontFamily || null;
         ctx.text.fontWeight = ndText.fontWeight || null;
+        if (ndText.fontWeightNumeric) ctx.text.fontWeightNumeric = ndText.fontWeightNumeric;
         if (ndText.lineHeight !== undefined) {
           ctx.text.lineHeight = typeof ndText.lineHeight === "number" ? ndText.lineHeight + "px" : ndText.lineHeight;
         }
@@ -589,6 +692,11 @@ handlers.get_design_context = async function(params) {
         if (ndText.textTransform) ctx.text.textTransform = ndText.textTransform;
         if (ndText.renderedContent) ctx.text.renderedContent = ndText.renderedContent;
         if (ndText.textDecoration) ctx.text.textDecoration = ndText.textDecoration;
+        if (typeof ndText.letterSpacing === "number" && ndText.letterSpacing) ctx.text.letterSpacing = ndText.letterSpacing + "px";
+        try {
+          if (nd.textAutoResize) ctx.text.autoResize = nd.textAutoResize;
+          if (nd.textTruncation === "ENDING") ctx.text.truncate = typeof nd.maxLines === "number" ? nd.maxLines : 1;
+        } catch(e) {}
         if (ndText.mixed) {
           ctx.text.mixedStyles = true;
           if (ndText.segments) ctx.text.segments = ndText.segments;
@@ -615,7 +723,7 @@ handlers.get_design_context = async function(params) {
     // Children (limited depth to avoid token overflow)
     if (nd.type === "INSTANCE" && !(params && params.expandInstances === true)) { ctx.opaque = true; return ctx; }
     var children = "children" in nd ? nd.children : [];
-    if (depth < 4 && children.length) {
+    if (depth < maxDepth && visited < nodeBudget && children.length) {
       var rawCtxChildren = [];
       for (var i = 0; i < children.length; i++) {
         var child = nodeContext(children[i], depth + 1);
@@ -624,6 +732,7 @@ handlers.get_design_context = async function(params) {
       ctx.children = rawCtxChildren;
     } else if (children.length) {
       ctx.childCount = children.length;
+      truncated++;
     }
 
     return ctx;
@@ -664,8 +773,11 @@ handlers.get_design_context = async function(params) {
       tokensUsed: Object.keys(usedColors),
       textStylesUsed: Object.keys(usedTextStyles),
       componentsUsed: Object.keys(usedComponents),
+      nodes: visited,
+      truncatedSubtrees: truncated,
+      complete: truncated === 0,
     },
-    hint: "Use context.layout for flex CSS, context.fill for token-resolved colors, context.component for React component mapping, context.text.style for typography class names.",
+    hint: (truncated ? "Subtrees with childCount were not expanded (depth " + maxDepth + ", maxNodes " + nodeBudget + "); read them by id. " : "") + "Use context.layout for flex CSS, context.fill for token-resolved colors, context.component for React component mapping, context.text.style for typography class names.",
   };
 };
 
@@ -706,7 +818,6 @@ handlers.get_component_map = async function(params) {
   var instances = [];
   var mapInstances = [];
   function walkInstances(nd) {
-    if (!nd) return;
     if (nd.type === "INSTANCE") {
       var entry = { id: nd.id, name: nd.name, x: Math.round(nd.x), y: Math.round(nd.y), width: Math.round(nd.width), height: Math.round(nd.height) };
       mapInstances.push({ info: entry, node: nd });
@@ -720,9 +831,9 @@ handlers.get_component_map = async function(params) {
       } catch(e) {}
       instances.push(entry);
     }
-    if (nd.children) nd.children.forEach(walkInstances);
   }
-  walkInstances(node);
+  // Hidden instances render nothing; skip them unless includeHidden.
+  await walkTreeSliced([node], !!(params && params.includeHidden), walkInstances, null);
   var mapInfo = await resolveInstanceComponents(mapInstances);
 
   // Suggested import path based on component name convention — computed after
@@ -853,6 +964,21 @@ handlers.get_local_components = async function() {
     await yieldToUI(0);
   }
 
+  function readPropertyDefinitions(n) {
+    try {
+      var defs = n.componentPropertyDefinitions;
+      if (!defs) return null;
+      var props = {};
+      for (var key in defs) {
+        if (Object.prototype.hasOwnProperty.call(defs, key)) {
+          props[key] = { type: defs[key].type, defaultValue: defs[key].defaultValue };
+          if (defs[key].variantOptions) props[key].options = defs[key].variantOptions;
+        }
+      }
+      return props;
+    } catch(e) { return null; }
+  }
+
   var componentList = [];
   var COMP_BATCH_SIZE = 50;
   for (var ci = 0; ci < comps.length; ci++) {
@@ -867,20 +993,9 @@ handlers.get_local_components = async function() {
         return n ? n.name : null;
       })(c) : null,
     };
-    // Component properties (variant props)
-    try {
-      if (c.componentPropertyDefinitions) {
-        var defs = c.componentPropertyDefinitions;
-        var props = {};
-        for (var key in defs) {
-          if (Object.prototype.hasOwnProperty.call(defs, key)) {
-            props[key] = { type: defs[key].type, defaultValue: defs[key].defaultValue };
-            if (defs[key].variantOptions) props[key].options = defs[key].variantOptions;
-          }
-        }
-        info.properties = props;
-      }
-    } catch(e) { /* skip properties */ }
+    // Component properties (variants inside a set throw here — the set has them)
+    var compProps = readPropertyDefinitions(c);
+    if (compProps) info.properties = compProps;
     componentList.push(info);
 
     if (ci > 0 && ci % COMP_BATCH_SIZE === 0 && typeof yieldToUI === "function") {
@@ -891,11 +1006,14 @@ handlers.get_local_components = async function() {
   var componentSets = [];
   for (var si = 0; si < sets.length; si++) {
     var s = sets[si];
-    componentSets.push({
+    var setInfo = {
       id: s.id, name: s.name, key: s.key || null,
       description: s.description || "",
       variantCount: s.children ? s.children.length : 0,
-    });
+    };
+    var setProps = readPropertyDefinitions(s);
+    if (setProps) setInfo.properties = setProps;
+    componentSets.push(setInfo);
     if (si > 0 && si % COMP_BATCH_SIZE === 0 && typeof yieldToUI === "function") {
       await yieldToUI(0);
     }
@@ -946,7 +1064,8 @@ handlers.set_viewport = async function(params) {
 handlers.get_variables = async function() {
   var collections = [];
   try {
-    var localCollections = await figma.variables.getLocalVariableCollectionsAsync();
+    var localCollections = await settleWithin(figma.variables.getLocalVariableCollectionsAsync(), 15000, null, "local collections");
+    if (!localCollections) throw new Error("Figma did not return local variable collections within 15s");
 
     // One bulk fetch instead of an await per variable id — a design system with
     // a few hundred tokens otherwise pays that many sequential round-trips.
@@ -954,11 +1073,11 @@ handlers.get_variables = async function() {
     var bulkLoaded = false;
     try {
       if (typeof figma.variables.getLocalVariablesAsync === "function") {
-        var allVars = await figma.variables.getLocalVariablesAsync();
+        var allVars = (await settleWithin(figma.variables.getLocalVariablesAsync(), 15000, null, "local variables")) || [];
+        bulkLoaded = allVars.length > 0;
         for (var avi = 0; avi < allVars.length; avi++) {
           if (allVars[avi]) varsById[allVars[avi].id] = allVars[avi];
         }
-        bulkLoaded = true;
       }
     } catch(e) { /* fall back to per-id lookups */ }
 
@@ -1028,6 +1147,9 @@ handlers.get_variables = async function() {
   } catch(e) {
     return { error: "Variables API not available: " + e.message, collections: [] };
   }
+  stalledVariableLookups.splice(0).forEach(function(label) {
+    diagnostics.push({ message: "Figma did not answer " + label + " within 2s; value left unresolved" });
+  });
   return { schemaVersion: 2, collections: collections, resolvedTokens: resolvedTokensMap, diagnostics: diagnostics };
 };
 
@@ -1103,6 +1225,28 @@ handlers.export_assets = async function(params) {
     return nd.fills.some(function(f) { return f && f.type === "IMAGE" && f.visible !== false; });
   }
 
+  // A node whose only visible paint is one IMAGE fill, with nothing drawn on
+  // top (children, strokes, effects), exports as the source image file.
+  async function originalImageBytes(nd) {
+    try {
+      if (typeof figma.getImageByHash !== "function") return null;
+      if (nd.children && nd.children.length) return null;
+      if (nd.strokes && nd.strokes.some(function(st) { return st.visible !== false; })) return null;
+      if (nd.effects && nd.effects.some(function(ef) { return ef.visible !== false; })) return null;
+      var visible = nd.fills.filter(function(f) { return f.visible !== false; });
+      if (visible.length !== 1 || visible[0].type !== "IMAGE" || !visible[0].imageHash) return null;
+      if (visible[0].opacity !== undefined && visible[0].opacity !== 1) return null;
+      var image = figma.getImageByHash(visible[0].imageHash);
+      var bytes = image ? await image.getBytesAsync() : null;
+      if (!bytes || !bytes.length) return null;
+      var mime = bytes[0] === 0x89 && bytes[1] === 0x50 ? "image/png"
+        : bytes[0] === 0xFF && bytes[1] === 0xD8 ? "image/jpeg"
+        : bytes[0] === 0x47 && bytes[1] === 0x49 ? "image/gif"
+        : bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 ? "image/webp" : null;
+      return mime ? { bytes: bytes, mime: mime } : null;
+    } catch (e) { return null; }
+  }
+
   var nodesToInspect = [];
   function collectAssetNodes(nd, depth) {
     if (!nd || nd.visible === false || depth > 20) return;
@@ -1155,15 +1299,19 @@ handlers.export_assets = async function(params) {
       }
     } else if (item.kind === "image") {
       try {
-        var pngBytes = await nd.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: 2 } });
-        var b64 = uint8ArrayToBase64(pngBytes);
+        // Pure image fill → original bytes; otherwise render the node.
+        var original = await originalImageBytes(nd);
+        var imgBytes = original ? original.bytes : await nd.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: clampExportScale(nd, 2) } });
+        var mime = original ? original.mime : "image/png";
+        var b64 = uint8ArrayToBase64(imgBytes);
         images.push({
           id: nd.id,
           name: baseName,
-          fileName: baseName + ".png",
+          fileName: baseName + "." + (mime === "image/jpeg" ? "jpg" : mime.split("/")[1]),
           width: Math.round(nd.width),
           height: Math.round(nd.height),
-          dataUrl: "data:image/png;base64," + b64
+          original: !!original || undefined,
+          dataUrl: "data:" + mime + ";base64," + b64
         });
       } catch (e) {
         failures.push({ id: nd.id, name: nd.name, kind: "image", error: String(e && e.message ? e.message : e) });

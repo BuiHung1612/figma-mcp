@@ -25,7 +25,6 @@ use uuid::Uuid;
 
 use super::session::{
     PollResponse, QueuedOp, Session, SessionInfo, MAX_QUEUE,
-    SESSION_EXPIRE_MS,
 };
 use super::BridgeHandle;
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
@@ -246,18 +245,7 @@ async fn handle_health(State(state): State<BridgeState>) -> impl IntoResponse {
     let now = now_ms();
     let mut inner = state.inner.lock().await;
 
-    // Cleanup expired sessions
-    if now.saturating_sub(inner.last_cleanup_at) > 30_000 {
-        inner.last_cleanup_at = now;
-        inner.sessions.retain(|_, s| {
-            s.is_connected()
-                || !s.queue.is_empty()
-                || !s.pending.is_empty()
-                || (now - s.last_poll_at) < SESSION_EXPIRE_MS
-        });
-        let sessions: std::collections::HashSet<_> = inner.sessions.keys().cloned().collect();
-        inner.tasks.retain(|_, task| sessions.contains(&task.session_id));
-    }
+    inner.expire_sessions(now);
 
     let last_poll = inner.sessions.values().map(|s| s.last_poll_at).max().unwrap_or(0);
     let queue_len: usize = inner.sessions.values().map(|s| s.queue.len()).sum();
@@ -463,7 +451,7 @@ async fn handle_socket(
             }
             match msg {
                 Message::Text(text) => {
-                    if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                    if let Ok(mut val) = serde_json::from_str::<Value>(&text) {
                         if val["type"] == "runtime-capabilities" {
                             let mut inner = state_clone.inner.lock().await;
                             if let Some(s) = inner.sessions.get_mut(&sid_clone) {
@@ -523,7 +511,7 @@ async fn handle_socket(
                         if val.get("type").and_then(|v| v.as_str()) == Some("delta-diff") {
                             if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
                                 if let Some(diff) = val.get("diff") {
-                                    state_clone.apply_delta(&sid_clone, id, diff).await;
+                                    state_clone.apply_delta(&sid_clone, val["pageId"].as_str(), id, diff).await;
                                 }
                             }
                             continue;
@@ -533,7 +521,7 @@ async fn handle_socket(
                         if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
                                 let deleted: Vec<String> = val["deletedIds"].as_array().map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
-                                state_clone.update_changed_nodes(&sid_clone, nodes, &deleted).await;
+                                state_clone.update_changed_nodes(&sid_clone, val["pageId"].as_str(), nodes, &deleted).await;
                             }
                             continue;
                         }
@@ -551,16 +539,16 @@ async fn handle_socket(
                             continue;
                         }
 
-                        if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                        if let Some(id) = val.get("id").and_then(|v| v.as_str()).map(str::to_owned) {
                             let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
-                            let data = val.get("data").cloned();
+                            let data = val.as_object_mut().and_then(|obj| obj.remove("data"));
                             let error = val.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
 
                             let mut inner = state_clone.inner.lock().await;
-                            if inner.op_to_session.get(id) != Some(&sid_clone) { continue; }
-                            if let Some(s_id) = inner.op_to_session.remove(id) {
+                            if inner.op_to_session.get(&id) != Some(&sid_clone) { continue; }
+                            if let Some(s_id) = inner.op_to_session.remove(&id) {
                                 if let Some(session) = inner.sessions.get_mut(&s_id) {
-                                    if let Some(pending) = session.pending.remove(id) {
+                                    if let Some(pending) = session.pending.remove(&id) {
                                         let latency = now_ms() - pending.start_ms;
                                         session.stats.ops += 1;
                                         session.stats.avg_latency_ms = (session.stats.avg_latency_ms * 9 + latency) / 10;
@@ -579,7 +567,7 @@ async fn handle_socket(
                 }
                 Message::Binary(bin_bytes) => {
                     // Fast Binary IPC (MessagePack)
-                    if let Ok(val) = rmp_serde::from_slice::<Value>(&bin_bytes) {
+                    if let Ok(mut val) = rmp_serde::from_slice::<Value>(&bin_bytes) {
                         if matches!(val["type"].as_str(), Some("nodes-invalidated" | "node-patch" | "index-start" | "index-chunk" | "index-update" | "index-abort")) {
                             state_clone.receive_index_event(&sid_clone, &val).await;
                             continue;
@@ -600,13 +588,13 @@ async fn handle_socket(
                         } else if val.get("type").and_then(|v| v.as_str()) == Some("delta-diff") {
                             if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
                                 if let Some(diff) = val.get("diff") {
-                                    state_clone.apply_delta(&sid_clone, id, diff).await;
+                                    state_clone.apply_delta(&sid_clone, val["pageId"].as_str(), id, diff).await;
                                 }
                             }
                         } else if val.get("type").and_then(|v| v.as_str()) == Some("node-diff") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
                                 let deleted: Vec<String> = val["deletedIds"].as_array().map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
-                                state_clone.update_changed_nodes(&sid_clone, nodes, &deleted).await;
+                                state_clone.update_changed_nodes(&sid_clone, val["pageId"].as_str(), nodes, &deleted).await;
                             }
                         } else if val.get("type").and_then(|v| v.as_str()) == Some("index-chunk") {
                             if let Some(nodes) = val.get("nodes").and_then(|v| v.as_array()) {
@@ -618,16 +606,16 @@ async fn handle_socket(
                                     }
                                 }
                             }
-                        } else if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                        } else if let Some(id) = val.get("id").and_then(|v| v.as_str()).map(str::to_owned) {
                             let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
-                            let data = val.get("data").cloned();
+                            let data = val.as_object_mut().and_then(|obj| obj.remove("data"));
                             let error = val.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
 
                             let mut inner = state_clone.inner.lock().await;
-                            if inner.op_to_session.get(id) != Some(&sid_clone) { continue; }
-                            if let Some(s_id) = inner.op_to_session.remove(id) {
+                            if inner.op_to_session.get(&id) != Some(&sid_clone) { continue; }
+                            if let Some(s_id) = inner.op_to_session.remove(&id) {
                                 if let Some(session) = inner.sessions.get_mut(&s_id) {
-                                    if let Some(pending) = session.pending.remove(id) {
+                                    if let Some(pending) = session.pending.remove(&id) {
                                         let latency = now_ms() - pending.start_ms;
                                         session.stats.ops += 1;
                                         session.stats.avg_latency_ms = (session.stats.avg_latency_ms * 9 + latency) / 10;
@@ -962,6 +950,8 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/plugin/code.js", get(handle_plugin_code))
         .route("/plugin/ui.html", get(handle_plugin_ui))
         .route("/assets/*path", get(handle_asset_serve))
+        // Large design trees arrive through /response; axum's 2MB default would 413 them.
+        .layer(axum::extract::DefaultBodyLimit::max(64 << 20))
         .layer(cors)
         .with_state(state)
 }

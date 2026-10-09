@@ -91,8 +91,8 @@ function paintsToCss(paints, width, height) {
     var css = paintToCss(p, width, height);
     return p.type === "SOLID" ? "linear-gradient(" + css + ", " + css + ")" : css;
   });
-  // Both paint arrays and CSS background images list the top layer first.
-  return layers.length ? { property: "background", value: layers.join(", ") } : null;
+  // Figma paints are bottom→top; CSS background layers list the top layer first.
+  return layers.length ? { property: "background", value: layers.reverse().join(", ") } : null;
 }
 
 function effectsToCss(effects) {
@@ -105,7 +105,8 @@ function effectsToCss(effects) {
       shadows.push((e.type === "INNER_SHADOW" ? "inset " : "") + e.offset.x + "px " + e.offset.y + "px " + e.radius + "px " + (e.spread || 0) + "px " + colorToCss(parseColorValue(e.color)));
     } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
       if (e.blurType && e.blurType !== "NORMAL") throw new Error("Progressive blur requires SVG");
-      (e.type === "LAYER_BLUR" ? filters : backdrops).push("blur(" + e.radius + "px)");
+      // Figma's blur radius is twice the CSS blur() std-deviation (matches Dev Mode CSS).
+      (e.type === "LAYER_BLUR" ? filters : backdrops).push("blur(" + e.radius / 2 + "px)");
     } else throw new Error("Unsupported effect: " + e.type);
   });
   return { boxShadow: shadows.join(", "), filter: filters.join(" "), backdropFilter: backdrops.join(" ") };

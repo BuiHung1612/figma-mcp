@@ -7,10 +7,14 @@ var NODE_FIELDS = ["geometry", "content", "text", "style", "layout", "tokens", "
 
 function copyNodeFields(node, target, keys) {
   keys.forEach(function(key) {
-    if (key in node) {
-      var value = node[key];
-      target[key] = typeof value === "symbol" ? "mixed" : value;
-    }
+    // Some getters throw (componentPropertyDefinitions on a variant inside a
+    // COMPONENT_SET) — skip the field instead of failing the whole read.
+    try {
+      if (key in node) {
+        var value = node[key];
+        target[key] = typeof value === "symbol" ? "mixed" : value;
+      }
+    } catch (e) {}
   });
 }
 
