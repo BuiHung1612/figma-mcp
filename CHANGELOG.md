@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.0.0] — 2026-10-12
+
+### Breaking
+- `tools/list` exposes 7 tools instead of 16: `figma_status`, `figma_read`, `figma_write`, `figma_docs`, `figma_prepare_design`, `figma_to_code`, `figma_verify_ui`. Former tools are modes: `figma_read` operations `inspect_node`, `rules`, `search_components`, `search_styles`, `search_variables`, `subtree`, `typography`, `index_status`, `refresh`; `figma_to_code` `target: "tokens"`; `figma_prepare_design` `only: "assets" | "components"`; `figma_status` `task: "start" | "end" | "list"`. Old names are hidden but still accepted.
+- `figma_read` `inspect_node` defaults to depth 0 and the current selection (previously a full-depth `read_nodes` alias).
+
+### Added
+- `figma_to_code` `target: "project"` scaffolds `globals.css`, `tailwind.config.ts` and a component file per local component / component set, skipping existing files and codebase components unless `overwrite` is set.
+- Plugin **Usage** tab and `GET /usage`: call counts and average latency per tool and mode, persisted in `~/.figma-rust-mcp/usage.json`, plus public tools never called.
+
 ## [6.0.0] — 2026-10-09
 
 ### Breaking

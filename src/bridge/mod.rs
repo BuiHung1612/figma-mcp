@@ -209,6 +209,13 @@ async fn bind_bridge_server(port: u16) -> Result<BridgeState, String> {
     };
     bench::mark_ready();
     let state = BridgeState::new(port);
+    // Tests must not read or overwrite the user's real usage file.
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|_| !cfg!(test)) {
+        let dir = std::path::PathBuf::from(home).join(".figma-rust-mcp");
+        if std::fs::create_dir_all(&dir).is_ok() && server::USAGE_PATH.set(dir.join("usage.json")).is_ok() {
+            state.inner.lock().await.tool_timings = server::load_usage();
+        }
+    }
     let app = http::create_router(state.clone());
     let expiry = state.clone();
     tokio::spawn(async move {

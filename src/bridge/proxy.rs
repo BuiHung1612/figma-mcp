@@ -24,14 +24,15 @@ pub struct HttpProxy {
 }
 
 fn resolve_tool_paths(mut params: Value, cwd: &std::path::Path) -> Value {
-    let name = params["name"].as_str().unwrap_or("").to_string();
     if params.get("arguments").is_none() { params["arguments"] = json!({}); }
+    // Defaults follow the handler the call routes to; the public name is forwarded unchanged.
+    let name = crate::mcp::tools::route(params["name"].as_str().unwrap_or(""), &mut params["arguments"].clone());
     if let Some(args) = params["arguments"].as_object_mut() {
         if matches!(name.as_str(), "figma_prepare_design" | "figma_export_assets") {
             args.entry("iconDir").or_insert(json!("src/assets/icons"));
         }
         if name == "figma_export_assets" { args.entry("imageDir").or_insert(json!("public/images")); }
-        if matches!(name.as_str(), "figma_prepare_design" | "figma_match_components") {
+        if matches!(name.as_str(), "figma_prepare_design" | "figma_match_components" | "figma_scaffold_project") {
             args.entry("projectDir").or_insert(json!("."));
         }
         if let Some(icon_dir) = args.get("iconDir").cloned() { args.insert("_importIconDir".into(), icon_dir); }

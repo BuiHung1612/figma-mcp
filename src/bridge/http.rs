@@ -224,7 +224,7 @@ async fn handle_exec(
     });
 
     if matches!(payload.operation.as_str(), "task_start" | "task_end") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "Use figma_task through MCP"})));
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "Use figma_status task=start|end|list through MCP"})));
     }
     let (sid, lock, _) = match state.tool_target(sid.as_deref(), None, false).await {
         Ok(target) => target,
@@ -317,6 +317,19 @@ pub(crate) fn get_process_memory_mb() -> Option<f64> {
         }
     }
     None
+}
+
+/// Tool call counts (persisted across restarts) plus public tools never called.
+async fn handle_usage(State(state): State<BridgeState>) -> impl IntoResponse {
+    Json(usage_report(&state.inner.lock().await.tool_timings))
+}
+
+fn usage_report(timings: &std::collections::HashMap<String, (u64, u64)>) -> Value {
+    let mut tools: Vec<_> = timings.iter().map(|(name, (calls, total))| json!({"name": name, "calls": calls, "avgMs": total / calls.max(&1)})).collect();
+    tools.sort_by(|a, b| b["calls"].as_u64().cmp(&a["calls"].as_u64()).then_with(|| a["name"].as_str().cmp(&b["name"].as_str())));
+    let unused: Vec<_> = crate::mcp::tools::get_tools().into_iter().map(|tool| tool.name)
+        .filter(|name| !timings.keys().any(|key| key == name || key.starts_with(&format!("{name}.")))).collect();
+    json!({"tools": tools, "unused": unused})
 }
 
 async fn handle_benchmark(State(state): State<BridgeState>) -> impl IntoResponse {
@@ -941,6 +954,7 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/ws", get(handle_ws))
         .route("/health", get(handle_health))
         .route("/benchmark", post(handle_benchmark))
+        .route("/usage", get(handle_usage))
         .route("/clear", get(handle_clear).post(handle_clear))
         .route("/sse", get(handle_mcp_sse))
         .route("/message", post(handle_mcp_message))
@@ -958,6 +972,19 @@ pub fn create_router(state: BridgeState) -> Router {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_report_sorts_by_calls_and_lists_unused_public_tools() {
+        let timings = std::collections::HashMap::from([
+            ("figma_read.read_nodes".to_string(), (3, 30)),
+            ("figma_status".to_string(), (5, 5)),
+        ]);
+        let report = super::usage_report(&timings);
+        assert_eq!(report["tools"][0]["name"], "figma_status");
+        assert_eq!(report["tools"][1]["avgMs"], 10);
+        let unused: Vec<_> = report["unused"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(!unused.contains(&"figma_read") && !unused.contains(&"figma_status") && unused.contains(&"figma_write"));
+    }
+
     use super::BridgeState;
     use serde_json::json;
 

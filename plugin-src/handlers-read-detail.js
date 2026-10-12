@@ -523,7 +523,7 @@ handlers.get_design_context = async function(params) {
   } catch(e) {}
 
   // Same rule as sanitize_token_name in src/mcp/tokens.rs, so var(--x) here
-  // matches the custom properties figma_get_tokens exports.
+  // matches the custom properties figma_to_code target=tokens exports.
   function tokenCssName(name) {
     var s = String(name).trim().replace(/[\/ _.]/g, "-"), out = "";
     for (var ci = 0; ci < s.length; ci++) {

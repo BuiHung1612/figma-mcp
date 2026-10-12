@@ -1,4 +1,4 @@
-//! `figma_export_assets`, `figma_verify_ui` and `figma_prepare_design`, split out of `server::handle_tool_call_inner`.
+//! `figma_export_assets`, `figma_verify_ui`, `figma_prepare_design` and `figma_scaffold_project`, split out of `server::handle_tool_call_inner`.
 
 use super::protocol::ToolResult;
 use base64::prelude::*;
@@ -398,4 +398,149 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
         return ToolResult::text(json!({"savedTo":std::fs::canonicalize(path).unwrap_or(path.to_path_buf()),"coverage":result_pack["coverage"],"nodeId":resolved_id,"screenshotPreviewPath":local_screenshot_path,"warnings":result_pack["warnings"]}).to_string());
     }
     ToolResult::text(result_pack.to_string())
+}
+
+/// Picks the local components to scaffold: one entry per component set (its first
+/// variant), deduplicated by generated name, skipping names the codebase already has.
+fn scaffold_plan(local: &Value, existing: &crate::mcp::component_matcher::ComponentScanResult, overwrite: bool, limit: usize) -> (Vec<(String, String)>, Vec<Value>) {
+    let mut seen = std::collections::HashSet::new();
+    let (mut picked, mut skipped) = (Vec::new(), Vec::new());
+    for c in local["components"].as_array().into_iter().flatten() {
+        let figma_name = c["setName"].as_str().or(c["name"].as_str()).unwrap_or("Component");
+        let name = crate::mcp::codegen::sanitize_component_name(figma_name);
+        if !seen.insert(name.clone()) { continue; }
+        if let Some(found) = existing.components.get(&name.to_lowercase()).filter(|_| !overwrite) {
+            skipped.push(json!({"name": name, "reason": format!("already in codebase: {}", found.file_path)}));
+        } else if picked.len() >= limit {
+            skipped.push(json!({"name": name, "reason": format!("limit {limit} reached")}));
+        } else {
+            picked.push((c["id"].as_str().unwrap_or_default().to_string(), name));
+        }
+    }
+    (picked, skipped)
+}
+
+/// Writes `content` unless the file exists and `overwrite` is false. Returns whether it wrote.
+async fn write_scaffold_file(path: &std::path::Path, content: &str, overwrite: bool) -> Result<bool, String> {
+    if !overwrite && path.exists() { return Ok(false); }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    tokio::fs::write(path, content).await.map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(true)
+}
+
+pub(super) async fn figma_scaffold_project(bridge: BridgeHandle, args: Value) -> ToolResult {
+    let session_id = args.get("sessionId").and_then(|v| v.as_str());
+    if !bridge.is_plugin_connected(session_id).await {
+        return ToolResult::error("Figma plugin not connected. Run the 'Figma Rust MCP Bridge' plugin in Figma Desktop first.");
+    }
+    let framework = args["framework"].as_str().unwrap_or("react-tailwind");
+    let ext = match framework {
+        "react-tailwind" | "react-shadcn" => "tsx",
+        "vue-tailwind" => "vue",
+        "html" => "html",
+        _ => return ToolResult::error(format!("Unsupported framework '{framework}'. Available: react-tailwind, react-shadcn, vue-tailwind, html")),
+    };
+    let project = std::path::Path::new(args["projectDir"].as_str().unwrap_or("."));
+    let at = |key: &str, default: &str| project.join(args[key].as_str().unwrap_or(default));
+    let (component_dir, styles_path, tailwind_path) = (at("componentDir", "src/components/ui"), at("stylesPath", "src/styles/globals.css"), at("tailwindConfigPath", "tailwind.config.ts"));
+    let overwrite = args["overwrite"].as_bool().unwrap_or(false);
+    let limit = args["limit"].as_u64().unwrap_or(30).clamp(1, 100) as usize;
+
+    let (mut written, mut skipped, mut errors) = (Vec::new(), Vec::new(), Vec::new());
+    fn record(path: &std::path::Path, result: Result<bool, String>, written: &mut Vec<Value>, skipped: &mut Vec<Value>, errors: &mut Vec<Value>) {
+        match result {
+            Ok(true) => written.push(json!(path.to_string_lossy())),
+            Ok(false) => skipped.push(json!({"path": path.to_string_lossy(), "reason": "file exists (pass overwrite: true)"})),
+            Err(e) => errors.push(json!(e)),
+        }
+    }
+
+    // Tokens: globals.css (CSS variables + Tailwind layers) and tailwind config.
+    match super::server::token_sources(&bridge, session_id).await {
+        Ok((styles, vars)) => {
+            match crate::mcp::tokens::generate_tokens(&styles, &vars, "css", None, None, None) {
+                Ok(css) => {
+                    let content = format!("@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n{css}");
+                    let r = write_scaffold_file(&styles_path, &content, overwrite).await;
+                    record(&styles_path, r, &mut written, &mut skipped, &mut errors);
+                }
+                Err(e) => errors.push(json!(format!("css tokens: {e}"))),
+            }
+            if ext != "html" || args.get("tailwindConfigPath").is_some() {
+                match crate::mcp::tokens::generate_tokens(&styles, &vars, "tailwind", None, None, None) {
+                    Ok(config) => {
+                        let content = config.replacen("module.exports = {", "export default {\n  \"content\": [\"./index.html\", \"./src/**/*.{js,ts,jsx,tsx,vue,html}\"],", 1);
+                        let r = write_scaffold_file(&tailwind_path, &content, overwrite).await;
+                        record(&tailwind_path, r, &mut written, &mut skipped, &mut errors);
+                    }
+                    Err(e) => errors.push(json!(format!("tailwind tokens: {e}"))),
+                }
+            }
+        }
+        Err(e) => errors.push(json!(e)),
+    }
+
+    // Components: one file per local component / component set.
+    let local = match bridge.send_operation("get_local_components", json!({}), session_id).await {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(format!("Listing local components failed: {e}")),
+    };
+    let existing = crate::mcp::component_matcher::scan_project_components(&project.to_string_lossy()).await;
+    let (plan, plan_skipped) = scaffold_plan(&local, &existing, overwrite, limit);
+    skipped.extend(plan_skipped);
+    for (id, name) in &plan {
+        let path = component_dir.join(format!("{name}.{ext}"));
+        if !overwrite && path.exists() {
+            record(&path, Ok(false), &mut written, &mut skipped, &mut errors);
+            continue;
+        }
+        let code = bridge.send_operation("get_design_context", json!({"id": id, "expandInstances": true}), session_id).await
+            .and_then(|ctx| crate::mcp::codegen::generate_code_from_context(&ctx, framework, Some(name)));
+        match code {
+            Ok(code) => {
+                let r = write_scaffold_file(&path, &code, overwrite).await;
+                record(&path, r, &mut written, &mut skipped, &mut errors);
+            }
+            Err(e) => errors.push(json!(format!("{name} ({id}): {e}"))),
+        }
+    }
+
+    ToolResult::text(serde_json::to_string_pretty(&json!({
+        "success": errors.is_empty(),
+        "framework": framework,
+        "localComponents": local["components"].as_array().map_or(0, Vec::len),
+        "written": written,
+        "skipped": skipped,
+        "errors": errors,
+    })).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod scaffold_tests {
+    use super::scaffold_plan;
+    use crate::mcp::component_matcher::{ComponentScanResult, DiscoveredComponent};
+    use serde_json::json;
+
+    #[test]
+    fn plan_groups_variants_skips_existing_and_respects_limit() {
+        let local = json!({"components": [
+            {"id": "1:1", "name": "Size=sm", "setName": "Button"},
+            {"id": "1:2", "name": "Size=lg", "setName": "Button"},
+            {"id": "2:1", "name": "card"},
+            {"id": "3:1", "name": "Icon Button"},
+            {"id": "4:1", "name": "Badge"},
+        ]});
+        let mut existing = ComponentScanResult::default();
+        existing.components.insert("card".into(), DiscoveredComponent { name: "Card".into(), file_path: "src/components/Card.tsx".into(), import_path: "@/components/Card".into(), is_default_export: true, named_exports: vec![] });
+
+        let (picked, skipped) = scaffold_plan(&local, &existing, false, 2);
+        assert_eq!(picked, vec![("1:1".to_string(), "Button".to_string()), ("3:1".to_string(), "IconButton".to_string())]);
+        assert_eq!(skipped[0]["name"], "Card");
+        assert_eq!(skipped[1]["reason"], "limit 2 reached");
+
+        let (picked, _) = scaffold_plan(&local, &existing, true, 10);
+        assert_eq!(picked.len(), 4);
+    }
 }

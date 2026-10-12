@@ -22,13 +22,13 @@ INPUT=$(cat << 'JSON'
 JSON
 )
 
-OUTPUT=$(echo "$INPUT" | $BIN_PATH --port 38499 2>/dev/null)
+OUTPUT=$(echo "$INPUT" | HOME="$(mktemp -d)" $BIN_PATH --port 38499 2>/dev/null)
 echo "$OUTPUT" | head -n 4
 
 # Verify tool registration in JSON-RPC output
-echo "--- Test 3: Verify Tool Registrations (15 tools) ---"
-for TOOL in figma_status figma_get_selection figma_inspect_node figma_to_code figma_get_tokens figma_export_asset figma_export_assets figma_index figma_read figma_write figma_rules figma_docs figma_match_components figma_prepare_design figma_verify_ui; do
-  echo "$OUTPUT" | grep -q "\"name\":\"$TOOL\"" && echo "✓ $TOOL registered"
+echo "--- Test 3: Verify Tool Registrations (7 tools) ---"
+for TOOL in figma_status figma_read figma_write figma_docs figma_prepare_design figma_to_code figma_verify_ui; do
+  echo "$OUTPUT" | grep -q "\"name\":\"$TOOL\"" && echo "✓ $TOOL registered" || { echo "✗ $TOOL missing"; exit 1; }
 done
 
 # Test 4: Node/NPX wrapper test

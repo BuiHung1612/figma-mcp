@@ -62,7 +62,7 @@ fn normalize(node: &Value, parent_flow: Option<&str>) -> Value {
     Value::Object(out)
 }
 
-fn sanitize_component_name(name: &str) -> String {
+pub(crate) fn sanitize_component_name(name: &str) -> String {
     let words: String = name
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())

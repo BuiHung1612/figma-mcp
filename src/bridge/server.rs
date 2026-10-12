@@ -250,6 +250,20 @@ mod read_cache_tests {
     }
 }
 
+/// Where tool usage counts persist across daemon restarts; unset in tests.
+pub static USAGE_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub fn load_usage() -> HashMap<String, (u64, u64)> {
+    USAGE_PATH.get().and_then(|path| std::fs::read(path).ok()).and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+// ponytail: synchronous write of a <=128-entry map under the bridge lock keeps writes ordered; debounce if it shows up in profiles.
+pub fn save_usage(timings: &HashMap<String, (u64, u64)>) {
+    if let Some(path) = USAGE_PATH.get() {
+        if let Ok(bytes) = serde_json::to_vec(timings) { let _ = std::fs::write(path, bytes); }
+    }
+}
+
 pub struct BridgeInner {
     pub tool_timings: HashMap<String, (u64, u64)>,
     pub port: u16,
@@ -975,7 +989,7 @@ impl BridgeState {
         -> Result<(String, Arc<Mutex<()>>, Option<TaskBinding>), String> {
         let inner = self.inner.lock().await;
         let task = match task_id {
-            Some(id) => Some(inner.tasks.get(id).cloned().ok_or_else(|| format!("Unknown taskId '{id}'. Start a task with figma_task."))?),
+            Some(id) => Some(inner.tasks.get(id).cloned().ok_or_else(|| format!("Unknown taskId '{id}'. Start a task with figma_status task=start."))?),
             None => None,
         };
         let sid = match (allow_disconnected, &task) {

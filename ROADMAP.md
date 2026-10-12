@@ -1,6 +1,6 @@
 # 🗺️ Figma Rust MCP Roadmap
 
-> Current release: **v6.0.0**. Shipped detail lives in [CHANGELOG.md](CHANGELOG.md); this file only tracks what is next.
+> Current release: **v7.0.0**. Shipped detail lives in [CHANGELOG.md](CHANGELOG.md); this file only tracks what is next.
 
 ---
 
@@ -17,7 +17,6 @@
 ## 🧭 Next
 
 - [ ] **Code-to-Figma live preview (`figma_preview_code`)** — render a generated React/HTML/Tailwind snippet into a temporary `[AI Preview]` frame for visual review before commit.
-- [ ] **Design system scaffolder (`figma_scaffold_project`)** — one call writes `src/components/ui/*`, tokens, `tailwind.config.ts` and `globals.css` from the open file.
 - [ ] **Multi-file design system sync** — cross-file libraries and shared variable collections across open tabs.
 
 ## 📏 Performance claims

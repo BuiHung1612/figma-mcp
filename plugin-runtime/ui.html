@@ -457,6 +457,7 @@
 
     .bench-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 3px; border-bottom: 1px dashed var(--hairline); }
     .bench-row span:last-child { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .usage-row { background: linear-gradient(90deg, var(--hairline) var(--usage), transparent var(--usage)); }
     .bench-note { color: var(--text-muted); margin-top: 6px; }
     #bench-results { margin-top: 10px; }
 
@@ -603,7 +604,7 @@
         <div class="brand-info">
           <div class="brand-title-row">
             <span class="brand-name">Figma Rust MCP</span>
-            <span class="brand-ver" id="runtime-version">v6.0.0</span>
+            <span class="brand-ver" id="runtime-version">v7.0.0</span>
           </div>
           <span class="brand-file" id="doc-display" title="Active Document">Ready</span>
         </div>
@@ -740,6 +741,7 @@
           <button class="t-tab" onclick="setLogFilter('reads', this)">Reads</button>
           <button class="t-tab tab-err" id="tab-errors" onclick="setLogFilter('errors', this)">Errors <span class="tab-badge-err" id="tab-err-badge" style="display:none">0</span></button>
           <button class="t-tab" onclick="setLogFilter('bench', this)">Bench</button>
+          <button class="t-tab" onclick="setLogFilter('usage', this)">Usage</button>
         </div>
         <div class="terminal-meta">
           <span class="event-badge" id="log-count">0 ev</span>
@@ -759,6 +761,9 @@
       <div class="terminal-body" id="bench" style="display:none">
         <button class="btn btn-primary" id="bench-run" onclick="runBenchmark()">Run benchmark</button>
         <div id="bench-results"></div>
+      </div>
+      <div class="terminal-body" id="usage" style="display:none">
+        <div id="usage-results"></div>
       </div>
       <div class="terminal-body" id="log">
         <div class="terminal-empty" id="log-empty">
@@ -906,10 +911,12 @@
       tabs.forEach(function(t) { t.classList.remove("active"); });
       if (el) el.classList.add("active");
 
-      var benchMode = filter === 'bench';
-      document.getElementById("bench").style.display = benchMode ? "block" : "none";
-      logEl.style.display = benchMode ? "none" : "";
-      if (benchMode) return;
+      var panelMode = filter === 'bench' || filter === 'usage';
+      document.getElementById("bench").style.display = filter === 'bench' ? "block" : "none";
+      document.getElementById("usage").style.display = filter === 'usage' ? "block" : "none";
+      logEl.style.display = panelMode ? "none" : "";
+      if (filter === 'usage') loadUsage();
+      if (panelMode) return;
 
       var lines = logEl.querySelectorAll(".log-line");
       var visibleCount = 0;
@@ -995,6 +1002,33 @@
       } finally {
         btn.disabled = false;
         btn.textContent = "Run benchmark";
+      }
+    }
+    // Tool call counts persist in ~/.figma-rust-mcp/usage.json across server restarts.
+    async function loadUsage() {
+      var out = document.getElementById("usage-results");
+      try {
+        var res = await fetch(BRIDGE + "/usage", { signal: AbortSignal.timeout(2000) });
+        if (!res.ok) throw new Error("HTTP " + res.status + " (server older than v7?)");
+        var r = await res.json();
+        out.innerHTML = "";
+        var max = r.tools.length ? r.tools[0].calls : 1;
+        r.tools.forEach(function(t) {
+          var div = document.createElement("div");
+          div.className = "bench-row usage-row";
+          div.style.setProperty("--usage", (t.calls / max * 100) + "%");
+          [t.name.replace(/^figma_/, ""), t.calls + " · " + t.avgMs + "ms"].forEach(function(text) {
+            var span = document.createElement("span"); span.textContent = text; div.appendChild(span);
+          });
+          out.appendChild(div);
+        });
+        var note = document.createElement("div");
+        note.className = "bench-note";
+        note.textContent = (r.tools.length ? "Calls · avg latency since first run." : "No tool calls yet.") +
+          (r.unused.length ? " Never called: " + r.unused.map(function(n) { return n.replace(/^figma_/, ""); }).join(", ") + "." : "");
+        out.appendChild(note);
+      } catch (e) {
+        out.textContent = "Usage unavailable: " + e.message;
       }
     }
     setInterval(fetchServerStats, 4000);

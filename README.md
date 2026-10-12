@@ -10,12 +10,12 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 - **Lossless Rust Tree Compression**: Compact/minimal tree responses share identical style bundles when the complete JSON becomes smaller. Node IDs, hierarchy, text, geometry and state differences remain intact. Full detail bypasses Rust compression; no heuristic merging of screens or repeated items.
 - **Pure Rust Native Performance**: Single native binary, no runtime or GC. Measure it on your machine with `npm run bench` or the plugin's **Bench** tab (see [Benchmarks](#-benchmarks)).
-- **Scoped In-Memory Index (`figma_index`)**: Indexes page roots first and loads frame descendants on demand. Search reports the indexed scope and completeness.
+- **Scoped In-Memory Index (`figma_read` search)**: Indexes page roots first and loads frame descendants on demand. Search reports the indexed scope and completeness.
 - **Binary IPC & Chunk Streaming**: Powered by **MessagePack** (`rmp-serde`) and progressive subtree chunking for instant transfers of massive design files.
 - **Revisioned Updates**: Property patches update affected nodes; revision gaps trigger a fresh snapshot.
 - **Instant Design-to-Code (`figma_to_code`)**: Compiles Figma frames into clean, semantic components (**React + Tailwind**, **React Native**, **Vue 3 + Tailwind**, **HTML**, **SwiftUI**).
-- **Design Token Exporter (`figma_get_tokens`)**: Exports variables and styles to **Tailwind config**, **CSS custom properties** (`:root` & dark mode), **TypeScript consts**, or **W3C DTCG Token Studio JSON**.
-- **Batch Asset Extractor (`figma_export_assets` / `figma_export_asset`)**: Extracts SVG icons and raster images directly to project folders (`outputPath`) with auto-generated TypeScript barrel exports (`index.ts`) — zero chat token bloating.
+- **Design Token Exporter (`figma_to_code` `target: "tokens"`)**: Exports variables and styles to **Tailwind config**, **CSS custom properties** (`:root` & dark mode), **TypeScript consts**, or **W3C DTCG Token Studio JSON**.
+- **Batch Asset Extractor (`figma_prepare_design` `only: "assets"`)**: Extracts SVG icons and raster images directly to project folders (`outputPath`) with auto-generated TypeScript barrel exports (`index.ts`) — zero chat token bloating.
 - **Sandboxed JS Drawing Engine (`figma_write`)**: Powered by **Boa** (pure Rust ECMAScript engine) with built-in asset resolvers and 7 icon packs (*Ionicons, Lucide, Tabler, Bootstrap, Fluent, Phosphor*).
 - **Multi-Tab / Multi-Session Support**: Seamlessly connects to multiple open Figma files simultaneously.
 - **100% Localhost Privacy**: All communication stays strictly on `127.0.0.1:41730`.
@@ -212,25 +212,58 @@ Figma plugin only if the reported hash does not change.
 
 ## 🛠️ MCP Tools Reference
 
-`figma-rust-mcp` provides **15 first-class MCP tools**:
+`figma-rust-mcp` exposes **7 tools**. Each covers one job; modes select the
+variant (`operation`, `task`, `only`, `target`). The plugin **Usage** tab shows
+how often each tool and mode is called.
 
 ### 1. `figma_status`
-Checks live bridge connection status, connected Figma tabs/files, in-memory index health, queue length, and latency statistics.
+Bridge connection, connected tabs (`sessionId`), index health, queue length and latency.
+- **`task`**: `"start"` (with `frameId`) reserves a frame and returns a `taskId`; `"end"` (with `taskId`) releases it; `"list"` shows reservations. See [Multiple tabs and frame tasks](#multiple-tabs-and-frame-tasks).
 
-### 2. `figma_inspect_node`
-Reads a specific node by ID or name through the canonical flat `read_nodes` response. Select fields explicitly to control the work performed.
+### 2. `figma_read`
+Every read, search and export. **`operation`**:
+- **Nodes**: `read_nodes` (canonical flat API), `inspect_node` (one node with CSS, layout, tokens, typography; defaults to the selection), `get_selection`, `get_spec`, `get_page_nodes`, `scan_design`, `get_css`.
+- **Search** (in-memory index): `search_nodes` (`query`, `nodeType`), `search_components`, `search_styles` (`styleType`), `search_variables` (`collection`), `subtree`, `typography` (text/font table with mixed runs), `index_status` (index health, cache hits, tool timings), `refresh` (page roots, or expand `nodeId`; `includeComponents`).
+- **Design system**: `rules` (markdown rule sheet of tokens, text styles and components), `get_styles`, `get_variables`, `get_tokens`, `get_local_components`, `get_component_map`, `get_unmapped_components`.
+- **Export**: `screenshot`, `export_image` (png/jpg, `scale`), `export_svg`. Pass `outputPath` to save to disk instead of returning data.
 
-### 3. `figma_to_code`
-Compiles any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code.
-- **`framework`**: `"react-tailwind"` (default), `"react-native"`, `"vue-tailwind"`, `"html"`, `"swiftui"`.
-- **`outputPath`**: Directly saves the generated component to your codebase (e.g. `src/components/UserProfileCard.tsx`).
-- **`componentName`**: Custom component name override.
+Compact/minimal `get_selection` and `get_design` responses may contain a root
+`_compression` object with `version: 1` and a `styles` dictionary. For each node
+with `styleRef`, merge `_compression.styles[node.styleRef]` into that node and
+remove `styleRef`; remove root `_compression` to reconstruct the plugin payload
+exactly. Style references are dictionary lookups, not inherited CSS. Payloads
+with reserved-field collisions or no net byte savings stay inline. `detail: "full"` bypasses this Rust transformation and queries the plugin rather than a
+compact selection cache. Plugin detail, visibility, precision, depth and node
+budgets still determine the source payload; compression cannot restore fields
+omitted there. Code generation continues to consume inline styles.
 
-### 4. `figma_get_tokens`
-Exports Figma Variables (Design Tokens), Color Styles, Typography Styles, and Elevation/Shadow Styles directly into frontend code.
-- **`format`**: `"tailwind"` (`tailwind.config.js` theme.extend), `"css"` (`:root` CSS custom properties with light/dark theme modes), `"typescript"` (`tokens.ts`), `"w3c"` (W3C DTCG Token Studio JSON), or `"json"`.
-- **`outputPath`**: Writes directly to disk (e.g. `src/styles/tokens.css` or `tailwind.config.js`).
-- **`collection`** / **`mode`** / **`prefix`**: Optional filters and naming prefixes.
+No token-reduction or AI-latency percentage is claimed without a tokenizer and
+end-to-end benchmark on real designs.
+
+### 3. `figma_write`
+Executes JavaScript draw commands inside the sandboxed VM to build or modify designs on the Figma canvas.
+- Supports Auto-layout (`layoutMode`, `itemSpacing`, `padding`), typography, fills, strokes, corner radius, drop shadows, and component creation.
+- Supports icon loading: `figma.loadIcon("ionicons", "heart", { size: 24, fill: "#ff4757" })`.
+- Supports image insertion: `figma.loadImage(url, { width: 300, height: 200 })`.
+- Supports Design Tokens: `createVariableCollection`, `createVariable`, `addVariableMode`, `applyVariable`.
+- Supports Prototyping & Reactions: `setReactions`, `getReactions`, `setScrollBehavior`.
+
+### 4. `figma_docs`
+Built-in documentation, design rules, layout guidelines and examples for `figma_write`.
+- **`section`**: `"rules"` | `"layout"` | `"api"` | `"tokens"` | `"icons"`
+
+### 5. `figma_prepare_design`
+**Start here for design-to-code.** One call returns a grounding pack: screenshot, every visible text (through expanded instances, with coverage), SVG icons exported to `iconDir` with import statements, matched codebase components and an implementation checklist.
+- **`nodeId`**, **`iconDir`** (default `src/assets/icons`), **`projectDir`** (default `.`), **`detail`**, **`outputPath`**.
+- **`only: "assets"`**: just export SVG icons (`iconDir`) and raster images (`imageDir`, default `public/images`) with an `index.ts` barrel (`createBarrel`).
+- **`only: "components"`**: just list codebase components (`src/components`, `components`, ...) and match `nodeId` against them.
+
+### 6. `figma_to_code`
+Compiles a node (or the selection) into component code.
+- **`framework`**: `"react-tailwind"` (default), `"react-shadcn"`, `"react-native"`, `"vue-tailwind"`, `"html"`, `"swiftui"`, `"clean-spec"`.
+- **`outputPath`**, **`componentName`**.
+- **`target: "tokens"`**: export variables and styles. **`format`**: `"css"` (default, `:root` + light/dark modes), `"tailwind"`, `"typescript"`, `"w3c"` (DTCG), `"json"`; **`collection`** / **`mode`** / **`prefix`**; **`outputPath`**.
+- **`target: "project"`**: scaffold a design system — `globals.css` (Tailwind layers + CSS variables), `tailwind.config.ts` and one component per local component / component set (first variant) in `componentDir`. Existing files and components already in the codebase are skipped unless **`overwrite`**. Options: **`projectDir`**, **`componentDir`** (`src/components/ui`), **`stylesPath`** (`src/styles/globals.css`), **`tailwindConfigPath`** (`tailwind.config.ts`), **`limit`** (30, max 100); frameworks `react-tailwind`, `react-shadcn`, `vue-tailwind`, `html`.
 
 Token exports use schema v2 and preserve full paint/effect stacks, alpha, gradient
 transforms, collection modes and raw alias values. CSS, Tailwind, TypeScript and
@@ -252,99 +285,26 @@ Run `npm run build:plugin` after changing plugin source, and `npm run test:token
 for the token/contract/version regression suite. Existing background servers need
 a restart with the new binary to load the updated runtime.
 
+### 7. `figma_verify_ui`
+Compares rendered HTML/React styles against the Figma spec: size, per-side padding, gap, colors, per-corner radius and typography. Returns a match percentage, discrepancies and CSS/Tailwind fixes.
+- **`nodeId`** / **`nodeName`**, **`computedStyles`**, **`url`** / **`selector`**.
+- Typography: pass a text `nodeId` and browser `computedStyles` (`font-size` in px, numeric `font-weight`, `font-family`). Mixed text accepts `computedStyles.segments`, an ordered array matching the Figma runs. Fractional pixels are preserved.
 
-### 5. `figma_get_selection`
-Inspection of currently selected layers/frames, with shared-style compression when it reduces response size.
-- **`detail`**: `"compact"` (default), `"minimal"`, `"full"`.
+### Legacy tool names
 
-Compact/minimal `get_selection` and `get_design` responses may contain a root
-`_compression` object with `version: 1` and a `styles` dictionary. For each node
-with `styleRef`, merge `_compression.styles[node.styleRef]` into that node and
-remove `styleRef`; remove root `_compression` to reconstruct the plugin payload
-exactly. Style references are dictionary lookups, not inherited CSS. Payloads
-with reserved-field collisions or no net byte savings stay inline. `detail: "full"` bypasses this Rust transformation and queries the plugin rather than a
-compact selection cache. Plugin detail, visibility, precision, depth and node
-budgets still determine the source payload; compression cannot restore fields
-omitted there. Code generation continues to consume inline styles.
+Tools from v6 and earlier are hidden from `tools/list` but still accepted, so existing prompts keep working:
 
-No token-reduction or AI-latency percentage is claimed without a tokenizer and
-end-to-end benchmark on real designs.
-- **`depth`**: Tree depth limit or `"full"`.
-
-### 6. `figma_export_asset`
-Exports any Figma node/layer directly into PNG, JPG, or SVG.
-- **`outputPath`**: When specified (e.g. `src/assets/logo.png`), saves directly to disk and returns minimal JSON metadata instead of bloating context with large base64 strings.
-- **`format`**: `"png"` (default), `"jpg"`, `"svg"`.
-- **`scale`**: Scaling factor (default `2` for high-res).
-
-### 7. `figma_export_assets`
-Batch extracts all SVG icons and PNG images from a Figma frame/page directly into project directories.
-- **`iconDir`**: Directory path for SVG icons (e.g. `src/assets/icons`).
-- **`imageDir`**: Directory path for raster images (e.g. `public/images`).
-- **`createBarrel`**: Automatically creates an `index.ts` barrel export file in `iconDir`.
-
-### 8. `figma_index`
-In-memory queries against pre-indexed Figma file structures (latency for your file: plugin **Bench** tab).
-- **`operation`**:
-  - `"status"`: View index health and node counts.
-  - `"search_nodes"`: Search nodes by text name, query, and type (`FRAME`, `TEXT`, `COMPONENT`, `INSTANCE`).
-  - `"get_node"`: Instant node lookup by ID.
-  - `"search_components"`: Find component sets and variants.
-  - `"search_styles"`: Find paint, text, and effect styles.
-  - `"search_variables"`: Find design token variables by name or collection.
-  - `"refresh"`: Refresh page roots, or expand the frame specified by `nodeId`.
-  - `"subtree"`: Read/cache one `nodeId`, default depth 2 and 1000 nodes. Increase `depth` or `maxNodes` only for the section you need; check `meta` for truncation.
-  - `"typography"`: Rust-generated text/font table for one `nodeId`, with mixed-style runs preserved. Default limit 200 rows. Null font fields mean unknown/mixed, not a guessed default.
-
-`status` includes per-tab dispatch cache hits/misses, bridge calls and total bridge wait time, plus process-wide tool call counts and total/average milliseconds. Node changes invalidate related subtrees; style changes, unknown events and global writes invalidate the whole cache. Detailed subtree data is loaded on demand. The initial index remains shallow.
-
-For typography verification, call `figma_verify_ui` with a text `nodeId` and browser `computedStyles` (`font-size` in px, numeric `font-weight`, `font-family`). Mixed text accepts `computedStyles.segments`, an ordered array of CSS objects matching the Figma runs. Size checks preserve fractional pixels.
-
-### 9. `figma_read`
-Universal reader for advanced queries:
-- **Design-to-code**: `read_nodes`, `get_css`, `get_component_map`, `get_unmapped_components`.
-- **Inspection & Hierarchy**: `read_nodes`, `get_selection`, `get_page_nodes`, `scan_design`, `search_nodes`.
-- **Design Systems**: `get_styles`, `get_variables`, `get_local_components`, `get_tokens`.
-- **Visuals & Canvas**: `screenshot`, `export_svg`, `export_image`, `get_viewport`.
-
-### 10. `figma_write`
-Executes JavaScript draw commands inside the sandboxed VM to build or modify designs on the Figma canvas.
-- Supports Auto-layout (`layoutMode`, `itemSpacing`, `padding`), typography, fills, strokes, corner radius, drop shadows, and component creation.
-- Supports icon loading: `figma.loadIcon("ionicons", "heart", { size: 24, fill: "#ff4757" })`.
-- Supports image insertion: `figma.loadImage(url, { width: 300, height: 200 })`.
-- Supports Design Tokens: `createVariableCollection`, `createVariable`, `addVariableMode`, `applyVariable`.
-- Supports Prototyping & Reactions: `setReactions`, `getReactions`, `setScrollBehavior`.
-
-### 11. `figma_rules`
-Audits the current Figma document and generates a complete design system rule sheet (color tokens, typography styles, variables, component catalog) from the in-memory cache.
-
-### 12. `figma_docs`
-Fetches built-in documentation, design rules, layout guidelines, and code examples for `figma_write`.
-- **`section`**: `"rules"` | `"layout"` | `"api"` | `"tokens"` | `"icons"`
-
-### 13. `figma_verify_ui`
-Validates and compares actual rendered HTML/React UI styles and layout against Figma design specifications.
-- Checks dimensions, padding, flex gap, colors, border-radius, and typography.
-- Returns an exact match percentage (`match_percentage`), discrepancy breakdown, and actionable CSS/Tailwind fixes.
-- **`nodeId`** / **`nodeName`**: Target Figma node spec.
-- **`computedStyles`**: Key-value pairs of computed CSS properties from browser/component inspection.
-- **`url`** / **`selector`**: Contextual target URL or CSS selector inspected.
-
-### 14. `figma_match_components`
-Scans your local codebase directories (`src/components`, `components/ui`) to discover existing React/Vue components and matches them directly against Figma design layers, preventing duplicate component creation and ensuring reuse of existing design systems.
-- **`projectDir`**: Base directory of your project (default: current directory `"."`).
-- **`nodeId`**: Optional Figma node ID to check specific match against local components.
-
-### 15. `figma_prepare_design`
-**All-In-One Multimodal Grounding Pack for AI**: The ultimate single-call tool for code generation that eliminates missing UI elements and icon guesswork.
-- Simultaneously extracts **100% of visible text elements** (greeting, badges, timestamps, labels).
-- Automatically **exports all SVG vector icons** into your local project directory (`iconDir`) and provides exact TypeScript import statements.
-- Captures high-res **visual canvas screenshots** saved locally for immediate multimodal LLM inspection.
-- Discovers existing components in your codebase for direct reuse.
-- Generates an actionable **Implementation Checklist** ensuring complete design fidelity in 1 single shot.
-- **`nodeId`**: Target Figma screen/frame ID.
-- **`iconDir`**: Target directory for SVG icons (e.g. `src/assets/icons` or `assets/images`).
-- **`projectDir`**: Base directory for component discovery.
+| v6 tool | v7 call |
+|---|---|
+| `figma_get_selection` | `figma_read` `operation: "get_selection"` |
+| `figma_inspect_node` | `figma_read` `operation: "inspect_node"` |
+| `figma_export_asset` | `figma_read` `operation: "export_image"` / `"export_svg"` |
+| `figma_index` | `figma_read` search operations, `index_status`, `refresh` |
+| `figma_rules` | `figma_read` `operation: "rules"` |
+| `figma_get_tokens` | `figma_to_code` `target: "tokens"` |
+| `figma_export_assets` | `figma_prepare_design` `only: "assets"` |
+| `figma_match_components` | `figma_prepare_design` `only: "components"` |
+| `figma_task` | `figma_status` `task: "start" \| "end" \| "list"` |
 
 ---
 
@@ -354,13 +314,13 @@ Each plugin runtime has its own `sessionId`; tabs of the same file share a
 `documentId`. Use `figma_status` to discover tabs. With multiple connected tabs,
 pass an exact `sessionId`; the server rejects ambiguous routing.
 
-For multiple agents editing one file, call `figma_task` with `action: "start"`,
+For multiple agents editing one file, call `figma_status` with `task: "start"`,
 `sessionId` and `frameId`, then pass the returned `taskId` on subsequent tools.
 Each task reserves a separate FRAME directly under a PAGE or SECTION, without
 shared component definitions. Writes stay inside that frame; global styles,
 variables, page and selection changes are blocked. A frame cannot be reserved
-twice, including across tabs of the same document. Release it with `figma_task`
-using `action: "end"` and `taskId`; restart tasks after a plugin reload.
+twice, including across tabs of the same document. Release it with `figma_status`
+using `task: "end"` and `taskId`; restart tasks after a plugin reload.
 
 Tools on one tab run sequentially, including every awaited operation in a
 `figma_write` call. Different tabs run independently. `npm run test:sessions`
@@ -373,14 +333,14 @@ Version 4 requires both server and plugin runtime protocol 3. Update both and
 restart the plugin. Opening the bridge indexes only visible top-level nodes on
 the active page, plus local styles and variables. Selection expands the selected
 frame. Component catalogue discovery is deferred; request it with
-`figma_index({ operation: "refresh", includeComponents: true })`.
+`figma_read({ operation: "refresh", includeComponents: true })`.
 
 Search covers indexed scopes only. Inspect `scope` and `complete` in search
 responses; an empty result does not prove a layer is absent from the file.
 Refresh a specific frame to expand its scope:
 
 ```js
-figma_index({ operation: "refresh", nodeId: "123:456", expandInstances: true })
+figma_read({ operation: "refresh", nodeId: "123:456", expandInstances: true })
 figma_read({ operation: "read_nodes", nodeId: "123:456",
   fields: ["geometry", "content", "text", "style", "layout", "tokens", "component"],
   limit: 200, expandInstances: true })
@@ -406,9 +366,9 @@ options; no master component is substituted for an instance.
 
 Breaking output changes: public `get_design`, `get_design_context` and
 `get_node_detail` aliases now return the same envelope as `read_nodes`.
-`figma_inspect_node` and index `get_node`, `subtree`, `typography` also return
+`figma_read` `inspect_node`, `subtree` and `typography` also return
 that envelope. Replace nested `children` consumers with `nodes` and parent/child
-IDs. Replace index `maxNodes` with `limit` and cursor pagination. Internal
+IDs. Replace `subtree` `maxNodes` with `limit` and cursor pagination. Internal
 script helpers used for code generation retain their specialized formats.
 
 Canvas traversal reads each child list once, yields after an 8ms slice, and

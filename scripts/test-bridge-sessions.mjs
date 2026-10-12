@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createInterface } from 'node:readline';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import vm from 'node:vm';
+
+// Spawned servers persist tool usage under HOME; keep the user's real file untouched.
+process.env.HOME = process.env.USERPROFILE = mkdtempSync(join(tmpdir(), 'figma-mcp-test-'));
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -106,11 +111,11 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   assert.equal(ambiguous.isError, true); assert.match(ambiguous.content[0].text, /Ambiguous/);
   const missing = await rpc('figma_read', { operation: 'get_design', sessionId: 'missing' });
   assert.equal(missing.isError, true);
-  const taskA = decode(ok(await first('figma_task', { action: 'start', sessionId: 'tab-a', frameId: 'frame-a' })));
-  const collision = await second('figma_task', { action: 'start', sessionId: 'tab-b', frameId: 'frame-a' });
+  const taskA = decode(ok(await first('figma_status', { task: 'start', sessionId: 'tab-a', frameId: 'frame-a' })));
+  const collision = await second('figma_status', { task: 'start', sessionId: 'tab-b', frameId: 'frame-a' });
   assert.equal(collision.isError, true); assert.match(collision.content[0].text, /reserved/);
-  const taskB = decode(ok(await second('figma_task', { action: 'start', sessionId: 'tab-a', frameId: 'frame-b' })));
-  const taskC = decode(ok(await rpc('figma_task', { action: 'start', sessionId: 'tab-b', frameId: 'frame-c' })));
+  const taskB = decode(ok(await second('figma_status', { task: 'start', sessionId: 'tab-a', frameId: 'frame-b' })));
+  const taskC = decode(ok(await rpc('figma_status', { task: 'start', sessionId: 'tab-b', frameId: 'frame-c' })));
   assert.equal(decode(ok(await first('figma_get_selection', { taskId: taskA.taskId }))).id, 'frame-a');
   assert.equal(decode(ok(await second('figma_get_selection', { taskId: taskB.taskId }))).id, 'frame-b');
   const writeA = first('figma_write', { taskId: taskA.taskId, code: 'await figma.modify({id:"child-a",note:"paused"}); await figma.modify({id:"child-a",note:"second"});' });
@@ -149,14 +154,14 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   tabA.socket.send(JSON.stringify({ id: waiting.id, sessionId: 'tab-a', success: true, data: { id: 'frame-a', tab: 'tab-a' } }));
   assert.equal(decode(ok(await routed)).tab, 'tab-a');
   assert.ok(ignored.id);
-  ok(await first('figma_task', { action: 'end', taskId: taskA.taskId }));
-  ok(await second('figma_task', { action: 'end', taskId: taskB.taskId }));
+  ok(await first('figma_status', { task: 'end', taskId: taskA.taskId }));
+  ok(await second('figma_status', { task: 'end', taskId: taskB.taskId }));
   tabB.socket.close();
   await until(async () => !(await (await fetch(`${base}/sessions`)).json()).sessions.find(session => session.id === 'tab-b').connected);
-  assert.equal(decode(ok(await rpc('figma_task', { action: 'end', taskId: taskC.taskId }))).pluginDisconnected, true);
+  assert.equal(decode(ok(await rpc('figma_status', { task: 'end', taskId: taskC.taskId }))).pluginDisconnected, true);
   await plugin('tab-b', tabB);
-  const restarted = decode(ok(await rpc('figma_task', { action: 'start', sessionId: 'tab-b', frameId: 'frame-c' })));
-  ok(await rpc('figma_task', { action: 'end', taskId: restarted.taskId }));
+  const restarted = decode(ok(await rpc('figma_status', { task: 'start', sessionId: 'tab-b', frameId: 'frame-c' })));
+  ok(await rpc('figma_status', { task: 'end', taskId: restarted.taskId }));
 });
 
 test('index sync travels from plugin through UI to bridge and returns a matching confirmation', { timeout: 20000 }, async t => {
