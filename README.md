@@ -65,7 +65,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 npx -y figma-rust-mcp@latest --init
 ```
 The setup detects installed Codex, Claude Code, Antigravity, Cursor, Windsurf,
-VS Code/Copilot, and Zed clients. Choose an action from the menu:
+VS Code, Copilot CLI, Gemini CLI, opencode, and Zed clients. Choose an action from the menu:
 
 ```text
 1) Quick setup — plugin + background service + detected agents

@@ -40,6 +40,17 @@ try {
 } catch (_) {}
 if (!pkgVersion) throw new Error(`Cannot read package version from ${pkgPath}`);
 
+// ─── TERMINAL UI ──────────────────────────────────────────────────────────────
+
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const paint = code => text => useColor ? `\x1b[${code}m${text}\x1b[0m` : String(text);
+const bold = paint('1'), dim = paint('2'), green = paint('32'), yellow = paint('33'), red = paint('31'), cyan = paint('36');
+const tag = code => process.stderr.isTTY && !process.env.NO_COLOR ? `\x1b[${code}m[figma-rust-mcp]\x1b[0m` : '[figma-rust-mcp]';
+const tilde = p => p.startsWith(os.homedir()) ? `~${p.slice(os.homedir().length)}` : p;
+const ok = (msg, detail = '') => console.log(`  ${green('✓')} ${msg}${detail ? `  ${dim(detail)}` : ''}`);
+const note = msg => console.log(`    ${dim(msg)}`);
+const step = (n, total, title) => console.log(`\n${cyan(`[${n}/${total}]`)} ${bold(title)}`);
+
 function getPlatformArch() {
   const platform = process.platform;
   const arch = process.arch;
@@ -83,6 +94,27 @@ function getCacheDir(version) {
   return path.join(baseCache, 'figma-rust-mcp', `v${version}`);
 }
 
+// Progress bar on stderr (stdout carries MCP stdio traffic); silent when stderr is not a terminal.
+function downloadProgress(total) {
+  const tty = process.stderr.isTTY;
+  const started = Date.now();
+  let received = 0, lastDraw = 0;
+  const mb = bytes => (bytes / 1048576).toFixed(1);
+  const draw = () => {
+    const speed = `${mb(received / Math.max((Date.now() - started) / 1000, 0.001))} MB/s`;
+    if (!total) return process.stderr.write(`\r\x1b[2K  ↓ ${mb(received)} MB  ${speed}`);
+    const ratio = Math.min(received / total, 1), width = 24, filled = Math.round(ratio * width);
+    process.stderr.write(`\r\x1b[2K  ↓ \x1b[36m${'█'.repeat(filled)}\x1b[2m${'░'.repeat(width - filled)}\x1b[0m ${String(Math.round(ratio * 100)).padStart(3)}%  ${mb(received)}/${mb(total)} MB  ${speed}`);
+  };
+  return {
+    add(bytes) {
+      received += bytes;
+      if (tty && Date.now() - lastDraw > 80) { lastDraw = Date.now(); draw(); }
+    },
+    done() { if (tty) { draw(); process.stderr.write('\n'); } },
+  };
+}
+
 function downloadFile(url, destPath) {
   return new Promise((resolve, reject) => {
     const followRedirects = (currentUrl, redirectCount = 0) => {
@@ -104,9 +136,12 @@ function downloadFile(url, destPath) {
         }
 
         const fileStream = fs.createWriteStream(destPath);
+        const progress = downloadProgress(Number(res.headers['content-length']) || 0);
+        res.on('data', chunk => progress.add(chunk.length));
         res.pipe(fileStream);
 
         fileStream.on('finish', () => {
+          progress.done();
           fileStream.close(() => resolve());
         });
 
@@ -147,8 +182,12 @@ async function findOrDownloadBinary() {
   const localRelease = path.resolve(__dirname, '../target/release/figma-rust-mcp' + (process.platform === 'win32' ? '.exe' : ''));
   const localDebug = path.resolve(__dirname, '../target/debug/figma-rust-mcp' + (process.platform === 'win32' ? '.exe' : ''));
 
-  if (fs.existsSync(localRelease)) return localRelease;
-  if (fs.existsSync(localDebug)) return localDebug;
+  // A stale local build would silently downgrade the service; only use one built from this version.
+  const isCurrentBuild = bin => {
+    try { return fs.existsSync(bin) && execFileSync(bin, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim().endsWith(` ${pkgVersion}`); }
+    catch (_) { return false; }
+  };
+  for (const bin of [localRelease, localDebug]) if (isCurrentBuild(bin)) return bin;
 
   const info = getPlatformArch();
   const cacheDir = getCacheDir(pkgVersion);
@@ -167,12 +206,12 @@ async function findOrDownloadBinary() {
   const releaseUrl = `https://github.com/${repoOwner}/${repoName}/releases/download/v${pkgVersion}/${info.assetName}`;
   const latestUrl = `https://github.com/${repoOwner}/${repoName}/releases/latest/download/${info.assetName}`;
 
-  process.stderr.write(`\x1b[36m[figma-rust-mcp]\x1b[0m Downloading binary for ${info.osName}-${info.archName} (v${pkgVersion})...\n`);
+  process.stderr.write(`${tag(36)} Downloading binary for ${info.osName}-${info.archName} (v${pkgVersion})...\n`);
 
   try {
     await downloadFile(releaseUrl, archivePath);
   } catch (err) {
-    process.stderr.write(`\x1b[33m[figma-rust-mcp]\x1b[0m Release v${pkgVersion} not found, trying latest release...\n`);
+    process.stderr.write(`${tag(33)} Release v${pkgVersion} not found, trying latest release...\n`);
     try {
       await downloadFile(latestUrl, archivePath);
     } catch (fallbackErr) {
@@ -201,7 +240,7 @@ async function findOrDownloadBinary() {
     fs.chmodSync(cachedBin, 0o755);
   }
 
-  process.stderr.write(`\x1b[32m[figma-rust-mcp]\x1b[0m Ready! (cached in ${cacheDir})\n\n`);
+  process.stderr.write(`${tag(32)} Downloaded to ${tilde(cacheDir)}\n`);
   return cachedBin;
 }
 
@@ -215,6 +254,7 @@ async function findOrDownloadBinary() {
  */
 async function installService(binPath) {
   removeLegacyService();
+  await stopRunningServer();
   const platform = process.platform;
 
   if (platform === 'darwin') {
@@ -253,15 +293,9 @@ async function installService(binPath) {
 
     fs.writeFileSync(plistPath, plist, 'utf8');
 
-    // Unload first (ignore error if not loaded)
-    try { execSync(`launchctl unload "${plistPath}" 2>/dev/null`, { stdio: 'pipe' }); } catch (_) {}
-    execSync(`launchctl load -w "${plistPath}"`, { stdio: 'inherit' });
+    execSync(`launchctl load -w "${plistPath}"`, { stdio: 'pipe' });
 
-    console.log(`\x1b[32m✓ figma-rust-mcp service installed!\x1b[0m`);
-    console.log(`  Plist: ${plistPath}`);
-    console.log(`  Logs:  ${logDir}/stdout.log`);
-    console.log(`\n\x1b[36mThe server will now start automatically on every login.\x1b[0m`);
-    console.log(`\x1b[36mTo uninstall: npx figma-rust-mcp --uninstall-service\x1b[0m`);
+    await serviceInstalled(`Logs ${tilde(path.join(logDir, 'stdout.log'))}`);
 
   } else if (platform === 'linux') {
     const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
@@ -284,13 +318,10 @@ WantedBy=default.target
 `;
 
     fs.writeFileSync(servicePath, unit, 'utf8');
-    execSync(`systemctl --user daemon-reload`, { stdio: 'inherit' });
-    execSync(`systemctl --user enable --now figma-rust-mcp`, { stdio: 'inherit' });
+    execSync(`systemctl --user daemon-reload`, { stdio: 'pipe' });
+    execSync(`systemctl --user enable --now figma-rust-mcp`, { stdio: 'pipe' });
 
-    console.log(`\x1b[32m✓ figma-rust-mcp systemd user service installed!\x1b[0m`);
-    console.log(`  Service: ${servicePath}`);
-    console.log(`\n\x1b[36mThe server will now start automatically on every login.\x1b[0m`);
-    console.log(`\x1b[36mTo uninstall: npx figma-rust-mcp --uninstall-service\x1b[0m`);
+    await serviceInstalled('Logs: journalctl --user -u figma-rust-mcp');
 
   } else if (platform === 'win32') {
     const taskName = 'FigmaRustMCPServer';
@@ -298,19 +329,65 @@ WantedBy=default.target
     // The native launcher detaches the server and redirects output to a log file.
     const taskCommand = `"${binPath}" --background`;
     execFileSync('schtasks', ['/Create', '/F', '/TN', taskName,
-      '/TR', taskCommand, '/SC', 'ONLOGON'], { stdio: 'inherit', windowsHide: true });
+      '/TR', taskCommand, '/SC', 'ONLOGON'], { stdio: 'pipe', windowsHide: true });
 
     // Start it immediately too
     try { execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'pipe' }); } catch (_) {}
 
-    console.log(`\x1b[32m✓ figma-rust-mcp Windows Task installed!\x1b[0m`);
-    console.log(`  Task: ${taskName}`);
-    console.log(`\n\x1b[36mThe server will now start automatically on every login.\x1b[0m`);
-    console.log(`\x1b[36mTo uninstall: npx figma-rust-mcp --uninstall-service\x1b[0m`);
+    await serviceInstalled(`Task Scheduler: ${taskName}`);
 
   } else {
     console.error(`\x1b[31mUnsupported platform: ${platform}\x1b[0m`);
     process.exit(1);
+  }
+}
+
+async function serviceInstalled(where) {
+  const port = Number(process.env.FIGMA_RUST_MCP_PORT) || 41730;
+  const deadline = Date.now() + 10000;
+  while (!(await isOldServerUp(port)) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 300));
+  if (await isOldServerUp(port)) ok('Background service running', `http://127.0.0.1:${port}`);
+  else console.log(`  ${yellow('!')} Service installed but not answering on port ${port} yet`);
+  note(`Starts on login · ${where}`);
+}
+
+function isOldServerUp(port) {
+  return new Promise(resolve => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/plugin/version', timeout: 500 }, res => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(body).name === 'figma-rust-mcp'); } catch (_) { resolve(false); } });
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+/**
+ * Stop the installed service and any other running server before installing the new one.
+ * A still-running old version keeps port 41730, so the new one would move to 41731 while
+ * agents stay pointed at the old server.
+ */
+async function stopRunningServer() {
+  const quiet = cmd => { try { execSync(cmd, { stdio: 'pipe', windowsHide: true }); } catch (_) {} };
+  if (process.platform === 'darwin') {
+    quiet(`launchctl unload "${path.join(os.homedir(), 'Library', 'LaunchAgents', 'io.github.figma-rust-mcp.server.plist')}"`);
+    quiet('pkill -x figma-rust-mcp');
+  } else if (process.platform === 'linux') {
+    quiet('systemctl --user stop figma-rust-mcp');
+    quiet('pkill -x figma-rust-mcp');
+  } else if (process.platform === 'win32') {
+    quiet('schtasks /End /TN "FigmaRustMCPServer"');
+    quiet('taskkill /F /T /IM figma-rust-mcp.exe');
+  }
+  const port = Number(process.env.FIGMA_RUST_MCP_PORT) || 41730;
+  const deadline = Date.now() + 10000;
+  while (await isOldServerUp(port)) {
+    if (Date.now() > deadline) {
+      console.log(`  ${yellow('!')} An old figma-rust-mcp still answers on port ${port}; stop it, then rerun setup.`);
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 300));
   }
 }
 
@@ -331,7 +408,7 @@ async function uninstallService() {
     }
     removeLegacyService();
 
-    console.log(`\x1b[32m✓ figma-rust-mcp service uninstalled.\x1b[0m`);
+    ok('Background service removed');
 
   } else if (platform === 'linux') {
     try { execSync(`systemctl --user disable --now figma-rust-mcp`, { stdio: 'inherit' }); } catch (_) {}
@@ -340,14 +417,14 @@ async function uninstallService() {
     try { execSync(`systemctl --user daemon-reload`, { stdio: 'inherit' }); } catch (_) {}
     removeLegacyService();
 
-    console.log(`\x1b[32m✓ figma-rust-mcp service uninstalled.\x1b[0m`);
+    ok('Background service removed');
 
   } else if (platform === 'win32') {
     const taskName = 'FigmaRustMCPServer';
     try { execSync(`schtasks /Delete /F /TN "${taskName}"`, { stdio: 'inherit' }); } catch (_) {}
     removeLegacyService();
 
-    console.log(`\x1b[32m✓ figma-rust-mcp Windows Task removed.\x1b[0m`);
+    ok('Background service removed');
 
   } else {
     console.error(`\x1b[31mUnsupported platform: ${platform}\x1b[0m`);
@@ -415,13 +492,9 @@ function setupPlugin(customDir) {
   }
 
   const manifestPath = path.join(pluginDir, 'manifest.json');
-  console.log(`\n\x1b[32m✓ Figma Rust MCP Dynamic Thin Plugin installed to:\x1b[0m`);
-  console.log(`  \x1b[36m${manifestPath}\x1b[0m\n`);
-  console.log(`\x1b[1mTo connect Figma (Do this ONCE forever):\x1b[0m`);
-  console.log(`  1. Open Figma Desktop`);
-  console.log(`  2. Go to Plugins → Development → Import plugin from manifest...`);
-  console.log(`  3. Select: ${manifestPath}`);
-  console.log(`  4. Done! All future updates load dynamically from figma-rust-mcp without file re-imports.\n`);
+  ok('Figma plugin installed', tilde(manifestPath));
+  note('First time only: Figma Desktop → Plugins → Development → Import plugin from manifest…');
+  note('Later updates load automatically; no re-import needed.');
   return manifestPath;
 }
 
@@ -490,7 +563,7 @@ async function upgrade() {
   try {
     const major = pkgVersion ? pkgVersion.split('.')[0] : 'latest';
     execSync(`npm install -g figma-rust-mcp@${major}`, { stdio: 'inherit' });
-    console.log(`\x1b[32m✓ Upgraded figma-rust-mcp (${major === 'latest' ? 'latest' : `v${major}.x`}).\x1b[0m`);
+    ok(`Upgraded figma-rust-mcp (${major === 'latest' ? 'latest' : `v${major}.x`})`);
     setupPlugin();
     if (isServiceInstalled()) {
       console.log('\x1b[36mUpdating background service binary...\x1b[0m');
@@ -510,25 +583,42 @@ async function setupMenu() {
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const agents = detectAgents();
+  const items = [
+    ['1', 'Quick setup', 'plugin + background service + agents', true],
+    ['2', 'Figma plugin', 'install or update only'],
+    ['3', 'Run server', 'in this terminal'],
+    ['4', 'Agents', `configure detected agents (${agents.length} found)`],
+    ['5', 'Service status', 'is the background service installed?'],
+    ['6', 'Upgrade', 'update package and refresh setup'],
+    ['7', 'Remove service', 'stop and uninstall the background service'],
+    ['0', 'Exit', ''],
+  ];
   try {
-    console.log(`\n\x1b[1mFigma Rust MCP setup\x1b[0m  v${pkgVersion}\n\n  1) Quick setup — plugin + background service + detected agents\n  2) Install/update Figma plugin only\n  3) Start server in this terminal\n  4) Configure detected agents\n  5) Check background service\n  6) Upgrade package and refresh setup\n  7) Remove background service\n  0) Exit\n`);
-    const choice = (await rl.question('Choose an option [1]: ')).trim() || '1';
+    console.log(`\n  ${bold('Figma Rust MCP')} ${dim(`v${pkgVersion}`)}\n`);
+    for (const [key, label, hint, recommended] of items) {
+      console.log(`  ${cyan(key)}  ${label.padEnd(16)}${dim(hint)}${recommended ? ` ${green('(recommended)')}` : ''}`);
+    }
+    const choice = (await rl.question(`\n${cyan('›')} Choose [1]: `)).trim() || '1';
     switch (choice) {
       case '1': {
+        step(1, 3, 'Figma plugin');
         setupPlugin();
+        step(2, 3, 'Background service');
         const binPath = await findOrDownloadBinary();
         await installService(binPath);
+        step(3, 3, 'AI agents');
         await configureDetectedAgents(rl, agents);
+        console.log(`\n${green('✓')} ${bold('Setup complete.')} Restart your agents, then run the plugin in Figma.\n`);
         break;
       }
       case '2': setupPlugin(); break;
       case '3': await runBinary(['--server']); break;
-      case '4': await configureDetectedAgents(rl, agents); break;
-      case '5': console.log(isServiceInstalled() ? '✓ Background service is installed.' : '✗ Background service is not installed.'); break;
+      case '4': await configureDetectedAgents(rl, agents); note('Restart the configured agents to connect.'); break;
+      case '5': isServiceInstalled() ? ok('Background service is installed') : console.log(`  ${yellow('!')} Background service is not installed`); break;
       case '6': await upgrade(); break;
       case '7': await uninstallService(); break;
       case '0': break;
-      default: console.log('Unknown option. Run --init to try again.');
+      default: console.log(`  ${yellow('!')} Unknown option. Run --init to try again.`);
     }
   } finally {
     rl.close();
@@ -537,33 +627,34 @@ async function setupMenu() {
 
 async function configureDetectedAgents(rl, agents) {
   if (!agents.length) {
-    console.log('No supported AI coding agents were detected. Install an agent and rerun --init.');
+    console.log(`  ${yellow('!')} No supported AI agents detected. Install one and rerun --init.`);
     return;
   }
 
-  console.log('\nDetected agents:');
-  agents.forEach((agent, index) => console.log(`  ${index + 1}) ${agent.label} — ${agent.configPath}`));
-  const answer = (await rl.question('Configure which agents? Enter numbers separated by commas, a=all, Enter=skip [a]: ')).trim().toLowerCase();
-  if (answer === '') return;
+  const width = Math.max(...agents.map(agent => agent.label.length));
+  agents.forEach((agent, index) => console.log(`  ${cyan(index + 1)}  ${agent.label.padEnd(width + 2)}${dim(tilde(agent.configPath))}`));
+  const answer = (await rl.question(`\n${cyan('›')} Configure which? ${dim('numbers like 1,3 · a = all · n = skip')} [a]: `)).trim().toLowerCase() || 'a';
+  if (answer === 'n') {
+    note('Skipped; MCP configuration was not changed.');
+    return;
+  }
   const selected = answer === 'a'
     ? agents
     : [...new Set(answer.split(',').map(value => Number(value.trim()) - 1))]
       .filter(index => Number.isInteger(index) && index >= 0 && index < agents.length)
       .map(index => agents[index]);
   if (!selected.length) {
-    console.log('No valid agent selection; MCP configuration was not changed.');
+    console.log(`  ${yellow('!')} No valid selection; MCP configuration was not changed.`);
     return;
   }
 
   for (const agent of selected) {
     try {
-      const changed = configureAgent(agent);
-      console.log(`  ${changed ? '✓ Configured' : '✓ Already configured'} ${agent.label}`);
+      ok(agent.label.padEnd(width + 2), configureAgent(agent) ? 'configured' : 'already configured');
     } catch (err) {
-      console.error(`  ✗ Could not configure ${agent.label}: ${err.message}`);
+      console.log(`  ${red('✗')} ${agent.label.padEnd(width + 2)}${dim(err.message)}`);
     }
   }
-  console.log('Restart or reload the selected agent to connect it to Figma Rust MCP.');
 }
 
 function runBinary(args) {

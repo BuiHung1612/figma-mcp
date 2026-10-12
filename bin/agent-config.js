@@ -28,7 +28,10 @@ export function detectAgents({ home = os.homedir(), env = process.env, platform 
     { id: 'antigravity', label: 'Google Antigravity', configPath: path.join(home, '.gemini', 'config', 'mcp_config.json'), installed: existsAny([path.join(home, '.antigravity-ide'), path.join(home, '.gemini', 'config', 'mcp_config.json'), platform === 'darwin' ? path.join(support, 'Antigravity') : null, platform === 'win32' ? path.join(local, 'Programs', 'Antigravity') : null, macApp('Antigravity')]) || hasCommand('antigravity', env, platform) },
     { id: 'cursor', label: 'Cursor', configPath: path.join(home, '.cursor', 'mcp.json'), installed: existsAny([path.join(home, '.cursor'), platform === 'darwin' ? path.join(support, 'Cursor') : null, platform === 'win32' ? path.join(local, 'Programs', 'Cursor') : null, macApp('Cursor')]) || hasCommand('cursor', env, platform) },
     { id: 'windsurf', label: 'Windsurf', configPath: path.join(home, '.codeium', 'windsurf', 'mcp_config.json'), installed: existsAny([path.join(home, '.codeium', 'windsurf'), platform === 'darwin' ? path.join(support, 'Windsurf') : null, platform === 'win32' ? path.join(local, 'Programs', 'Windsurf') : null, macApp('Windsurf')]) || hasCommand('windsurf', env, platform) },
-    { id: 'vscode', label: 'VS Code / Copilot', configPath: path.join(home, '.copilot', 'mcp-config.json'), installed: existsAny([path.join(home, '.vscode'), path.join(home, '.copilot'), platform === 'darwin' ? path.join(support, 'Code') : null, platform === 'linux' ? path.join(xdg, 'Code') : null, platform === 'win32' ? path.join(local, 'Programs', 'Microsoft VS Code') : null, platform === 'win32' ? path.join(roaming, 'Code') : null, macApp('Visual Studio Code')]) || hasCommand('code', env, platform) },
+    { id: 'vscode', label: 'VS Code', configPath: path.join(platform === 'darwin' ? support : platform === 'win32' ? roaming : xdg, 'Code', 'User', 'mcp.json'), installed: existsAny([path.join(home, '.vscode'), platform === 'darwin' ? path.join(support, 'Code') : null, platform === 'linux' ? path.join(xdg, 'Code') : null, platform === 'win32' ? path.join(local, 'Programs', 'Microsoft VS Code') : null, platform === 'win32' ? path.join(roaming, 'Code') : null, macApp('Visual Studio Code')]) || hasCommand('code', env, platform) },
+    { id: 'copilot', label: 'Copilot CLI', configPath: path.join(env.COPILOT_HOME || path.join(home, '.copilot'), 'mcp-config.json'), installed: existsAny([env.COPILOT_HOME, path.join(home, '.copilot')]) || hasCommand('copilot', env, platform) },
+    { id: 'gemini', label: 'Gemini CLI', configPath: path.join(home, '.gemini', 'settings.json'), installed: hasCommand('gemini', env, platform) },
+    { id: 'opencode', label: 'opencode', configPath: path.join(xdg, 'opencode', 'opencode.json'), installed: existsAny([path.join(xdg, 'opencode'), path.join(home, '.opencode')]) || hasCommand('opencode', env, platform) },
     { id: 'zed', label: 'Zed', configPath: platform === 'darwin' ? path.join(support, 'Zed', 'settings.json') : platform === 'win32' ? path.join(roaming, 'Zed', 'settings.json') : path.join(xdg, 'zed', 'settings.json'), installed: existsAny([path.join(xdg, 'zed'), platform === 'darwin' ? path.join(support, 'Zed') : null, platform === 'win32' ? path.join(roaming, 'Zed') : null, macApp('Zed')]) || hasCommand('zed', env, platform) },
   ];
   return agents.filter(agent => agent.installed).map(({ installed, ...agent }) => agent);
@@ -40,9 +43,9 @@ function upsertJsonc(filePath, rootKey, value) {
   const config = parse(source, errors, { allowTrailingComma: true, disallowComments: false });
   if (errors.length) throw new Error(`Invalid JSON/JSONC in ${filePath}; left it unchanged.`);
   const current = config?.[rootKey]?.[SERVER_NAME];
-  if (current && Object.entries(value).every(([key, entryValue]) => current[key] === entryValue)) return false;
+  if (current && Object.entries(value).every(([key, entryValue]) => JSON.stringify(current[key]) === JSON.stringify(entryValue))) return false;
   const merged = current && typeof current === 'object' && !Array.isArray(current) ? { ...current, ...value } : value;
-  for (const key of ['command', 'args', 'serverUrl', 'url', 'type']) {
+  for (const key of ['command', 'args', 'serverUrl', 'httpUrl', 'url', 'type']) {
     if (!Object.hasOwn(value, key) && Object.hasOwn(merged, key)) delete merged[key];
   }
   const edits = modify(source, [rootKey, SERVER_NAME], merged, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' } });
@@ -76,14 +79,20 @@ function upsertCodex(filePath) {
   return true;
 }
 
+const ENTRIES = {
+  antigravity: ['mcpServers', { serverUrl: 'http://127.0.0.1:41730/sse' }],
+  claude: ['mcpServers', { type: 'http', url: HTTP_URL }],
+  windsurf: ['mcpServers', { serverUrl: HTTP_URL }],
+  vscode: ['servers', { type: 'http', url: HTTP_URL }],
+  copilot: ['mcpServers', { type: 'http', url: HTTP_URL, tools: ['*'] }],
+  gemini: ['mcpServers', { httpUrl: HTTP_URL }],
+  opencode: ['mcp', { type: 'remote', url: HTTP_URL, enabled: true }],
+  zed: ['context_servers', { url: HTTP_URL }],
+};
+
 export function configureAgent(agent) {
-  const entry = agent.id === 'antigravity'
-    ? { serverUrl: 'http://127.0.0.1:41730/sse' }
-    : agent.id === 'claude' || agent.id === 'vscode'
-      ? { type: 'http', url: HTTP_URL }
-      : { url: HTTP_URL };
   if (agent.id === 'codex') return upsertCodex(agent.configPath);
-  const rootKey = agent.id === 'zed' ? 'context_servers' : 'mcpServers';
+  const [rootKey, entry] = ENTRIES[agent.id] || ['mcpServers', { url: HTTP_URL }];
   return upsertJsonc(agent.configPath, rootKey, entry);
 }
 

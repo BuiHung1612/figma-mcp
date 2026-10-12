@@ -289,21 +289,33 @@ test('setup command prints scriptable choices when no terminal is attached', () 
 test('agent setup detects installed clients and preserves existing JSONC and TOML config', () => {
   const home = mkdtempSync(path.join(os.tmpdir(), 'figma-rust-mcp-'));
   try {
-    const env = { PATH: '' };
-    for (const dir of ['.codex', '.claude', '.antigravity-ide', '.cursor', '.codeium/windsurf', '.copilot', '.config/zed']) {
+    const bin = path.join(home, 'bin');
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, 'gemini'), '');
+    const env = { PATH: bin };
+    for (const dir of ['.codex', '.claude', '.antigravity-ide', '.cursor', '.codeium/windsurf', '.config/Code', '.copilot', '.config/opencode', '.config/zed']) {
       mkdirSync(path.join(home, dir), { recursive: true });
     }
     const agents = detectAgents({ home, env, platform: 'linux' });
-    assert.deepEqual(agents.map(agent => agent.id), ['codex', 'claude', 'antigravity', 'cursor', 'windsurf', 'vscode', 'zed']);
+    assert.deepEqual(agents.map(agent => agent.id), ['codex', 'claude', 'antigravity', 'cursor', 'windsurf', 'vscode', 'copilot', 'gemini', 'opencode', 'zed']);
 
-    for (const id of ['claude', 'antigravity', 'windsurf', 'vscode']) {
+    const expected = {
+      claude: ['mcpServers', 'url', 'http://127.0.0.1:41730/mcp'],
+      antigravity: ['mcpServers', 'serverUrl', 'http://127.0.0.1:41730/sse'],
+      windsurf: ['mcpServers', 'serverUrl', 'http://127.0.0.1:41730/mcp'],
+      vscode: ['servers', 'url', 'http://127.0.0.1:41730/mcp'],
+      copilot: ['mcpServers', 'url', 'http://127.0.0.1:41730/mcp'],
+      gemini: ['mcpServers', 'httpUrl', 'http://127.0.0.1:41730/mcp'],
+      opencode: ['mcp', 'url', 'http://127.0.0.1:41730/mcp'],
+    };
+    for (const [id, [rootKey, key, value]] of Object.entries(expected)) {
       const agent = agents.find(candidate => candidate.id === id);
-      configureAgent(agent);
-      const config = parseJsonc(readFileSync(agent.configPath, 'utf8')).mcpServers['figma-rust-mcp'];
-      assert.ok(config);
-      if (id === 'antigravity') assert.equal(config.serverUrl, 'http://127.0.0.1:41730/sse');
-      else assert.equal(config.url, 'http://127.0.0.1:41730/mcp');
+      assert.equal(configureAgent(agent), true);
+      const config = parseJsonc(readFileSync(agent.configPath, 'utf8'))[rootKey]['figma-rust-mcp'];
+      assert.equal(config[key], value);
+      assert.equal(configureAgent(agent), false);
     }
+    assert.equal(agents.find(agent => agent.id === 'vscode').configPath, path.join(home, '.config', 'Code', 'User', 'mcp.json'));
 
     const cursor = agents.find(agent => agent.id === 'cursor');
     writeFileSync(cursor.configPath, '{\n  // keep this note\n  "mcpServers": { "other": { "url": "http://example.test" } }\n}\n');

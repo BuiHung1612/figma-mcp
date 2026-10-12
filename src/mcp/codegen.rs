@@ -369,7 +369,11 @@ fn typography_classes(node: &Value, typo: &Value, classes: &mut Vec<String>) {
         w if w.parse::<u16>().is_ok_and(|w| (1..=1000).contains(&w)) => classes.push(format!("font-[{w}]")),
         _ => {}
     }
+    // Figma rounds a fractional line box (14px × 125% = 17.5 → 18); a single-line text takes its real height.
+    let box_height = node["size"]["height"].as_f64()
+        .filter(|h| line_height_px(typo).is_some_and(|lh| lh.fract() != 0.0 && (h - lh).abs() < 1.0));
     match &typo["lineHeight"] {
+        _ if box_height.is_some() => classes.push(format!("leading-[{}px]", number(box_height.unwrap()))),
         Value::String(s) if s.ends_with('%') => {
             if let Ok(p) = s.trim_end_matches('%').parse::<f64>() { classes.push(format!("leading-[{}]", number(p / 100.0))); }
         }
@@ -1244,6 +1248,8 @@ mod tests {
             (json!({"typography":{"fontSize":22, "fontWeight":"Extra Bold Italic"}}), vec!["text-[22px]", "font-extrabold", "italic"]),
             (json!({"type":"TEXT", "text":{"fontSize":12, "lineHeight":"125%", "letterSpacing":"-0.24px", "align":"center", "textCase":"UPPER", "fontFamily":"Open Sans"}}),
                 vec!["leading-[1.25]", "tracking-[-0.24px]", "text-center", "uppercase", "font-['Open_Sans']"]),
+            (json!({"type":"TEXT", "size":{"height":18}, "text":{"fontSize":14, "lineHeight":"125%"}}), vec!["leading-[18px]"]),
+            (json!({"type":"TEXT", "size":{"height":42}, "text":{"fontSize":14, "lineHeight":"125%"}}), vec!["leading-[1.25]"]),
         ] {
             let classes = node_to_tailwind_classes(&node);
             for class in expected { assert!(classes.iter().any(|c| c == class), "{classes:?}"); }

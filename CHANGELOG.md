@@ -1,5 +1,19 @@
 # Changelog
 
+## [8.0.1] — 2026-10-12
+
+### Fixed
+- Setup: VS Code is configured in its own `Code/User/mcp.json` (`servers`) instead of the Copilot CLI file; Copilot CLI, Gemini CLI and opencode are detected and configured; Windsurf uses `serverUrl`.
+- Setup: reinstalling or upgrading the background service stops the running server first. On Linux and Windows the old version kept port 41730, so the new one moved to 41731 while agents still talked to the old server.
+- Setup: a local `target/` build is used only when its version matches the package, so running setup from a stale checkout no longer downgrades the service.
+- Setup: Enter at the agent prompt configures all detected agents, as the `[a]` default says (`n` skips).
+- Codegen: single-line text with a fractional line height (14px × 125%) uses Figma's rounded box height, so parent heights no longer drift. Checkout fixture accuracy 98.9% → 99.5% (height 100%).
+- `server.json` version was stuck at 7.0.0.
+
+### Changed
+- `--init` output: numbered quick-setup steps, aligned menu and agent list, `~` paths, quiet service commands, and the service is reported as running only after it answers.
+- Binary download shows a progress bar (size, percent, speed) when stderr is a terminal; log lines carry no color codes otherwise.
+
 ## [8.0.0] — 2026-10-12
 
 ### Breaking
