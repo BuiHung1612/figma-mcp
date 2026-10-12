@@ -87,7 +87,7 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
             }
         }
         return match bridge.send_operation("read_nodes", op_params, session_id).await {
-            Ok(data) => ToolResult::text(crate::mcp::semantic_optimizer::compress_tree(&data, args["detail"].as_str().is_some_and(|d| d != "full")).to_string()),
+            Ok(data) => ToolResult::text(crate::mcp::semantic_optimizer::compress_tree(&data, args["detail"].as_str() != Some("full")).to_string()),
             Err(error) => ToolResult::error(error),
         };
     }
@@ -249,7 +249,7 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
             }
 
             if operation == "get_design" || operation == "get_selection" {
-                let optimized = crate::mcp::semantic_optimizer::compress_tree(&data, args.get("detail").and_then(|v| v.as_str()).unwrap_or("full") != "full");
+                let optimized = crate::mcp::semantic_optimizer::compress_tree(&data, args["detail"].as_str() != Some("full"));
                 return ToolResult::text(serde_json::to_string(&optimized).unwrap_or_default());
             }
 
@@ -496,7 +496,7 @@ pub(super) async fn figma_index(bridge: BridgeHandle, args: Value) -> ToolResult
             if let Some(limit) = args.get("limit") { params["limit"] = limit.clone(); }
             if args.get("maxNodes").is_some() { return ToolResult::error("Use limit (1..500) and nextCursor instead of maxNodes"); }
             return match bridge.send_operation("read_nodes", params, session_id).await {
-                Ok(data) => ToolResult::text(data.to_string()),
+                Ok(data) => ToolResult::text(crate::mcp::semantic_optimizer::compress_tree(&data, args["detail"].as_str() != Some("full")).to_string()),
                 Err(error) => ToolResult::error(error),
             };
         }

@@ -400,24 +400,88 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
     ToolResult::text(result_pack.to_string())
 }
 
-/// Picks the local components to scaffold: one entry per component set (its first
-/// variant), deduplicated by generated name, skipping names the codebase already has.
-fn scaffold_plan(local: &Value, existing: &crate::mcp::component_matcher::ComponentScanResult, overwrite: bool, limit: usize) -> (Vec<(String, String)>, Vec<Value>) {
-    let mut seen = std::collections::HashSet::new();
-    let (mut picked, mut skipped) = (Vec::new(), Vec::new());
+/// Most variants fetched per component set; the rest are reported, not guessed.
+const MAX_VARIANTS: usize = 24;
+
+/// Picks the local components to scaffold, grouping set variants under one name,
+/// deduplicated by generated name, skipping names the codebase already has.
+/// Each entry is (name, [(node id, variant label)]); standalone components have one empty label.
+#[allow(clippy::type_complexity)]
+fn scaffold_plan(local: &Value, existing: &crate::mcp::component_matcher::ComponentScanResult, overwrite: bool, limit: usize) -> (Vec<(String, Vec<(String, String)>)>, Vec<Value>) {
+    let mut decided = std::collections::HashMap::<String, Option<usize>>::new();
+    let (mut picked, mut skipped) = (Vec::<(String, Vec<(String, String)>)>::new(), Vec::new());
     for c in local["components"].as_array().into_iter().flatten() {
         let figma_name = c["setName"].as_str().or(c["name"].as_str()).unwrap_or("Component");
         let name = crate::mcp::codegen::sanitize_component_name(figma_name);
-        if !seen.insert(name.clone()) { continue; }
-        if let Some(found) = existing.components.get(&name.to_lowercase()).filter(|_| !overwrite) {
+        let variant = (c["id"].as_str().unwrap_or_default().to_string(), if c["setName"].is_string() { c["name"].as_str().unwrap_or_default().to_string() } else { String::new() });
+        if let Some(slot) = decided.get(&name) {
+            // Same set: another variant. A different component with a clashing name is dropped.
+            if let Some(i) = slot.filter(|_| c["setName"].is_string() && !variant.1.is_empty()) { picked[i].1.push(variant); }
+            continue;
+        }
+        let slot = if let Some(found) = existing.components.get(&name.to_lowercase()).filter(|_| !overwrite) {
             skipped.push(json!({"name": name, "reason": format!("already in codebase: {}", found.file_path)}));
+            None
         } else if picked.len() >= limit {
             skipped.push(json!({"name": name, "reason": format!("limit {limit} reached")}));
+            None
         } else {
-            picked.push((c["id"].as_str().unwrap_or_default().to_string(), name));
-        }
+            picked.push((name.clone(), vec![variant]));
+            Some(picked.len() - 1)
+        };
+        decided.insert(name, slot);
     }
     (picked, skipped)
+}
+
+/// "Size=sm, State=Hover" → [("size", "sm"), ("state", "Hover")].
+fn variant_props(label: &str) -> Vec<(String, String)> {
+    label.split(',').filter_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        let pascal = crate::mcp::codegen::sanitize_component_name(key.trim());
+        let mut chars = pascal.chars();
+        let prop = chars.next().map(|f| f.to_lowercase().collect::<String>() + chars.as_str())?;
+        Some((prop, value.trim().to_string()))
+    }).collect()
+}
+
+/// Joins per-variant React modules into one file with a wrapper that picks the variant from props.
+/// `parts` are (variant label, component name, generated module); the first is the default.
+fn compose_variants(name: &str, parts: &[(String, String, String)]) -> String {
+    let mut imports = Vec::<String>::new();
+    let mut bodies = String::new();
+    for (_, _, code) in parts {
+        for line in code.lines() {
+            if line.starts_with("import ") {
+                if !imports.iter().any(|seen| seen == line) { imports.push(line.to_string()); }
+            } else if !line.starts_with("export default ") {
+                bodies.push_str(line);
+                bodies.push('\n');
+            }
+        }
+    }
+    let defaults = variant_props(&parts[0].0);
+    let props: Vec<&String> = defaults.iter().map(|(prop, _)| prop).collect();
+    let key = |label: &str| {
+        let values: std::collections::HashMap<_, _> = variant_props(label).into_iter().collect();
+        props.iter().map(|p| format!("{p}={}", values.get(*p).map_or("", String::as_str))).collect::<Vec<_>>().join("|")
+    };
+    let quote = |v: &str| serde_json::to_string(v).unwrap_or_default();
+    let unions = props.iter().map(|prop| {
+        let mut values: Vec<String> = parts.iter().filter_map(|(label, _, _)| variant_props(label).into_iter().find(|(p, _)| p == *prop).map(|(_, v)| quote(&v))).collect();
+        values.dedup();
+        let mut seen = std::collections::HashSet::new();
+        values.retain(|v| seen.insert(v.clone()));
+        format!("  {prop}?: {};\n", values.join(" | "))
+    }).collect::<String>();
+    let table = parts.iter().map(|(label, component, _)| format!("  {}: {component},\n", quote(&key(label)))).collect::<String>();
+    let params = defaults.iter().map(|(prop, value)| format!("{prop} = {}, ", quote(value))).collect::<String>();
+    let lookup = props.iter().map(|p| format!("`{p}=${{{p}}}`")).collect::<Vec<_>>().join(", ");
+    format!(
+        "{imports}\n\n{bodies}\nexport interface {name}Props {{\n{unions}  className?: string;\n}}\n\nconst variants: Record<string, React.FC<{{ className?: string }}>> = {{\n{table}}};\n\nexport const {name}: React.FC<{name}Props> = ({{ {params}className = '' }}) => {{\n  const Variant = variants[[{lookup}].join('|')] ?? {default};\n  return <Variant className={{className}} />;\n}};\n\nexport default {name};\n",
+        imports = imports.join("\n"),
+        default = parts[0].1,
+    )
 }
 
 /// Writes `content` unless the file exists and `overwrite` is false. Returns whether it wrote.
@@ -490,21 +554,33 @@ pub(super) async fn figma_scaffold_project(bridge: BridgeHandle, args: Value) ->
     let existing = crate::mcp::component_matcher::scan_project_components(&project.to_string_lossy()).await;
     let (plan, plan_skipped) = scaffold_plan(&local, &existing, overwrite, limit);
     skipped.extend(plan_skipped);
-    for (id, name) in &plan {
+    for (name, variants) in &plan {
         let path = component_dir.join(format!("{name}.{ext}"));
         if !overwrite && path.exists() {
             record(&path, Ok(false), &mut written, &mut skipped, &mut errors);
             continue;
         }
-        let code = bridge.send_operation("get_design_context", json!({"id": id, "expandInstances": true}), session_id).await
-            .and_then(|ctx| crate::mcp::codegen::generate_code_from_context(&ctx, framework, Some(name)));
-        match code {
-            Ok(code) => {
-                let r = write_scaffold_file(&path, &code, overwrite).await;
-                record(&path, r, &mut written, &mut skipped, &mut errors);
-            }
-            Err(e) => errors.push(json!(format!("{name} ({id}): {e}"))),
+        // Each variant is generated from its own node; vue/html keep the default variant only.
+        let take = if ext == "tsx" { variants.len().min(MAX_VARIANTS) } else { 1 };
+        if variants.len() > take {
+            skipped.push(json!({"name": name, "reason": format!("{} of {} variants generated", take, variants.len())}));
         }
+        let mut parts = Vec::new();
+        for (id, label) in &variants[..take] {
+            let component = if take > 1 { format!("{name}{}", crate::mcp::codegen::sanitize_component_name(label)) } else { name.clone() };
+            match bridge.send_operation("get_design_context", json!({"id": id, "expandInstances": true}), session_id).await
+                .and_then(|ctx| crate::mcp::codegen::generate_code_from_context(&ctx, framework, Some(&component))) {
+                Ok(code) => parts.push((label.clone(), component, code)),
+                Err(e) => errors.push(json!(format!("{name} ({id}): {e}"))),
+            }
+        }
+        let code = match parts.len() {
+            0 => continue,
+            1 => parts.remove(0).2,
+            _ => compose_variants(name, &parts),
+        };
+        let r = write_scaffold_file(&path, &code, overwrite).await;
+        record(&path, r, &mut written, &mut skipped, &mut errors);
     }
 
     ToolResult::text(serde_json::to_string_pretty(&json!({
@@ -536,11 +612,28 @@ mod scaffold_tests {
         existing.components.insert("card".into(), DiscoveredComponent { name: "Card".into(), file_path: "src/components/Card.tsx".into(), import_path: "@/components/Card".into(), is_default_export: true, named_exports: vec![] });
 
         let (picked, skipped) = scaffold_plan(&local, &existing, false, 2);
-        assert_eq!(picked, vec![("1:1".to_string(), "Button".to_string()), ("3:1".to_string(), "IconButton".to_string())]);
+        assert_eq!(picked[0], ("Button".to_string(), vec![("1:1".to_string(), "Size=sm".to_string()), ("1:2".to_string(), "Size=lg".to_string())]));
+        assert_eq!(picked[1], ("IconButton".to_string(), vec![("3:1".to_string(), String::new())]));
         assert_eq!(skipped[0]["name"], "Card");
         assert_eq!(skipped[1]["reason"], "limit 2 reached");
 
         let (picked, _) = scaffold_plan(&local, &existing, true, 10);
         assert_eq!(picked.len(), 4);
+    }
+
+    #[test]
+    fn variants_compose_into_one_component_selected_by_props() {
+        let module = |n: &str| format!("import React from 'react';\n\nexport interface {n}Props {{ className?: string }}\n\nexport const {n}: React.FC<{n}Props> = ({{\n  className = '',\n}}) => {{  return (\n    <div />\n  );\n}};\n\nexport default {n};\n");
+        let parts = vec![
+            ("Size=sm, Has Icon=false".to_string(), "ButtonSizeSmHasIconFalse".to_string(), module("ButtonSizeSmHasIconFalse")),
+            ("Size=lg, Has Icon=true".to_string(), "ButtonSizeLgHasIconTrue".to_string(), module("ButtonSizeLgHasIconTrue")),
+        ];
+        let code = super::compose_variants("Button", &parts);
+        assert_eq!(code.matches("import React from 'react';").count(), 1);
+        assert_eq!(code.matches("export default ").count(), 1);
+        assert!(code.contains("  size?: \"sm\" | \"lg\";\n  hasIcon?: \"false\" | \"true\";"), "{code}");
+        assert!(code.contains("\"size=lg|hasIcon=true\": ButtonSizeLgHasIconTrue,"), "{code}");
+        assert!(code.contains("({ size = \"sm\", hasIcon = \"false\", className = '' })"), "{code}");
+        assert!(code.contains("variants[[`size=${size}`, `hasIcon=${hasIcon}`].join('|')] ?? ButtonSizeSmHasIconFalse"), "{code}");
     }
 }

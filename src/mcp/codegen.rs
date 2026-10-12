@@ -22,7 +22,8 @@ pub fn generate_code_from_context(
         "react-shadcn" | "shadcn" | "shadcn-ui" => Ok(generate_shadcn_react(context, &name)),
         "react-native" | "rn" => Ok(generate_react_native(context, &name)),
         "vue" | "vue-tailwind" => Ok(generate_vue_tailwind(context, &name)),
-        "html" | "html-tailwind" => Ok(generate_html_tailwind(context)),
+        "html" | "html-tailwind" => Ok(generate_html_tailwind(context, Dialect::Html)),
+        "html-annotated" => Ok(generate_html_tailwind(context, Dialect::Annotated)),
         "swiftui" => Ok(generate_swiftui(context, &name)),
         "clean-spec" | "clean" | "spec" | "yaml-spec" => Ok(generate_clean_spec(context)),
         _ => Err(format!(
@@ -100,7 +101,8 @@ fn name_has(node: &Value, any: &[&str]) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Dialect { Jsx, Html, Vue }
+/// `Annotated` is HTML plus `data-node-id` on every layer, used to measure rendered output against the spec.
+enum Dialect { Jsx, Html, Vue, Annotated }
 
 fn escape_text(s: &str, d: Dialect) -> String {
     match d {
@@ -108,7 +110,7 @@ fn escape_text(s: &str, d: Dialect) -> String {
         Dialect::Jsx if s.contains(['{', '}', '<', '>', '&', '\n', '"', '\'']) || s.starts_with(' ') || s.ends_with(' ') || s.contains("  ") =>
             format!("{{{}}}", serde_json::to_string(s).unwrap()),
         Dialect::Jsx => s.to_string(),
-        Dialect::Html | Dialect::Vue => s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('{', "&#123;"),
+        Dialect::Html | Dialect::Vue | Dialect::Annotated => s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('{', "&#123;"),
     }
 }
 
@@ -239,7 +241,8 @@ fn layout_classes(layout: &Value, classes: &mut Vec<String>) {
 const LEAF_SHAPES: [&str; 8] = ["VECTOR", "RECTANGLE", "ELLIPSE", "LINE", "STAR", "POLYGON", "BOOLEAN_OPERATION", "IMAGE"];
 
 /// How a node is sized inside its parent: FIXED → exact px, FILL → flex-1 on the
-/// parent's main axis / self-stretch on the cross axis, HUG → intrinsic.
+/// parent's main axis / self-stretch on the cross axis, HUG → intrinsic. FIXED and
+/// HUG never shrink on the main axis.
 fn sizing_classes(node: &Value, classes: &mut Vec<String>) {
     let (w, h) = node_size(node);
     let parent = node["_parentFlow"].as_str();
@@ -259,8 +262,11 @@ fn sizing_classes(node: &Value, classes: &mut Vec<String>) {
             }
             Some("FILL") if flex_parent => classes.push("self-stretch".into()),
             Some("FILL") => classes.push(format!("{prefix}-full")),
-            Some("FIXED") if size > 0.0 => classes.push(format!("{prefix}-[{}px]", number(size))),
-            Some(_) => {}
+            Some(fixed_or_hug) => {
+                if fixed_or_hug == "FIXED" && size > 0.0 { classes.push(format!("{prefix}-[{}px]", number(size))); }
+                // Figma never shrinks FIXED/HUG children on the main axis; CSS flex items shrink by default.
+                if flex_parent && main { classes.push("shrink-0".into()); }
+            }
             None if explicit_box && size > 0.0 => classes.push(format!("{prefix}-[{}px]", number(size))),
             None => {}
         }
@@ -277,36 +283,69 @@ fn sizing_classes(node: &Value, classes: &mut Vec<String>) {
     }
 }
 
-fn stroke_classes(node: &Value, classes: &mut Vec<String>) {
-    let Some(stroke) = node.get("stroke") else { return };
-    let Some(color) = stroke.as_str().or_else(|| stroke["color"].as_str()) else { return };
+/// Returns per-side strokes as box-shadow layers so the caller can merge them with effect shadows.
+fn stroke_classes(node: &Value, classes: &mut Vec<String>) -> Option<String> {
+    let stroke = node.get("stroke")?;
+    let color = stroke.as_str().or_else(|| stroke["color"].as_str())?;
     let opacity = stroke["opacity"].as_f64().or_else(|| node["strokeOpacity"].as_f64());
     let weight = &stroke["weight"];
     let sides = weight.as_object().map(|_| box4(weight)).unwrap_or(None);
     let uniform = weight.as_f64().unwrap_or(1.0);
     let dashed = stroke["dashed"] == true;
-    // OUTSIDE strokes don't take layout space in Figma; an outline doesn't either.
-    if stroke["align"] == "OUTSIDE" && sides.is_none() {
+    // A LINE's stroke is the line itself: one edge, as thick as the stroke.
+    if node["type"] == "LINE" && sides.is_none() {
+        if uniform <= 0.0 { return None; }
+        classes.push(if (uniform - 1.0).abs() < 0.01 { "border-t".into() } else { format!("border-t-[{}px]", number(uniform)) });
+        if dashed { classes.push("border-dashed".into()); }
+        classes.push(color_with_opacity(color, "border", opacity));
+        return None;
+    }
+    // Figma strokes never take layout space; a CSS border does, an outline doesn't.
+    // The offset places it inside (default), centered or outside the edge.
+    if sides.is_none() {
+        if uniform <= 0.0 { return None; }
         classes.push(if (uniform - 1.0).abs() < 0.01 { "outline".into() } else { format!("outline outline-[{}px]", number(uniform)) });
+        let offset = match stroke["align"].as_str() { Some("OUTSIDE") => 0.0, Some("CENTER") => -uniform / 2.0, _ => -uniform };
+        if offset != 0.0 { classes.push(format!("outline-offset-[{}px]", number(offset))); }
         if dashed { classes.push("outline-dashed".into()); }
         classes.push(color_with_opacity(color, "outline", opacity));
-        return;
+        return None;
     }
-    match sides {
-        Some(s) => {
-            for (side, v) in ["t", "r", "b", "l"].iter().zip(s) {
-                if v > 0.0 { classes.push(if (v - 1.0).abs() < 0.01 { format!("border-{side}") } else { format!("border-{side}-[{}px]", number(v)) }); }
-            }
-        }
-        None if (uniform - 1.0).abs() < 0.01 => classes.push("border".into()),
-        None if uniform > 0.0 => classes.push(format!("border-[{}px]", number(uniform))),
-        None => return,
+    let sides = sides.unwrap_or_default();
+    // Per-side solid strokes become box-shadow layers (no layout space): inset for
+    // INSIDE/CENTER, outward for OUTSIDE. Dashed strokes, or a token color that
+    // needs opacity, keep borders.
+    let shadow_color = match (Rgba::parse(&json!(color)), opacity) {
+        (Ok(c), Some(op)) => c.with_opacity(op.clamp(0.0, 1.0)).ok().map(|c| c.css()),
+        (Ok(c), None) => Some(c.css()),
+        (Err(_), None) => Some(color.to_string()),
+        (Err(_), Some(_)) => None,
+    };
+    if let (false, Some(c)) = (dashed, shadow_color) {
+        let outward = stroke["align"] == "OUTSIDE";
+        let layers: Vec<String> = sides.iter().zip([(0.0, 1.0), (-1.0, 0.0), (0.0, -1.0), (1.0, 0.0)])
+            .filter(|(v, _)| **v > 0.0)
+            .map(|(v, (x, y))| {
+                let (x, y) = if outward { (-x * v, -y * v) } else { (x * v, y * v) };
+                format!("{}{}px {}px 0 0 {c}", if outward { "" } else { "inset " }, number(x), number(y))
+            })
+            .collect();
+        return (!layers.is_empty()).then(|| layers.join(", "));
+    }
+    for (side, v) in ["t", "r", "b", "l"].iter().zip(sides) {
+        if v > 0.0 { classes.push(if (v - 1.0).abs() < 0.01 { format!("border-{side}") } else { format!("border-{side}-[{}px]", number(v)) }); }
     }
     if dashed { classes.push("border-dashed".into()); }
     classes.push(color_with_opacity(color, "border", opacity));
+    None
 }
 
 fn typography_classes(node: &Value, typo: &Value, classes: &mut Vec<String>) {
+    // Figma bullets hang in the text box's own indent, which counts toward its width.
+    // ponytail: 1.5em indent calibrated on Lato 16px samples; ORDERED numbers are not rendered (the spec has no counter value).
+    if typo["listType"] == "UNORDERED" || node["listType"] == "UNORDERED" {
+        classes.extend(["block", "pl-[1.5em]", "-indent-[1.5em]", "before:content-['•']", "before:inline-block", "before:w-[1.5em]", "before:indent-0"].map(String::from));
+    }
     if let Some(size) = typo.get("fontSize").and_then(px) {
         classes.push(format!("text-[{}px]", number(size)));
     }
@@ -428,7 +467,7 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
         }
     }
 
-    stroke_classes(node, &mut classes);
+    let mut stroke_shadow = stroke_classes(node, &mut classes);
 
     if let Some(r) = node.get("borderRadius").and_then(box4) {
         let r = if node_type == "ELLIPSE" { [9999.0; 4] } else { r };
@@ -441,12 +480,16 @@ fn node_to_tailwind_classes(node: &Value) -> Vec<String> {
     if let Some(effects) = node["effects"].as_array() {
         let supported: Vec<Value> = effects.iter().filter(|e| crate::mcp::tokens::effect_css(std::slice::from_ref(*e)).is_ok()).cloned().collect();
         if let Ok(css) = crate::mcp::tokens::effect_css(&supported) {
-            for (property, value) in css {
+            for (property, mut value) in css {
+                if property == "box-shadow" {
+                    if let Some(strokes) = stroke_shadow.take() { value = format!("{strokes}, {value}"); }
+                }
                 let value = value.replace(' ', "_");
                 classes.push(if property == "box-shadow" { format!("shadow-[{value}]") } else { format!("[{property}:{value}]") });
             }
         }
     }
+    if let Some(strokes) = stroke_shadow { classes.push(format!("shadow-[{}]", strokes.replace(' ', "_"))); }
 
     if let Some(typo) = node.get("typography")
         .or_else(|| node.get("text").filter(|v| v.is_object()))
@@ -541,7 +584,11 @@ fn render_markup(node: &Value, out: &mut String, indent_level: usize, d: Dialect
     let classes = node_to_tailwind_classes(node);
     let attr = if d == Dialect::Jsx { "className" } else { "class" };
     let class_attr = if classes.is_empty() { String::new() } else { format!(" {attr}=\"{}\"", classes.join(" ")) };
-    let attrs = format!("{class_attr}{}", image_attr(node));
+    let node_id = match (d, node["id"].as_str()) {
+        (Dialect::Annotated, Some(id)) => format!(" data-node-id=\"{}\"", escape_text(id, d).replace('"', "&quot;")),
+        _ => String::new(),
+    };
+    let attrs = format!("{class_attr}{}{node_id}", image_attr(node));
 
     if node_type == "TEXT" {
         out.push_str(&format!("{indent}<{tag}{attrs}>{}</{tag}>\n", text_markup(node, d, name)));
@@ -1067,9 +1114,9 @@ fn generate_vue_tailwind(context: &Value, _component_name: &str) -> String {
 
 // ── Plain HTML Generator ─────────────────────────────────────────────────────
 
-fn generate_html_tailwind(context: &Value) -> String {
+fn generate_html_tailwind(context: &Value, d: Dialect) -> String {
     let mut buffer = String::new();
-    render_markup(context, &mut buffer, 0, Dialect::Html);
+    render_markup(context, &mut buffer, 0, d);
     buffer
 }
 
@@ -1235,9 +1282,16 @@ mod tests {
         }
         assert!(!root.iter().any(|x| x.contains("md:")));
         let fill = node_to_tailwind_classes(&tree["children"][0]);
-        for c in ["flex-1", "h-[44px]", "border-b-[2px]", "border-[#ff0000]", "rounded-[8px_8px_0px_0px]"] {
+        for c in ["flex-1", "h-[44px]", "shadow-[inset_0px_-2px_0_0_#ff0000]", "rounded-[8px_8px_0px_0px]"] {
             assert!(fill.iter().any(|x| x == c), "{c} missing in {fill:?}");
         }
+        // Per-side strokes share one box-shadow with effect shadows; dashed ones stay borders.
+        let merged = node_to_tailwind_classes(&json!({"type":"FRAME","stroke":{"color":"#b97862","weight":{"top":0,"right":0,"bottom":0,"left":3}},
+            "effects":[{"type":"DROP_SHADOW","visible":true,"color":{"r":0,"g":0,"b":0,"a":0.25},"offset":{"x":0,"y":4},"radius":8,"spread":0,"blendMode":"NORMAL"}]}));
+        let shadows: Vec<_> = merged.iter().filter(|c| c.starts_with("shadow-[")).collect();
+        assert!(shadows.len() == 1 && shadows[0].starts_with("shadow-[inset_3px_0px_0_0_#b97862,_"), "{merged:?}");
+        let dashed = node_to_tailwind_classes(&json!({"type":"FRAME","stroke":{"color":"#000000","dashed":true,"weight":{"top":0,"right":0,"bottom":1,"left":0}}}));
+        assert!(dashed.contains(&"border-b".to_string()) && dashed.contains(&"border-dashed".to_string()), "{dashed:?}");
         let badge = node_to_tailwind_classes(&tree["children"][1]);
         for c in ["absolute", "left-[380px]", "top-[-4px]", "w-[16px]", "rounded-full", "outline outline-[2px]", "outline-black"] {
             assert!(badge.iter().any(|x| x == c), "{c} missing in {badge:?}");
@@ -1307,6 +1361,17 @@ mod tests {
     }
 
     #[test]
+    fn unordered_list_text_gets_a_hanging_bullet() {
+        let node = json!({"type":"TEXT","name":"Item","text":{"content":"Account","fontSize":16,"listType":"UNORDERED"}});
+        let classes = node_to_tailwind_classes(&node);
+        for c in ["pl-[1.5em]", "-indent-[1.5em]", "before:content-['•']", "before:w-[1.5em]"] {
+            assert!(classes.contains(&c.to_string()), "{c} missing in {classes:?}");
+        }
+        let plain = node_to_tailwind_classes(&json!({"type":"TEXT","name":"Item","text":{"content":"Account","fontSize":16}}));
+        assert!(!plain.iter().any(|c| c.starts_with("before:")));
+    }
+
+    #[test]
     fn test_color_opacity_tailwind_generation() {
         let node_rgba = json!({"name": "Overlay", "type": "FRAME", "fill": "rgba(0, 0, 0, 0.3)"});
         assert!(node_to_tailwind_classes(&node_rgba).contains(&"bg-black/30".to_string()));
@@ -1314,6 +1379,6 @@ mod tests {
             "stroke": { "color": "#ffffff", "opacity": 0.5 }});
         let classes_hex = node_to_tailwind_classes(&node_hex_with_opacity);
         assert!(classes_hex.contains(&"bg-black/30".to_string()));
-        assert!(classes_hex.contains(&"border-white/50".to_string()));
+        assert!(classes_hex.contains(&"outline-white/50".to_string()) && classes_hex.contains(&"outline-offset-[-1px]".to_string()), "{classes_hex:?}");
     }
 }

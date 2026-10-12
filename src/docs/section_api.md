@@ -4,38 +4,33 @@
 ---
 
 ## Pages
-\`\`\`js
+```js
 await figma.listPages()                              // [{ id, name }, ...]
 await figma.setPage({ name: "Dashboard" })           // switch page
 await figma.createPage({ name: "Signals" })          // create (no-op if exists)
-\`\`\`
+```
 
 ---
 
-## Public node reads (v4)
-Use MCP tool figma_read with operation read_nodes, nodeId, fields, limit and optional expandInstances/includeHidden.
-Fields: geometry, content, text, style, layout, tokens, component. Defaults: geometry and content.
-Returns { schemaVersion: 4, pageId, revision, scope, nodes, nextCursor, complete, totalRead, budgetReached }.
-Nodes are flat. Instances are opaque unless expandInstances is true. Follow nextCursor with a new read_nodes request using cursor and limit only; restart if revision changes.
-Public get_design/get_design_context/get_node_detail aliases, figma_read inspect_node/subtree/typography return this envelope.
-Index startup covers page roots only; search completeness is scoped. Refresh nodeId to expand a frame. Internal script helpers below retain specialized formats.
+## Reading nodes (MCP tool)
+Use `figma_read { operation: "read_nodes", nodeId, fields, limit }` (optionally `expandInstances`, `includeHidden`). Fields: geometry, content, text, style, layout, tokens, component; default geometry + content. Returns flat `nodes` with `nextCursor` and `complete`; continue with `cursor` and `limit` only, and restart if `revision` changes. Responses are compact by default: decode `_compression` as its `decode` field says, or pass `detail: "full"`. `inspect_node`, `subtree` and `typography` return the same envelope. The sandbox helpers below keep their own formats.
 
 ---
 
 ## Query nodes
-\`\`\`js
+```js
 await figma.query({ type: "FRAME" })                 // all frames on current page
 await figma.query({ name: "Sidebar" })               // by name
 await figma.query({ id: "123:456" })                 // by id
 // → [{ id, name, type, x, y, width, height, parentId }]
-\`\`\`
+```
 
 ---
 
 ## Create — returns { id, name, type, x, y, width, height }
 
 ### FRAME
-\`\`\`js
+```js
 var f = await figma.create({
   type: "FRAME", name: "Screen",
   x: 0, y: 0, width: 1440, height: 900,
@@ -56,30 +51,30 @@ var f = await figma.create({
   opacity: 1, visible: true,
   insertIndex: 0,   // insert at specific position in parent (v2.5.7+)
 })
-\`\`\`
+```
 
 ### RECTANGLE
-\`\`\`js
+```js
 await figma.create({ type: "RECTANGLE", name: "Card",
   parentId: f.id, x: 24, y: 80, width: 280, height: 120,
   fill: "#1e293b", cornerRadius: 12, stroke: "#334155", strokeWeight: 1 })
-\`\`\`
+```
 
 ### ELLIPSE
-\`\`\`js
+```js
 await figma.create({ type: "ELLIPSE", name: "Dot",
   parentId: f.id, x: 12, y: 12, width: 8, height: 8, fill: "#22c55e" })
-\`\`\`
+```
 
 ### LINE
-\`\`\`js
+```js
 await figma.create({ type: "LINE", name: "Divider",
   parentId: f.id, x: 0, y: 64, width: 240, height: 0,
   stroke: "#1e293b", strokeWeight: 1 })
-\`\`\`
+```
 
 ### TEXT
-\`\`\`js
+```js
 await figma.create({ type: "TEXT", name: "Heading",
   parentId: f.id, x: 24, y: 24,
   content: "Total Balance",    // also accepts: characters: "..."
@@ -92,21 +87,21 @@ await figma.create({ type: "TEXT", name: "Heading",
   layoutAlign: "STRETCH",      // for wrapping text in auto-layout
   layoutGrow: 1,               // for growing text in auto-layout
 })
-\`\`\`
+```
 
 **TEXT sizing rules:**
-- \`width\` + \`height\` both set → fixed box, dimensions respected (textAutoResize: "NONE")
-- \`width\` only → auto-height wrapping (textAutoResize: "HEIGHT")
+- `width` + `height` both set → fixed box, dimensions respected (textAutoResize: "NONE")
+- `width` only → auto-height wrapping (textAutoResize: "HEIGHT")
 - Neither → hug content (textAutoResize: "WIDTH_AND_HEIGHT", default)
 
 **Font baseline offset (Inter quirk):** Auto-layout CENTER may appear ~3-4px shifted upward due to Inter ascender whitespace.
-Workaround: add \`paddingBottom: 3\` to the wrapper frame to visually re-center text.
+Workaround: add `paddingBottom: 3` to the wrapper frame to visually re-center text.
 
 ### VECTOR (SVG paths, arcs, curves)
 
-> ⚠️ **Known limitation:** Figma recalculates VECTOR bounding box from actual path geometry, ignoring specified \`width\`/\`height\`. For circular arcs that must align with an ELLIPSE, use \`ELLIPSE\` with \`arcData\` instead — it respects dimensions exactly.
+> ⚠️ **Known limitation:** Figma recalculates VECTOR bounding box from actual path geometry, ignoring specified `width`/`height`. For circular arcs that must align with an ELLIPSE, use `ELLIPSE` with `arcData` instead — it respects dimensions exactly.
 
-\`\`\`js
+```js
 // Diagonal line
 await figma.create({ type: "VECTOR", parentId: f.id,
   x: 0, y: 0, width: 200, height: 100, d: "M 0 0 L 200 100",
@@ -131,35 +126,35 @@ await figma.create({ type: "ELLIPSE", parentId: f.id,
   x: 20, y: 20, width: 130, height: 130,
   fill: "#00000000", stroke: "#428DE7", strokeWeight: 14,
   arcData: { startingAngle: -1.5708, endingAngle: -1.5708 + 0.72 * 2 * Math.PI, innerRadius: 0 }})
-\`\`\`
+```
 
 **SVG path cheatsheet:** M=move, L=line, H=horizontal, V=vertical, C=cubic, Q=quadratic, A=arc, Z=close
 
 ---
 
 ## Modify
-\`\`\`js
+```js
 await figma.modify({ id: f.id, fill: "#0f172a" })
 await figma.modify({ name: "Card", width: 300, cornerRadius: 16 })
 await figma.modify({ id: "123:456", content: "New text", fontSize: 16 })
 await figma.modify({ id: "123:456", fontFamily: "SF Pro", fontWeight: "Bold" })
 await figma.modify({ id: "123:456", fontColor: "#428DE7" })  // alias for fill on text
 await figma.modify({ id: "123:456", layoutMode: "NONE" })    // remove auto-layout
-\`\`\`
+```
 
 ---
 
 ## Delete
-\`\`\`js
+```js
 await figma.delete({ id: "123:456" })
 await figma.delete({ name: "Old Frame" })
 await figma.delete({ ids: ["1:1", "1:2", "1:3"] })  // batch delete
-\`\`\`
+```
 
 ---
 
 ## Components
-\`\`\`js
+```js
 await figma.listComponents()
 // → [{ id, name, key }]
 
@@ -180,12 +175,12 @@ await figma.instantiate({ componentName: "btn/primary", parentId: screen.id, x: 
 // If you run figma.query() / figma.modify() / your own findOne against a
 // component that lives on an unvisited page, call this first or it will miss.
 await figma.loadAllPagesAsync();   // → { loaded: true, pageCount: N }
-\`\`\`
+```
 
 ---
 
 ## Node Operations
-\`\`\`js
+```js
 await figma.clone({ id: "123:456", x: 500, y: 0, name: "Card Copy" })
 await figma.clone({ id: "123:456", parentId: otherFrame.id })
 
@@ -204,12 +199,12 @@ await figma.set_viewport({ center: { x: 500, y: 300 }, zoom: 0.5 })
 await figma.getNodeById("89:393")                     // read node detail by ID
 await figma.zoom_to_fit({ nodeIds: ["1:2"] })         // alias for set_viewport
 await figma.getCurrentPage()                          // returns current page info
-\`\`\`
+```
 
 ---
 
 ## Batch — up to 50 mixed operations in one round-trip
-\`\`\`js
+```js
 const result = await figma.batch([
   { operation: "create", params: { type: "RECTANGLE", parentId: f.id, width: 100, height: 100, fill: "#FF0000" } },
   { operation: "create", params: { type: "TEXT", parentId: f.id, content: "Hello", fontSize: 14, fill: "#FFFFFF" } },
@@ -218,12 +213,12 @@ const result = await figma.batch([
   { operation: "delete", params: { ids: ["2:1", "2:2"] } },
 ]);
 // → { results: [{index, operation, success, data}], total: 5, succeeded: 5 }
-\`\`\`
+```
 
 ---
 
 ## Read Operations (also available in figma_write for chaining)
-\`\`\`js
+```js
 var { nodes } = await figma.get_selection();
 var { dataUrl } = await figma.screenshot({ id: f.id, scale: 2 });
 var frames = await figma.get_page_nodes();  // returns ARRAY directly — do NOT destructure
@@ -242,44 +237,42 @@ var vars = await figma.get_variables();
 
 // includeHidden support (default false)
 var { nodes: all } = await figma.get_selection({ includeHidden: true });
-var { tree } = await figma.get_design({ id: "1:2", includeHidden: true });
 var { results } = await figma.search_nodes({ type: "TEXT", includeHidden: true });
-\`\`\`
+```
 
-**export_image:**
-\`\`\`js
-figma_read({ operation: "export_image", nodeId: "89:209", scale: 2, format: "png" })
-// → { base64: "...", format, width, height, sizeBytes }
-\`\`\`
+**export_image / export_svg / screenshot:**
+```js
+figma_read({ operation: "export_image", nodeId: "89:209", scale: 2, format: "png", outputPath: "public/hero.png" })
+// → { savedTo, sizeBytes, ... }; without outputPath the file goes to the temp folder and its path is returned
+figma_read({ operation: "screenshot", nodeId: "89:209", scale: 0.5 })   // inline image for visual review
+```
 
-**get_node_detail:**
-\`\`\`js
-figma_read({ operation: "get_node_detail", nodeId: "89:393" })
-// → { id, name, type, x, y, width, height, fills, stroke, borderRadius, css: {display,flexDirection,...}, boundVariables }
-\`\`\`
+**inspect_node:**
+```js
+figma_read({ operation: "inspect_node", nodeId: "89:393" })
+// → read_nodes envelope for one node with every field group (layout, style, tokens, text, component)
+```
 
 **get_css:**
-\`\`\`js
+```js
 figma_read({ operation: "get_css", nodeId: "89:393" })
 // → ready-to-paste CSS string: background, flex, border, radius, shadow, typography
-\`\`\`
+```
 
-**Design-to-code operations:**
-\`\`\`js
-figma_read({ operation: "get_design_context", nodeId: "89:393" })
-// → AI-optimized payload: flex layout, var(--token) fills, typography, component instances
-
+**Design-to-code:**
+```js
+figma_prepare_design({ nodeId: "89:393" })               // screenshot, all text, icons, matched components
+figma_to_code({ nodeId: "89:393", framework: "clean-spec" })  // token-pruned spec for prompting
 figma_read({ operation: "get_component_map", nodeId: "89:393" })
-// → all instances with componentSetName, variantLabel, suggestedImport path
-
+// → instances with componentSetName, variantLabel, suggestedImport path
 figma_read({ operation: "get_unmapped_components", nodeId: "89:393" })
-// → components without description (no code mapping) → prompt user for import paths
-\`\`\`
+// → components without a description (no code mapping)
+```
 
 ---
 
 ## Prototyping & Scroll
-\`\`\`js
+```js
 // Click → navigate with Smart Animate
 await figma.setReactions({ id: btnId, reactions: [{
   trigger: { type: "ON_CLICK" },
@@ -374,12 +367,12 @@ await figma.unbindComponentProperty({ nodeId: iconNodeId, field: "visible" });
 // automatically. For your own cross-page queries, call loadAllPagesAsync first:
 await figma.loadAllPagesAsync();
 var nodes = await figma.query({ namePattern: "btn/*" });
-\`\`\`
+```
 
 ---
 
 ## Workflow — Apply Existing Project Styles (read first, then apply)
-\`\`\`js
+```js
 // Read all tokens at session start
 var vars = await figma.get_variables();
 var varMap = {};
@@ -418,12 +411,12 @@ var light = await figma.clone({ id: frameMap["Home"], x: 0,    name: "Preview/Li
 var dark  = await figma.clone({ id: frameMap["Home"], x: 1500, name: "Preview/Dark"  });
 await figma.setFrameVariableMode({ nodeId: light.id, collectionId: collection.id, modeName: "light" });
 await figma.setFrameVariableMode({ nodeId: dark.id,  collectionId: collection.id, modeName: "dark" });
-\`\`\`
+```
 
 ---
 
 ## Workflow example — Draw a full screen
-\`\`\`js
+```js
 await figma.createPage({ name: "Dashboard" });
 await figma.setPage({ name: "Dashboard" });
 
@@ -443,4 +436,4 @@ await figma.create({ type: "TEXT", name: "Nav Label",
   content: "Dashboard", fontSize: 13, fontWeight: "Medium", fill: "#f8fafc" });
 
 console.log("Root frame id:", root.id);
-\`\`\`
+```

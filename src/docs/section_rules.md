@@ -13,37 +13,37 @@
 
 **Text:**
 - Button text: ALWAYS centered (auto-layout CENTER/CENTER)
-- Long text: ALWAYS set \`width\` → wraps automatically (\`textAutoResize: "HEIGHT"\`)
-- Multi-line: \`lineHeight\` = 1.4–1.6× fontSize
+- Long text: ALWAYS set `width` → wraps automatically (`textAutoResize: "HEIGHT"`)
+- Multi-line: `lineHeight` = 1.4–1.6× fontSize
 
-**Borders:** Card borders: \`stroke: "#E0E0E0", strokeWeight: 1\`
+**Borders:** Card borders: `stroke: "#E0E0E0", strokeWeight: 1`
 
 **Shadow for elevated cards:**
-\`\`\`js
+```js
 // Draw shadow BEFORE card (layer order rule)
 await figma.create({ type: "RECTANGLE", parentId: root.id,
   x: cardX + 2, y: cardY + 4, width: cardWidth, height: cardHeight,
   fill: "#000000", cornerRadius: cardRadius, opacity: 0.08 });
 // Then draw card on top
-\`\`\`
+```
 
 ---
 
 ### Rule 11 — Centered Profile Layouts
-\`\`\`js
+```js
 // CORRECT: full-width text with CENTER align
 await figma.create({ type: "TEXT", parentId: rootId,
   x: 0, y: 202, width: frameWidth,   // FULL width of parent
   content: "Profile Name", fontSize: 22, fontWeight: "Bold",
   textAlign: "CENTER" });
 // For centered badge: x = (frameWidth - badgeWidth) / 2
-\`\`\`
+```
 
 ---
 
 ### Rule 12 — Key-Value Info Rows
 NEVER place label+value as one text string. Use separate nodes in horizontal auto-layout:
-\`\`\`js
+```js
 var row = await figma.create({
   type: "FRAME", parentId: parentId, height: 36,
   layoutMode: "HORIZONTAL", primaryAxisAlignItems: "MIN",
@@ -53,27 +53,27 @@ await figma.create({ type: "TEXT", parentId: row.id, content: "Name:", fontSize:
   fontWeight: "Regular", fill: "#8B8FA3", width: 110 });
 await figma.create({ type: "TEXT", parentId: row.id, content: "John Doe", fontSize: 13,
   fontWeight: "Medium", fill: "#F0F2F5", layoutGrow: 1 });
-\`\`\`
+```
 Row height: simple key-value min 36px, with icon min 40px.
 
 ---
 
 ### Rule 13 — Container Height Calculation
-\`\`\`
+```
 height = paddingTop + paddingBottom + (n × childH) + ((n-1) × spacing)
-\`\`\`
-Use \`primaryAxisSizingMode: "AUTO"\` to auto-grow. Always verify with screenshot.
+```
+Use `primaryAxisSizingMode: "AUTO"` to auto-grow. Always verify with screenshot.
 
 ---
 
 ### Rule 14 — Score/Match Result Cards
-\`\`\`js
+```js
 var scoreRow = await figma.create({
   type: "FRAME", height: 32, layoutMode: "HORIZONTAL",
   primaryAxisAlignItems: "SPACE_BETWEEN", counterAxisAlignItems: "CENTER",
   paddingLeft: 8, paddingRight: 8, layoutAlign: "STRETCH"
 });
-\`\`\`
+```
 
 ---
 
@@ -154,14 +154,14 @@ All semantic colors must pair with white text (#FFFFFF) for WCAG AA (4.5:1).
 ## COMPONENT REUSE RULE (CRITICAL)
 
 **Before drawing ANY screen:**
-1. Check \`get_page_nodes\` for existing "⚙️ Components" frame
+1. Check `get_page_nodes` for existing "⚙️ Components" frame
 2. If not → create it first (x: -600, outside visible screens)
-3. Create master components inside via \`figma.createComponent()\`
-4. Use \`figma.clone({ id: componentId })\` for instances
+3. Create master components inside via `figma.createComponent()`
+4. Use `figma.clone({ id: componentId })` for instances
 
 **Must be components:** bottom nav, app header, status bar, CTA buttons, cards, badges, icon containers.
 
-\`\`\`js
+```js
 // 1. Create Components frame once
 var compFrame = await figma.create({
   type: "FRAME", name: "⚙️ Components", x: -600, y: 0,
@@ -181,9 +181,9 @@ var navComp = await figma.createComponent({ nodeId: navFrame.id, name: "nav/bott
 
 // 3. Clone on every screen
 var navInst = await figma.clone({ id: navComp.id, parentId: screenFrame.id, x: 20, y: 746 });
-\`\`\`
+```
 
 **Rules:**
-- Name components with slash notation: \`nav/bottom-bar\`, \`btn/primary\`, \`card/idea\`
-- ALWAYS check \`get_local_components\` before creating new ones
-- Clone first then \`figma.modify()\` text children for variant content
+- Name components with slash notation: `nav/bottom-bar`, `btn/primary`, `card/idea`
+- ALWAYS check `get_local_components` before creating new ones
+- Clone first then `figma.modify()` text children for variant content

@@ -8,7 +8,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 
 ## ⚡ Highlights
 
-- **Lossless Rust Tree Compression**: Compact/minimal tree responses share identical style bundles when the complete JSON becomes smaller. Node IDs, hierarchy, text, geometry and state differences remain intact. Full detail bypasses Rust compression; no heuristic merging of screens or repeated items.
+- **Lossless Rust Tree Compression**: Node reads are compact by default: identical style bundles are shared and values every layer carries are stored once, only when the JSON gets smaller. Node IDs, hierarchy, text, geometry and state differences stay inline; `detail: "full"` returns the raw payload.
 - **Pure Rust Native Performance**: Single native binary, no runtime or GC. Measure it on your machine with `npm run bench` or the plugin's **Bench** tab (see [Benchmarks](#-benchmarks)).
 - **Scoped In-Memory Index (`figma_read` search)**: Indexes page roots first and loads frame descendants on demand. Search reports the indexed scope and completeness.
 - **Binary IPC & Chunk Streaming**: Powered by **MessagePack** (`rmp-serde`) and progressive subtree chunking for instant transfers of massive design files.
@@ -227,18 +227,17 @@ Every read, search and export. **`operation`**:
 - **Design system**: `rules` (markdown rule sheet of tokens, text styles and components), `get_styles`, `get_variables`, `get_tokens`, `get_local_components`, `get_component_map`, `get_unmapped_components`.
 - **Export**: `screenshot`, `export_image` (png/jpg, `scale`), `export_svg`. Pass `outputPath` to save to disk instead of returning data.
 
-Compact/minimal `get_selection` and `get_design` responses may contain a root
-`_compression` object with `version: 1` and a `styles` dictionary. For each node
-with `styleRef`, merge `_compression.styles[node.styleRef]` into that node and
-remove `styleRef`; remove root `_compression` to reconstruct the plugin payload
-exactly. Style references are dictionary lookups, not inherited CSS. Payloads
-with reserved-field collisions or no net byte savings stay inline. `detail: "full"` bypasses this Rust transformation and queries the plugin rather than a
-compact selection cache. Plugin detail, visibility, precision, depth and node
-budgets still determine the source payload; compression cannot restore fields
-omitted there. Code generation continues to consume inline styles.
-
-No token-reduction or AI-latency percentage is claimed without a tokenizer and
-end-to-end benchmark on real designs.
+Node reads (`read_nodes`, `inspect_node`, `get_selection`, `subtree`, `typography`)
+are compact by default. When it makes the JSON smaller, the response carries a
+root `_compression` object (`version: 2`) with `styles` (exact style bundles shared
+by `styleRef`) and `defaults` (a value every layer carried, stored once). To
+reconstruct the plugin payload exactly: for each layer (object with string `id`,
+`name` and `type`) merge `_compression.styles[styleRef]` and remove `styleRef`,
+then add every `defaults` key the layer lacks; remove `_compression`. Identity,
+geometry, text and hierarchy always stay inline. `detail: "full"` returns the raw
+payload. On one 62-layer production frame read with every field group, the
+response went from 81.5KB to 35.8KB (style sharing alone: 50.3KB); with default
+fields, 19.0KB to 13.4KB. Bytes, not tokens; measure your own files.
 
 ### 3. `figma_write`
 Executes JavaScript draw commands inside the sandboxed VM to build or modify designs on the Figma canvas.
@@ -263,7 +262,7 @@ Compiles a node (or the selection) into component code.
 - **`framework`**: `"react-tailwind"` (default), `"react-shadcn"`, `"react-native"`, `"vue-tailwind"`, `"html"`, `"swiftui"`, `"clean-spec"`.
 - **`outputPath`**, **`componentName`**.
 - **`target: "tokens"`**: export variables and styles. **`format`**: `"css"` (default, `:root` + light/dark modes), `"tailwind"`, `"typescript"`, `"w3c"` (DTCG), `"json"`; **`collection`** / **`mode`** / **`prefix`**; **`outputPath`**.
-- **`target: "project"`**: scaffold a design system — `globals.css` (Tailwind layers + CSS variables), `tailwind.config.ts` and one component per local component / component set (first variant) in `componentDir`. Existing files and components already in the codebase are skipped unless **`overwrite`**. Options: **`projectDir`**, **`componentDir`** (`src/components/ui`), **`stylesPath`** (`src/styles/globals.css`), **`tailwindConfigPath`** (`tailwind.config.ts`), **`limit`** (30, max 100); frameworks `react-tailwind`, `react-shadcn`, `vue-tailwind`, `html`.
+- **`target: "project"`**: scaffold a design system — `globals.css` (Tailwind layers + CSS variables), `tailwind.config.ts` and one component per local component / component set in `componentDir`. For React, a component set becomes one component whose props (`size`, `state`, ...) pick the variant, each variant generated from its own node (up to 24); Vue/HTML use the default variant. Existing files and components already in the codebase are skipped unless **`overwrite`**. Options: **`projectDir`**, **`componentDir`** (`src/components/ui`), **`stylesPath`** (`src/styles/globals.css`), **`tailwindConfigPath`** (`tailwind.config.ts`), **`limit`** (30, max 100); frameworks `react-tailwind`, `react-shadcn`, `vue-tailwind`, `html`.
 
 Token exports use schema v2 and preserve full paint/effect stacks, alpha, gradient
 transforms, collection modes and raw alias values. CSS, Tailwind, TypeScript and
@@ -440,7 +439,17 @@ cargo build --release
 
 # Rebuild Figma plugin bundle (if plugin-src/ is modified)
 node scripts/build-plugin.js
+
+# Codegen accuracy: render html output in headless Chrome and compare every
+# layer (size, padding, gap, radius, typography, colors) with the spec
+npm run accuracy                                  # bundled fixture
+npm run accuracy -- path/to/context.json --all    # your own get_design_context dump
 ```
+
+`npm run accuracy` needs Chrome (`CHROME_PATH` to override) and network access
+for the Tailwind play CDN and Google Fonts. `--min <percent>` fails below a
+threshold. The bundled checkout fixture currently matches 98.9% of 981 checks;
+remaining misses are sub-pixel text metrics.
 
 ---
 

@@ -70,7 +70,7 @@ pub(super) fn compact(data: &Value) -> Value {
     let used: std::collections::BTreeSet<_> = result["nodes"].as_array().expect("nodes").iter().filter_map(|n| n["templateRef"].as_str().map(str::to_owned)).collect();
     templates.retain(|id,_| used.contains(id));
     result["templates"] = Value::Object(templates);
-    result["decode"] = json!("Merge templates[node.templateRef] then inline node fields; remove templateRef. Then recursively merge _compression.styles[object.styleRef] on every referenced object and remove styleRef. Geometry, identity, copy and mixed text are exact.");
+    result["decode"] = json!("Merge templates[node.templateRef] then inline node fields; remove templateRef. Then recursively merge _compression.styles[object.styleRef] on every referenced object and remove styleRef. Then add every _compression.defaults key each layer (object with id, name and type) lacks. Geometry, identity, copy and mixed text are exact.");
     if result.to_string().len() < original.to_string().len() { result } else { original }
 }
 
@@ -155,6 +155,11 @@ mod tests {
                 Value::Object(obj) => {
                     if let Some(id) = obj.remove("styleRef") {
                         obj.extend(styles["styles"][id.as_str().unwrap()].as_object().unwrap().clone());
+                    }
+                    if ["id","name","type"].iter().all(|k| obj.get(*k).is_some_and(Value::is_string)) {
+                        for (key,value) in styles["defaults"].as_object().into_iter().flatten() {
+                            obj.entry(key.clone()).or_insert_with(|| value.clone());
+                        }
                     }
                     for child in obj.values_mut() { restore_styles(child,styles); }
                 }

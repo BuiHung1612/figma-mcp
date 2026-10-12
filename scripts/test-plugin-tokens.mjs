@@ -54,6 +54,17 @@ test('compact tree and scan preserve mixed typography instead of using the first
   assert.equal(r.resolveTextStyle(node).fontWeight, undefined);
 });
 
+test('text list formatting is reported only when every paragraph shares it', () => {
+  const r = runtime({ root: { id: '0:0' }, currentPage: { id: '0:1' } });
+  vm.runInContext(readFileSync('plugin-src/read-helpers.js', 'utf8'), r);
+  const text = lists => ({ type: 'TEXT', characters: 'Account', fontSize: 16, fontName: { family: 'Lato', style: 'Regular' },
+    getStyledTextSegments: () => lists.map(type => ({ listOptions: { type } })) });
+  assert.equal(r.resolveTextStyle(text(['UNORDERED'])).listType, 'UNORDERED');
+  assert.equal(r.resolveTextStyle(text(['ORDERED', 'ORDERED'])).listType, 'ORDERED');
+  assert.equal(r.resolveTextStyle(text(['UNORDERED', 'NONE'])).listType, undefined);
+  assert.equal(r.resolveTextStyle(text(['NONE'])).listType, undefined);
+});
+
 test('scan_design expands instances by default and flags opaque ones as incomplete', async () => {
   const text = { id: '1:3', name: 'Label', type: 'TEXT', characters: 'Hi', fontSize: 12, fontName: { family: 'Inter', style: 'Regular' }, visible: true };
   const inst = { id: '1:2', name: 'Button', type: 'INSTANCE', visible: true, children: [text], getMainComponentAsync: async () => null };

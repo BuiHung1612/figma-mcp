@@ -1,5 +1,25 @@
 # Changelog
 
+## [8.0.0] — 2026-10-12
+
+### Breaking
+- Node reads return compact `_compression` v2 output by default; pass `detail: "full"` for the previous raw shape.
+
+### Changed
+- Node reads (`read_nodes`, `inspect_node`, `get_selection`, `subtree`, `typography`) default to compact output. `_compression` v2 adds `defaults` (a value every layer carries, stored once) to shared styles; still lossless. One 62-layer production frame: 81.5KB → 35.8KB with every field group, 19.0KB → 13.4KB with default fields. `detail: "full"` returns the raw payload.
+- `tools/list` 16.5KB → 13.0KB (shorter `figma_read`, `figma_write`, `figma_docs` schemas); default `figma_docs` 10.6KB → 4.1KB.
+
+### Fixed
+- Codegen: FIXED and HUG children no longer shrink on the flex main axis (`shrink-0`).
+- Codegen: strokes no longer take layout space — uniform strokes render as `outline` offset by stroke align, per-side strokes as box-shadow layers merged with effect shadows, LINE strokes as a top border.
+- Codegen: unordered list text renders its bullet with a hanging indent; the plugin reports `listType` on text.
+- `figma_docs`: removed escaped backticks, stale `get_design`/base64 export examples and the false "no optional chaining/spread" sandbox note; one default palette instead of two conflicting ones.
+- `get_spec` decode instructions cover `_compression.defaults`.
+
+### Added
+- `figma_to_code` `target: "project"`: React component sets become one component with variant props, each variant generated from its own node.
+- `npm run accuracy` (`scripts/codegen-accuracy.mjs`): renders codegen output in headless Chrome and scores size, padding, gap, radius, typography and colors per layer against the spec. Against v7.0.0 codegen: checkout fixture 93.9% → 98.9%; a production frame 88.3% → 95.6%, 98.4% once the plugin reports list formatting.
+
 ## [7.0.0] — 2026-10-12
 
 ### Breaking

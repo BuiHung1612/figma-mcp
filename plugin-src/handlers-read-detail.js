@@ -692,6 +692,7 @@ handlers.get_design_context = async function(params) {
         if (ndText.textTransform) ctx.text.textTransform = ndText.textTransform;
         if (ndText.renderedContent) ctx.text.renderedContent = ndText.renderedContent;
         if (ndText.textDecoration) ctx.text.textDecoration = ndText.textDecoration;
+        if (ndText.listType) ctx.text.listType = ndText.listType;
         if (typeof ndText.letterSpacing === "number" && ndText.letterSpacing) ctx.text.letterSpacing = ndText.letterSpacing + "px";
         try {
           if (nd.textAutoResize) ctx.text.autoResize = nd.textAutoResize;

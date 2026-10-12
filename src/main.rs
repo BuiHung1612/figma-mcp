@@ -82,6 +82,10 @@ struct Args {
     #[arg(long)]
     uninstall_service: bool,
 
+    /// Print generated code for a saved get_design_context JSON (scripts/codegen-accuracy.mjs)
+    #[arg(long, hide = true, num_args = 2, value_names = ["FRAMEWORK", "CONTEXT_JSON"])]
+    codegen: Option<Vec<String>>,
+
     /// URL or argument passed by OS protocol handler (e.g. figma-rust-mcp://start)
     #[arg(hide = true)]
     protocol_url: Option<String>,
@@ -190,6 +194,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return start_background();
     }
     #[cfg(not(target_os = "windows"))]
+    if let Some(codegen) = &args.codegen {
+        let context: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&codegen[1])?)?;
+        print!("{}", mcp::codegen::generate_code_from_context(&context, &codegen[0], None)?);
+        return Ok(());
+    }
     if args.background {
         return Err("--background is Windows-only; use --install-service on macOS/Linux".into());
     }

@@ -504,6 +504,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sandbox_supports_modern_syntax_documented_in_figma_docs() {
+        let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));
+        let res = super::execute_code("const o = {a: {b: 1}}; const c = {...o, d: 2}; const [x] = [o?.a?.b]; return [x, o.z ?? 5, c.d, `t${1}`, typeof setTimeout];", bridge, None).await;
+        assert_eq!(res.result, Some(serde_json::json!([1, 5, 2, "t1", "undefined"])), "{:?}", res.error);
+    }
+
+    #[tokio::test]
     async fn returns_objects_keeps_trailing_logs_and_caps_log_volume() {
         let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));
         let res = super::execute_code("console.log('last'); return {a: [1, 'x']};", bridge.clone(), None).await;

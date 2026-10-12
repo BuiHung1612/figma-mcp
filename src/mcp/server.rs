@@ -509,7 +509,7 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
             }
 
             match bridge.send_operation("read_nodes", op_params, session_id).await {
-                Ok(data) => ToolResult::text(serde_json::to_string(&data).unwrap_or_default()),
+                Ok(data) => ToolResult::text(crate::mcp::semantic_optimizer::compress_tree(&data, args["detail"].as_str() != Some("full")).to_string()),
                 Err(e) => ToolResult::error(e),
             }
         }

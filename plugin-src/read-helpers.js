@@ -91,12 +91,21 @@ function lineHeightOut(lh) {
 // Resolve the typography of a TEXT node into plain values, unwrapping
 // figma.mixed via getStyledTextSegments. Returns null for non-TEXT nodes.
 // { content, fontSize, fontFamily, fontWeight, fill, lineHeight (px|"NN%"),
-//   letterSpacing, textDecoration, mixed, segments? }
+//   letterSpacing, textDecoration, mixed, segments?, listType? (UNORDERED|ORDERED) }
 function resolveTextStyle(node, opts) {
   if (!node || node.type !== "TEXT") return null;
   var out = { mixed: false };
 
   try { out.content = node.characters; } catch(e) {}
+  // Bullets and numbers are paragraph formatting, absent from characters.
+  // ponytail: reported only when every paragraph shares one list type; per-paragraph lists need segment-level output.
+  try {
+    if (typeof node.getStyledTextSegments === "function") {
+      var lists = node.getStyledTextSegments(["listOptions"]);
+      var listType = lists.length && lists[0].listOptions ? lists[0].listOptions.type : "NONE";
+      if (listType !== "NONE" && lists.every(function(s) { return s.listOptions && s.listOptions.type === listType; })) out.listType = listType;
+    }
+  } catch(e) {}
   try {
     if (typeof node.maxLines === "number") out.maxLines = node.maxLines;
     if (node.textTruncation && node.textTruncation !== "DISABLED") out.textTruncation = node.textTruncation;
@@ -763,6 +772,7 @@ function extractDesignTree(node, depth, maxDepth, detailLevel, filterInvisible, 
       if (text.lineHeight !== undefined)    info.lineHeight = text.lineHeight;
       if (text.letterSpacing !== undefined) info.letterSpacing = text.letterSpacing;
       if (text.textDecoration)              info.textDecoration = text.textDecoration;
+      if (text.listType)                    info.listType = text.listType;
       if (text.mixed) {
         info.mixedStyles = true;
         if (text.segments) info.segments = text.segments;

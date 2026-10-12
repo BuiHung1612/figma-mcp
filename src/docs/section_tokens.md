@@ -7,7 +7,7 @@
 
 One call creates all variables. Existing variables get updated; new ones are created.
 
-\`\`\`js
+```js
 const result = await figma.setupDesignTokens({
   collectionName: "Design Tokens",
 
@@ -71,17 +71,17 @@ await figma.setupDesignTokens({
 });
 // Switch frame mode:
 await figma.setFrameVariableMode({ nodeId, collectionId, modeName: "large" });
-\`\`\`
+```
 
 ---
 
 ## applyTextStyle — Apply a text style by name (v2.5.4+)
 
-\`\`\`js
+```js
 var title = await figma.create({ type: "TEXT", content: "Dashboard", parentId: card.id });
 await figma.applyTextStyle({ nodeId: title.id, styleName: "text/heading-xl" });
 // → { nodeId, styleName, styleId }
-\`\`\`
+```
 
 Why use instead of inline props: font changes propagate, mode switches work, consistent across screens.
 
@@ -89,40 +89,40 @@ Why use instead of inline props: font changes propagate, mode switches work, con
 
 ## modifyVariable — Change variable value (all bound nodes update)
 
-\`\`\`js
+```js
 await figma.modifyVariable({ variableName: "accent", value: "#0EA5E9" });
 await figma.modifyVariable({ variableId: "VariableID:57:671", value: "#FF6B35" });
 await figma.modifyVariable({ variableName: "spacing-md", value: 20 });
 await figma.modifyVariable({ variableName: "font-primary", value: "SF Pro" }); // font swap
-\`\`\`
+```
 
 ---
 
 ## applyVariable — Bind a variable to a node property
 
-\`\`\`js
+```js
 await figma.applyVariable({ nodeId: card.id, field: "fill",         variableId: varMap["accent"] });
 await figma.applyVariable({ nodeId: card.id, field: "fill",         variableName: "accent" }); // by name
-\`\`\`
+```
 
 **Supported fields:**
 
 | Field | Variable type | Notes |
 |-------|--------------|-------|
-| \`fill\` / \`stroke\` | COLOR | Binds to first solid paint |
-| \`opacity\` | FLOAT | 0.0–1.0 |
-| \`width\` / \`height\` | FLOAT | |
-| \`cornerRadius\` | FLOAT | Alias → topLeftRadius |
-| \`topLeftRadius\` / \`topRightRadius\` / \`bottomLeftRadius\` / \`bottomRightRadius\` | FLOAT | Individual corners |
-| \`strokeWeight\` | FLOAT | |
-| \`itemSpacing\` | FLOAT | Auto-layout gap |
-| \`paddingTop\` / \`paddingBottom\` / \`paddingLeft\` / \`paddingRight\` | FLOAT | |
-| \`fontSize\` / \`letterSpacing\` / \`lineHeight\` | FLOAT | TEXT only |
-| \`fontFamily\` / \`fontStyle\` | STRING | v2.5.4+ font swap |
-| \`characters\` | STRING | v2.5.4+ bind text content |
-| \`visible\` | BOOLEAN | Show/hide |
+| `fill` / `stroke` | COLOR | Binds to first solid paint |
+| `opacity` | FLOAT | 0.0–1.0 |
+| `width` / `height` | FLOAT | |
+| `cornerRadius` | FLOAT | Alias → topLeftRadius |
+| `topLeftRadius` / `topRightRadius` / `bottomLeftRadius` / `bottomRightRadius` | FLOAT | Individual corners |
+| `strokeWeight` | FLOAT | |
+| `itemSpacing` | FLOAT | Auto-layout gap |
+| `paddingTop` / `paddingBottom` / `paddingLeft` / `paddingRight` | FLOAT | |
+| `fontSize` / `letterSpacing` / `lineHeight` | FLOAT | TEXT only |
+| `fontFamily` / `fontStyle` | STRING | v2.5.4+ font swap |
+| `characters` | STRING | v2.5.4+ bind text content |
+| `visible` | BOOLEAN | Show/hide |
 
-\`\`\`js
+```js
 // Complete card binding
 var bindings = [
   { nodeId: card.id, field: "fill",        varName: "bg-surface" },
@@ -136,13 +136,13 @@ for (var bi = 0; bi < bindings.length; bi++) {
   if (varMap[b.varName])
     await figma.applyVariable({ nodeId: b.nodeId, field: b.field, variableId: varMap[b.varName] });
 }
-\`\`\`
+```
 
 ---
 
 ## Low-level Variable API
 
-\`\`\`js
+```js
 // Create collection + variables + modes manually (prefer setupDesignTokens)
 var colors = await figma.createVariableCollection({ name: "Colors" });
 await figma.renameVariableMode({ collectionId: colors.id, modeId: colors.modes[0].id, newName: "Light" });
@@ -157,38 +157,38 @@ await figma.setFrameVariableMode({ nodeId: frame.id, collectionId: colors.id, mo
 await figma.clearFrameVariableMode({ nodeId: frame.id, collectionId: colors.id });
 
 await figma.removeVariableMode({ collectionId: colors.id, modeId: dark.modeId });
-\`\`\`
+```
 
 ---
 
 ## Paint & Text Styles
 
-\`\`\`js
+```js
 await figma.createPaintStyle({ name: "color/primary", color: "#006FEE", description: "Primary brand" });
 // → { id, name, key, color }
 
 await figma.createTextStyle({ name: "text/heading-xl",
   fontFamily: "Inter", fontWeight: "Bold", fontSize: 24, lineHeight: 32, letterSpacing: -0.5 });
 // → { id, name, key, fontSize }
-\`\`\`
+```
 
 ---
 
 ## ensure_library & get_library_tokens
 
-\`\`\`js
+```js
 const lib = await figma.ensure_library();
 // → { id, existed } — creates "🎨 Design Library" frame if not present
 
 const tokens = await figma.get_library_tokens();
 // → { colors: [{name, hex}], textStyles: [{name, fontSize, fontWeight, fill}] }
-\`\`\`
+```
 
 ---
 
 ## Effects, Gradients, Corner Radii, Hex Alpha
 
-\`\`\`js
+```js
 // Effects
 effects: [
   { type: "DROP_SHADOW", color: "#00000026", offset: {x:0,y:8}, radius: 24, spread: 0 },
@@ -211,19 +211,21 @@ topLeftRadius: 20, topRightRadius: 20, bottomLeftRadius: 0, bottomRightRadius: 0
 fill: "#FFFFFF80"    // 50% white
 fill: "#6C5CE733"    // 20% accent
 // Also: rgba(255,255,255,0.5)
-\`\`\`
+```
 
 ---
 
 ## Mixed Text Segments
 
-\`\`\`js
-// get_design / get_selection returns segments for mixed-style text:
+```js
+// read_nodes with fields: ["text"] returns segments for mixed-style text;
+// flat fontSize/fill/... appear only when every segment shares them:
 {
-  "type": "TEXT", "content": "8 đ 83 token", "mixedStyles": true,
+  "type": "TEXT", "content": "8 đ 83 token", "mixed": true,
   "segments": [
     { "text": "8 đ",      "fill": "#1E3150", "fontWeight": "Bold",    "fontSize": 14 },
     { "text": "83 token", "fill": "#8E9AAD", "fontWeight": "Regular", "fontSize": 14 }
-  ]
+  ],
+  "fontSize": 14
 }
-\`\`\`
+```

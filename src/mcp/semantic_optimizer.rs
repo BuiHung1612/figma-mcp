@@ -1,8 +1,9 @@
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
-// Keep node identity, geometry, text and hierarchy inline. Only exact style
-// bundles are shared; no heuristic state aggregation or default pruning.
+// Keep node identity, geometry, text and hierarchy inline. Exact style bundles
+// are shared, and a value every layer carries is stored once as a default;
+// no heuristic state aggregation.
 const STYLE_FIELDS: &[&str] = &[
     "paintData",
     "cornerRadius", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius",
@@ -25,6 +26,37 @@ const STYLE_FIELDS: &[&str] = &[
     "padding",
     "itemSpacing",
 ];
+
+/// Never moved to `defaults`: identity, geometry, text and hierarchy stay on every layer.
+const INLINE_FIELDS: &[&str] = &["id", "name", "type", "parentId", "x", "y", "width", "height", "content", "childIds", "childCount", "children", "styleRef"];
+
+/// Layers are objects with string id, name and type; paints and variable aliases are not.
+fn is_layer(node: &Map<String, Value>) -> bool {
+    ["id", "name", "type"].iter().all(|key| node.get(*key).is_some_and(Value::is_string))
+}
+
+/// Picks, per key present on every layer, its most common value when storing it once saves bytes.
+fn layer_defaults(data: &mut Value) -> Map<String, Value> {
+    let mut layers = 0;
+    let mut seen = BTreeMap::<String, (usize, BTreeMap<String, usize>)>::new();
+    visit_nodes(data, &mut |node| {
+        if !is_layer(node) { return; }
+        layers += 1;
+        for (key, value) in node.iter().filter(|(key, _)| !INLINE_FIELDS.contains(&key.as_str())) {
+            let entry = seen.entry(key.clone()).or_default();
+            entry.0 += 1;
+            *entry.1.entry(value.to_string()).or_default() += 1;
+        }
+    });
+    seen.into_iter()
+        .filter(|(_, (present, _))| *present == layers)
+        .filter_map(|(key, (_, values))| {
+            let (value, count) = values.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))?;
+            let entry = key.len() + value.len() + 4;
+            ((count - 1) * entry > entry).then(|| (key, serde_json::from_str(&value).expect("serialized value")))
+        })
+        .collect()
+}
 
 fn style_bundle(node: &Map<String, Value>) -> Map<String, Value> {
     STYLE_FIELDS
@@ -63,18 +95,24 @@ pub fn compress_tree(data: &Value, enabled: bool) -> Value {
         return data.clone();
     }
     let mut result = data.clone();
-    let mut counts = BTreeMap::<String, usize>::new();
     let mut collision = false;
+    visit_nodes(&mut result, &mut |node| collision |= node.contains_key("styleRef"));
+    if collision {
+        return data.clone();
+    }
+    let defaults = layer_defaults(&mut result);
     visit_nodes(&mut result, &mut |node| {
-        collision |= node.contains_key("styleRef");
+        if is_layer(node) {
+            node.retain(|key, value| defaults.get(key) != Some(value));
+        }
+    });
+    let mut counts = BTreeMap::<String, usize>::new();
+    visit_nodes(&mut result, &mut |node| {
         let style = style_bundle(node);
         if !style.is_empty() {
             *counts.entry(Value::Object(style).to_string()).or_default() += 1;
         }
     });
-    if collision {
-        return data.clone();
-    }
 
     let mut references = BTreeMap::new();
     let mut styles = Map::new();
@@ -89,7 +127,7 @@ pub fn compress_tree(data: &Value, enabled: bool) -> Value {
             references.insert(style, id);
         }
     }
-    if styles.is_empty() {
+    if styles.is_empty() && defaults.is_empty() {
         return data.clone();
     }
     visit_nodes(&mut result, &mut |node| {
@@ -102,9 +140,10 @@ pub fn compress_tree(data: &Value, enabled: bool) -> Value {
         }
     });
     result["_compression"] = json!({
-        "version": 1,
+        "version": 2,
         "styles": styles,
-        "decode": "Merge _compression.styles[node.styleRef] into each referenced node, remove styleRef and root _compression. All other data is unchanged."
+        "defaults": defaults,
+        "decode": "For each layer (object with id, name and type): merge _compression.styles[styleRef] and remove styleRef, then add every _compression.defaults key the layer lacks. Remove root _compression. All other data is unchanged."
     });
     if result.to_string().len() < data.to_string().len() {
         result
@@ -127,6 +166,11 @@ mod tests {
                             .unwrap()
                             .clone(),
                     );
+                }
+                if is_layer(node) {
+                    for (key, value) in metadata["defaults"].as_object().unwrap() {
+                        node.entry(key.clone()).or_insert_with(|| value.clone());
+                    }
                 }
             });
         }
@@ -158,6 +202,29 @@ mod tests {
                 compressed.to_string().len()
             );
         }
+    }
+
+    #[test]
+    fn flat_read_nodes_prune_shared_defaults_losslessly() {
+        let nodes: Vec<Value> = (0..40).map(|i| json!({
+            "id": format!("1:{i}"), "name": if i % 2 == 0 { "Headline" } else { "Body" }, "type": "TEXT", "parentId": "1:0",
+            "x": 0, "y": i * 20, "width": 135, "height": 18, "content": format!("Line {i}"),
+            "blendMode": "PASS_THROUGH", "strokes": [], "effectStyleId": "", "visible": true, "opacity": if i == 3 { 0.5 } else { 1.0 },
+            "constraints": {"horizontal": "MIN", "vertical": "MIN"},
+            "paintData": [{"type": "SOLID", "color": "#111111", "opacity": 1, "visible": true, "boundVariables": {"color": {"id": "VariableID:4:2626", "type": "VARIABLE_ALIAS"}}}],
+            "fontSize": if i == 5 { 20 } else { 14 }
+        })).collect();
+        let raw = json!({"schemaVersion": 4, "nodes": nodes, "complete": true});
+        let compact = compress_tree(&raw, true);
+        let meta = &compact["_compression"];
+        assert_eq!(meta["defaults"]["blendMode"], "PASS_THROUGH");
+        assert_eq!(meta["defaults"]["opacity"], 1.0);
+        assert!(meta["defaults"].get("name").is_none() && meta["defaults"].get("width").is_none());
+        let node3 = &compact["nodes"][3];
+        assert_eq!(node3["opacity"], 0.5);
+        assert_eq!(node3["name"], "Body");
+        assert!(compact.to_string().len() * 2 < raw.to_string().len());
+        assert_eq!(restore(compact), raw);
     }
 
     #[test]

@@ -31,33 +31,31 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                             "rules", "get_styles", "get_variables", "get_tokens", "get_local_components", "get_component_map", "get_unmapped_components", "get_viewport",
                             "screenshot", "export_image", "export_svg"
                         ],
-                        "description": "read_nodes: canonical flat node API with fields, depth, expandInstances and cursor. Returns schemaVersion, nodes, scope, revision, nextCursor and complete. Default fields are geometry and content; text adds typography including mixed runs. Tokens returns raw bindings/style IDs. Instances remain opaque unless expandInstances=true. Cursors expire after edits; continue with cursor and limit only. Other operations provide selection, styles/tokens, CSS, components, exports and scoped design summaries.",
+                        "description": "read_nodes returns flat nodes {schemaVersion, nodes, nextCursor, complete}; instances stay opaque unless expandInstances.",
                     },
-                    "mode": {"type":"string","enum":["overview","spec","detail"],"description":"get_spec: overview (default) reads depth 2 to discover sections; spec reads a section deeply; detail reads one node. Exact shared styles/templates preserve overrides."},
-                    "maxBytes": {"type":"integer","minimum":1024,"maximum":1000000,"description":"Raw node byte target per page; default 24000 for get_spec. One oversized node and metadata/component resolution can exceed it. Continue nextCursor; no nodes are dropped."},
-                    "fields": { "type":"array", "items":{"type":"string","enum":["geometry","content","text","style","layout","tokens","component"]}, "minItems":1, "description":"Requested node groups; default geometry/content. Identity and topology are always returned." },
-                    "cursor": { "type":"string", "description":"Opaque continuation from read_nodes. Send cursor and limit only; expired cursors require restarting." },
-                    "expandInstances": { "type":"boolean", "description":"Expand instance descendants; default false (instances report opaque=true); scan_design defaults true." },
-                    "nodeId": { "type": "string", "description": "Target node ID (optional — omit to use current selection)." },
-                    "nodeName": { "type": "string", "description": "Target node name (alternative to nodeId)." },
-                    "scale": { "type": "number", "description": "Export scale for screenshot / export_image (default 1 for screenshot, 2 for export_image)." },
-                    "depth": { "oneOf":[{"type":"integer","minimum":0,"maximum":256},{"type":"string","enum":["full"]}], "description":"read_nodes depth: page default 0, frame default full (256)." },
-                    "limit": { "type":"integer", "minimum":1, "maximum":500, "description":"Nodes per read_nodes response; default 200." },
-                    "format": { "type": "string", "description": "Image format for export_image: 'png' (default) or 'jpg'." },
-                    "detail": { "type": "string", "description": "Detail level for read_nodes/get_design/get_selection: 'full' (default) bypasses Rust compression; 'compact'/'minimal' use shared styles when smaller. Merge _compression.styles[node.styleRef] into referenced nodes. Plugin detail/depth/node budgets still apply." },
-                    "outputPath": { "type": "string", "description": "get_spec: save the complete requested raw scope to JSON and return coverage only. Also saves export_svg/export_image/screenshot." },
-                    "includeHidden": { "type": "boolean", "description": "Include invisible nodes (visible:false) in results. Default false — hidden layers are skipped to reduce noise." },
-                    "maxNodes": { "type": "number", "description": "Node budget for get_design/get_selection (default 3000) and scan_design (default 50000). Subtrees past it are summarized and meta.nodesTruncated is set — raise it for one big frame, lower it to keep the payload small." },
-                    "precision": { "type": "string", "enum": ["exact", "rounded"], "description": "Geometry precision for read operations. Full/exact preserves fractional Figma coordinates; rounded is smaller and uses integer geometry." },
-                    "absolute": { "type": "boolean", "description": "Force absoluteBoundingBox on every node in get_design/get_selection. Off by default: it is emitted only where parent-relative x/y is insufficient (inside a GROUP, or under rotation)." },
-                    "inlineIcons": { "type": "boolean", "description": "Inline SVG markup for icon nodes in get_design (detail 'full', first 10 icons). Off by default — exporting SVG for many icons is slow." },
-                    "withAnnotations": { "type": "boolean", "description": "For screenshot: export image with numbered bounding-box annotation overlays and metadata for multimodal LLM analysis." },
-                    "keepViewport": { "type": "boolean", "description": "For screenshot/export_image: default true restores the user's canvas position after the render nudge. Pass false to leave the canvas on the exported node." },
-                    "query": { "type": "string", "description": "Search text for search_* operations." },
-                    "nodeType": { "type": "string", "description": "search_nodes: filter by node type (FRAME, TEXT, COMPONENT, INSTANCE...)." },
-                    "styleType": { "type": "string", "enum": ["PAINT", "TEXT", "EFFECT"], "description": "search_styles: filter by style type." },
-                    "collection": { "type": "string", "description": "search_variables: filter by collection name." },
-                    "includeComponents": { "type": "boolean", "description": "refresh: also index the document-wide component catalogue." },
+                    "nodeId": { "type": "string", "description": "Target node; omit for the selection." },
+                    "nodeName": { "type": "string", "description": "Alternative to nodeId." },
+                    "fields": { "type":"array", "items":{"type":"string","enum":["geometry","content","text","style","layout","tokens","component"]}, "minItems":1, "description":"Node field groups; default geometry, content." },
+                    "depth": { "oneOf":[{"type":"integer","minimum":0,"maximum":256},{"type":"string","enum":["full"]}], "description":"Default: page 0, frame full." },
+                    "limit": { "type":"integer", "minimum":1, "maximum":500, "description":"Nodes per page (default 200) or search results (default 30)." },
+                    "cursor": { "type":"string", "description":"nextCursor from the previous page; send with limit only." },
+                    "expandInstances": { "type":"boolean", "description":"Read instance children (default false; scan_design true)." },
+                    "includeHidden": { "type": "boolean", "description": "Include hidden layers (default false)." },
+                    "detail": { "type": "string", "description": "'compact' (default): lossless _compression when smaller, see _compression.decode. 'full': raw payload." },
+                    "precision": { "type": "string", "enum": ["exact", "rounded"], "description": "rounded uses integer geometry." },
+                    "maxNodes": { "type": "number", "description": "get_selection/scan_design node budget; truncation sets meta.nodesTruncated." },
+                    "absolute": { "type": "boolean", "description": "get_selection: absoluteBoundingBox on every node." },
+                    "mode": {"type":"string","enum":["overview","spec","detail"],"description":"get_spec: overview (default, depth 2), spec (one section deep), detail (one node)."},
+                    "maxBytes": {"type":"integer","minimum":1024,"maximum":1000000,"description":"get_spec page byte target (default 24000)."},
+                    "query": { "type": "string", "description": "search_* text." },
+                    "nodeType": { "type": "string", "description": "search_nodes type filter (FRAME, TEXT, INSTANCE...)." },
+                    "styleType": { "type": "string", "enum": ["PAINT", "TEXT", "EFFECT"], "description": "search_styles filter." },
+                    "collection": { "type": "string", "description": "search_variables collection filter." },
+                    "includeComponents": { "type": "boolean", "description": "refresh: also index the component catalogue." },
+                    "format": { "type": "string", "enum": ["png", "jpg"], "description": "export_image format (default png)." },
+                    "scale": { "type": "number", "description": "screenshot (default 1) / export_image (default 2) scale." },
+                    "withAnnotations": { "type": "boolean", "description": "screenshot: numbered bounding-box overlays." },
+                    "outputPath": { "type": "string", "description": "Save exports or the full get_spec scope to this file; returns the path." },
                     "sessionId": { "type": "string", "description": "Target a specific Figma file/tab when multiple are connected. Omit to auto-select." }
                 },
                 "required": ["operation"]
@@ -65,7 +63,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_write".to_string(),
-            description: "Execute JavaScript code to CREATE or MODIFY designs in Figma. ⚠️ MANDATORY: Call figma_docs BEFORE writing any design code. Skipping figma_docs causes hardcoded colors, wrong sizing, broken layouts, and low-quality UI. Use the `figma` proxy object — all methods return Promises, use async/await. Operations: create, modify, delete, clone, group, ungroup, flatten, resize, set_selection, set_viewport, batch (multiple ops in one call). Design Tokens: createVariableCollection, createVariable, setVariableValue, addVariableMode, renameVariableMode, removeVariableMode, applyVariable, setFrameVariableMode, clearFrameVariableMode, createPaintStyle, createTextStyle, createComponent. Prototyping: setReactions, getReactions, removeReactions (click/hover/press → navigate/overlay/swap with Smart Animate transitions). Scroll: setScrollBehavior (overflowDirection: NONE/HORIZONTAL/VERTICAL/BOTH). Variants: setComponentProperties, swapComponent, getComponentProperties. Component property definitions (master-side, required for instance text overrides to recalc auto-layout): addComponentProperty (TEXT/BOOLEAN/INSTANCE_SWAP), bindComponentPropertyToText, removeComponentProperty. The code runs in a sandboxed VM: no access to require, process, fs, fetch, or network.".to_string(),
+            description: "Run JavaScript that creates or modifies designs through the `figma` object (all calls return Promises; await them; return a value to get JSON back). Covers create/modify/delete/clone/batch, auto-layout, variables and text styles, components and variants, prototyping and icons. Call figma_docs first for the rules and API. Sandboxed: no require, fetch, fs or network.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -83,14 +81,14 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_docs".to_string(),
-            description: "Get the API reference and design rules for figma_write. Call with no args first — returns quick-start guide + critical rules. Then load specific sections as needed: section='rules' (design principles, token rules, layer order, component-first), section='layout' (auto-layout, button/card/badge/progress/mobile rules), section='api' (create/modify/delete/clone/batch/read operations + workflow), section='tokens' (variables, multi-mode, paint styles, text styles), section='icons' (loadImage, loadIcon, loadIconIn, icon libraries, coloring, sizing). Always call figma_docs BEFORE any figma_write code.".to_string(),
+            description: "Design rules and API for figma_write. Call with no section before drawing (quick start + rules); load layout, api, tokens or icons when needed.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
                         "enum": ["rules", "layout", "api", "tokens", "icons"],
-                        "description": "Which section to load. Omit (or null) for quick-start + critical rules. Load layout before any auto-layout work. Load api for full operation reference. Load tokens for variable/multi-mode work. Load icons for image/icon placement."
+                        "description": "Omit for quick start + rules."
                     }
                 },
                 "required": []
@@ -129,7 +127,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_to_code".to_string(),
-            description: "Compile any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code. Formats: 'react-tailwind' (default, React + Tailwind CSS), 'react-shadcn' (React + Shadcn/UI components & Radix), 'react-native' (React Native View/Text/TouchableOpacity), 'vue-tailwind' (Vue 3 SFC template + script setup), 'html' (plain HTML + Tailwind), 'swiftui' (SwiftUI VStack/HStack), 'clean-spec' (token-pruned AST for AI prompt context). Supports 'outputPath' to write directly to your codebase (e.g. 'src/components/UserProfileCard.tsx'). target='tokens' exports variables/styles as css (light/dark), tailwind, typescript, w3c or json (format). target='project' scaffolds a design system: globals.css, tailwind.config.ts and one component per local component (skips existing files unless overwrite).".to_string(),
+            description: "Compile any Figma node (Frame, Component, Section, or selection) directly into clean, production-ready component code. Formats: 'react-tailwind' (default, React + Tailwind CSS), 'react-shadcn' (React + Shadcn/UI components & Radix), 'react-native' (React Native View/Text/TouchableOpacity), 'vue-tailwind' (Vue 3 SFC template + script setup), 'html' (plain HTML + Tailwind), 'swiftui' (SwiftUI VStack/HStack), 'clean-spec' (token-pruned AST for AI prompt context). Supports 'outputPath' to write directly to your codebase (e.g. 'src/components/UserProfileCard.tsx'). target='tokens' exports variables/styles as css (light/dark), tailwind, typescript, w3c or json (format). target='project' scaffolds a design system: globals.css, tailwind.config.ts and one component per local component; React component sets get variant props (skips existing files unless overwrite).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
