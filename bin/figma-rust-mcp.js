@@ -253,6 +253,13 @@ async function findOrDownloadBinary() {
  * - Windows: Task Scheduler XML via schtasks
  */
 async function installService(binPath) {
+  // An outdated CLI (e.g. an old global install run via plain `npx figma-rust-mcp`) must not replace a newer service.
+  const running = await serverVersion(Number(process.env.FIGMA_RUST_MCP_PORT) || 41730);
+  if (running && isNewer(running, pkgVersion)) {
+    console.log(`  ${yellow('!')} Service runs v${running}, newer than this CLI (v${pkgVersion}); left it unchanged.`);
+    note('Use the latest CLI: npx -y figma-rust-mcp@latest --init');
+    return false;
+  }
   removeLegacyService();
   await stopRunningServer();
   const platform = process.platform;
@@ -340,26 +347,51 @@ WantedBy=default.target
     console.error(`\x1b[31mUnsupported platform: ${platform}\x1b[0m`);
     process.exit(1);
   }
+  pruneOldBinaries(binPath);
+}
+
+/**
+ * Delete cached binaries of versions older than the one the service now runs. A process still
+ * running an old binary keeps working on macOS/Linux; on Windows a locked file is skipped.
+ */
+function pruneOldBinaries(binPath) {
+  const root = path.dirname(getCacheDir(pkgVersion));
+  const current = path.basename(path.dirname(binPath)).match(/^v(\d+\.\d+\.\d+)$/)?.[1] || pkgVersion;
+  let entries;
+  try { entries = fs.readdirSync(root); } catch (_) { return; }
+  let freed = 0, removed = 0;
+  for (const name of entries) {
+    const version = name.match(/^v(\d+\.\d+\.\d+)$/)?.[1];
+    if (!version || !isNewer(current, version)) continue;
+    const dir = path.join(root, name);
+    try {
+      const size = fs.readdirSync(dir).reduce((sum, file) => sum + fs.statSync(path.join(dir, file)).size, 0);
+      fs.rmSync(dir, { recursive: true });
+      freed += size; removed++;
+    } catch (_) {}
+  }
+  if (removed) note(`Removed ${removed} old binar${removed === 1 ? 'y' : 'ies'} (${(freed / 1048576).toFixed(0)} MB freed)`);
 }
 
 async function serviceInstalled(where) {
   const port = Number(process.env.FIGMA_RUST_MCP_PORT) || 41730;
   const deadline = Date.now() + 10000;
-  while (!(await isOldServerUp(port)) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 300));
-  if (await isOldServerUp(port)) ok('Background service running', `http://127.0.0.1:${port}`);
+  while (!(await serverVersion(port)) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 300));
+  if (await serverVersion(port)) ok('Background service running', `http://127.0.0.1:${port}`);
   else console.log(`  ${yellow('!')} Service installed but not answering on port ${port} yet`);
   note(`Starts on login · ${where}`);
 }
 
-function isOldServerUp(port) {
+/** Version of the figma-rust-mcp answering on `port`, or null. */
+function serverVersion(port) {
   return new Promise(resolve => {
     const req = http.get({ host: '127.0.0.1', port, path: '/plugin/version', timeout: 500 }, res => {
       let body = '';
       res.on('data', chunk => { body += chunk; });
-      res.on('end', () => { try { resolve(JSON.parse(body).name === 'figma-rust-mcp'); } catch (_) { resolve(false); } });
+      res.on('end', () => { try { const v = JSON.parse(body); resolve(v.name === 'figma-rust-mcp' ? v.version || '0.0.0' : null); } catch (_) { resolve(null); } });
     });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
   });
 }
 
@@ -382,7 +414,7 @@ async function stopRunningServer() {
   }
   const port = Number(process.env.FIGMA_RUST_MCP_PORT) || 41730;
   const deadline = Date.now() + 10000;
-  while (await isOldServerUp(port)) {
+  while (await serverVersion(port)) {
     if (Date.now() > deadline) {
       console.log(`  ${yellow('!')} An old figma-rust-mcp still answers on port ${port}; stop it, then rerun setup.`);
       return;
@@ -559,19 +591,17 @@ function checkForUpdatesAsync() {
 }
 
 async function upgrade() {
-  console.log('\x1b[36m[figma-rust-mcp]\x1b[0m Checking for updates and upgrading figma-rust-mcp...');
+  const major = pkgVersion.split('.')[0];
+  console.log(`${tag(36)} Upgrading figma-rust-mcp v${major}.x…`);
   try {
-    const major = pkgVersion ? pkgVersion.split('.')[0] : 'latest';
     execSync(`npm install -g figma-rust-mcp@${major}`, { stdio: 'inherit' });
-    ok(`Upgraded figma-rust-mcp (${major === 'latest' ? 'latest' : `v${major}.x`})`);
-    setupPlugin();
-    if (isServiceInstalled()) {
-      console.log('\x1b[36mUpdating background service binary...\x1b[0m');
-      const binPath = await findOrDownloadBinary();
-      await installService(binPath);
-    }
+    // This process still runs the old code and version; let the new package refresh the plugin and service.
+    const args = ['-y', `figma-rust-mcp@${major}`, isServiceInstalled() ? '--install-service' : '--setup-plugin'];
+    execFileSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', args, { stdio: 'inherit', shell: process.platform === 'win32' });
+    ok(`Upgraded figma-rust-mcp (v${major}.x)`);
   } catch (err) {
-    console.log('\x1b[33mTip: Run directly with latest version:\x1b[0m\n  npx -y figma-rust-mcp@latest\n');
+    console.log(`  ${yellow('!')} Upgrade failed: ${err.message}`);
+    note('Run the latest version directly: npx -y figma-rust-mcp@latest --init');
   }
 }
 

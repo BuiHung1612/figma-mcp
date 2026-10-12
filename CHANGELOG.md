@@ -1,5 +1,14 @@
 # Changelog
 
+## [8.0.2] — 2026-10-12
+
+### Fixed
+- `--upgrade` reinstalled the service with the binary of the CLI that was running, so the service never actually upgraded, and an old global install run via plain `npx figma-rust-mcp --upgrade` downgraded a newer service (e.g. v8 → v5). The freshly installed package now refreshes the plugin and service.
+- Installing the service from a CLI older than the running service leaves the service unchanged and points to `npx -y figma-rust-mcp@latest --init`.
+
+### Added
+- After the service is installed, cached binaries of older versions are deleted (one machine: 7 versions, 97 MB).
+
 ## [8.0.1] — 2026-10-12
 
 ### Fixed
