@@ -965,3 +965,13 @@ test('get_variables finishes when Figma never answers a library alias lookup', a
   assert.equal(out.collections[0].variables[0].values.l.resolvedValue, null);
   assert.ok(out.diagnostics.some(d => /did not answer variable VariableID:lib\/1/.test(d.message)), JSON.stringify(out.diagnostics));
 });
+
+test('an op re-sent after a reconnect is dispatched to the plugin only once', () => {
+  const html = readFileSync('plugin-runtime/ui.html', 'utf8');
+  const start = html.indexOf('    // The bridge re-sends unacknowledged ops');
+  const posted = [];
+  const ui = vm.createContext({ window: {}, parent: { postMessage: msg => posted.push(msg.pluginMessage.id) } });
+  vm.runInContext(html.slice(start, html.indexOf('    function reconnect()', start)), ui);
+  for (const id of ['a', 'a', 'b', undefined, undefined]) ui.dispatchToMain({ id, operation: 'modify' });
+  assert.deepEqual(posted, ['a', 'b', undefined, undefined]);
+});

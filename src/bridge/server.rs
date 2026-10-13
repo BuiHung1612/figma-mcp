@@ -7,7 +7,7 @@ use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
 use super::session::{
-    PendingOp, PollResponse, QueuedOp, Session, SessionInfo, SessionStats, MAX_QUEUE,
+    PendingOp, QueuedOp, Session, SessionInfo, SessionStats, MAX_QUEUE,
 };
 use crate::mcp::protocol::JsonRpcResponse;
 
@@ -303,7 +303,7 @@ impl BridgeInner {
         self.last_cleanup_at = now;
         self.sessions.retain(|_, s| {
             s.is_connected() || !s.queue.is_empty() || !s.pending.is_empty()
-                || now.saturating_sub(s.last_poll_at) < super::session::SESSION_EXPIRE_MS
+                || now.saturating_sub(s.last_poll_at.max(s.disconnected_at)) < super::session::SESSION_EXPIRE_MS
         });
         let sessions: std::collections::HashSet<_> = self.sessions.keys().cloned().collect();
         self.tasks.retain(|_, task| sessions.contains(&task.session_id));
@@ -588,51 +588,47 @@ impl BridgeState {
 
             if !dispatched_via_ws {
                 session.queue.push(queued_op);
-
-                let responder_opt = session.long_poll.take();
-                let mut flushed_ops = Vec::new();
-                if responder_opt.is_some() {
-                    session.last_poll_at = now_ms();
-                    flushed_ops = std::mem::take(&mut session.queue);
-                }
-
-                if let Some(responder) = responder_opt {
-                    let _ = responder.send(PollResponse {
-                        requests: flushed_ops,
-                        mode: "ready".to_string(),
-                        session_id: sid.clone(),
-                    });
-                }
+                session.flush_to_long_poll();
             }
 
             inner.op_to_session.insert(op_id.clone(), sid.clone());
             (rx, op_id, timeout_ms, sid, cache_key, cache_revision)
         };
 
-        // Await with timeout
-        let started = std::time::Instant::now();
-        let response = tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await;
-        {
-            let mut inner = self.inner.lock().await;
-            // Every exit path (reply, timeout, dropped sender) releases the op mapping.
-            inner.op_to_session.remove(&op_id);
-            if let Some(session) = inner.sessions.get_mut(&target_sid) {
-                session.bridge_time_ms += started.elapsed().as_millis() as u64;
-                if response.is_err() {
-                    session.pending.remove(&op_id);
-                    session.queue.retain(|q| q.id != op_id);
-                }
-                // A write left the index dirty; once writes settle, ask the plugin
-                // for a fresh page snapshot so the index becomes ready again.
-                if is_mutating_operation(operation) && !session.resync_requested
-                    && session.index.as_ref().is_some_and(|idx| idx.dirty)
-                    && !session.pending.values().any(|p| is_mutating_operation(&p.op.operation)) {
-                    if let Some(tx) = &session.ws_tx {
-                        session.resync_requested = tx.send(Message::Text(json!({"type":"index-resync"}).to_string())).is_ok();
+        // Await with timeout. The wait and cleanup run in their own task: if the caller is
+        // dropped (client disconnected), they still finish, so the op never lingers in
+        // pending/queue where a reconnecting plugin would run it with nobody waiting.
+        let state = self.clone();
+        let op_name = operation.to_string();
+        let target = target_sid.clone();
+        let cleanup_id = op_id.clone();
+        let response = tokio::spawn(async move {
+            let (operation, target_sid, op_id) = (op_name.as_str(), target, cleanup_id);
+            let started = std::time::Instant::now();
+            let response = tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await;
+            {
+                let mut inner = state.inner.lock().await;
+                // Every exit path (reply, timeout, dropped sender) releases the op mapping.
+                inner.op_to_session.remove(&op_id);
+                if let Some(session) = inner.sessions.get_mut(&target_sid) {
+                    session.bridge_time_ms += started.elapsed().as_millis() as u64;
+                    if response.is_err() {
+                        session.pending.remove(&op_id);
+                        session.queue.retain(|q| q.id != op_id);
+                    }
+                    // A write left the index dirty; once writes settle, ask the plugin
+                    // for a fresh page snapshot so the index becomes ready again.
+                    if is_mutating_operation(operation) && !session.resync_requested
+                        && session.index.as_ref().is_some_and(|idx| idx.dirty)
+                        && !session.pending.values().any(|p| is_mutating_operation(&p.op.operation)) {
+                        if let Some(tx) = &session.ws_tx {
+                            session.resync_requested = tx.send(Message::Text(json!({"type":"index-resync"}).to_string())).is_ok();
+                        }
                     }
                 }
             }
-        }
+            response
+        }).await.map_err(|e| format!("Bridge operation task failed: {e}"))?;
         match response {
             Ok(Ok(val)) => {
                 if operation == "get_design" && cache_key.is_some() {

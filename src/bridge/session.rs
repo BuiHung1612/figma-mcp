@@ -83,6 +83,9 @@ pub struct Session {
     pub tool_lock: Arc<tokio::sync::Mutex<()>>,
     pub id: String,
     pub file_name: String,
+    /// When the WebSocket last closed; keeps the session alive for SESSION_EXPIRE_MS after a
+    /// disconnect (last_poll_at drops to 0 so is_connected() turns false immediately).
+    pub disconnected_at: u64,
     pub document_id: Option<String>,
     pub last_poll_at: u64,
     pub queue: Vec<QueuedOp>,
@@ -115,6 +118,7 @@ impl Session {
             tool_lock: Arc::new(tokio::sync::Mutex::new(())),
             id,
             file_name: file_name.unwrap_or_else(|| "unknown".to_string()),
+            disconnected_at: 0,
             document_id: None,
             last_poll_at: 0,
             queue: Vec::new(),
@@ -128,6 +132,18 @@ impl Session {
             runtime_version: None,
             protocol_version: None,
             operations: None,
+        }
+    }
+
+    /// Hands the queue to a waiting long poll. If that poll already ended (timed out or the
+    /// plugin aborted it), the ops stay queued for the next poll instead of being dropped.
+    pub fn flush_to_long_poll(&mut self) {
+        let Some(responder) = self.long_poll.take() else { return };
+        if responder.is_closed() { return; }
+        let response = PollResponse { requests: std::mem::take(&mut self.queue), mode: "ready".to_string(), session_id: self.id.clone() };
+        match responder.send(response) {
+            Ok(()) => self.last_poll_at = now_ms(),
+            Err(response) => self.queue = response.requests,
         }
     }
 

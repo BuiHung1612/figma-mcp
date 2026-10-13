@@ -9,6 +9,11 @@
 - The prebuilt binary is verified against the release's `SHA256SUMS.txt`; the fallback to the `latest` release (possibly another major) is removed.
 
 ### Fixed
+- Ops handed to a long poll that had already timed out or been aborted were dropped, so the agent waited out the full 60–90s timeout; they now stay queued.
+- Acks and replies still in flight on a replaced WebSocket were discarded on reconnect, losing results or running a write twice. They are processed, and the plugin runs each op id once.
+- An op whose caller disconnected stayed pending forever: the session never expired, `task=end` refused, and the write ran whenever the plugin reconnected. Cleanup now always runs; a failed `task=start` always releases its frame.
+- A WebSocket disconnect (sleep, plugin restart) deleted the session, its index and its tasks within about a minute instead of 30 minutes.
+- `figma_status task=start|end` panicked when the session expired while waiting for the tab lock.
 - A panic anywhere in the daemon aborted the whole process (`panic = "abort"`), so the existing "Execution task panicked" handling never ran. Panics now stay in the failing request.
 - `figma_write` code that closed the async wrapper early (`})(); (() => {`) panicked the executor; its completion value is now returned.
 

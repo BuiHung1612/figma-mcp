@@ -456,15 +456,16 @@ async fn handle_socket(
     let owner_tx = socket_tx.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
-            {
+            // A replaced socket still delivers acks and replies already in flight (the
+            // plugin dedupes re-sent ops by id); only the current socket may change session state.
+            let owner = {
                 let inner = state_clone.inner.lock().await;
-                if !inner.sessions.get(&sid_clone).and_then(|s| s.ws_tx.as_ref()).is_some_and(|tx| tx.same_channel(&owner_tx)) {
-                    break;
-                }
-            }
+                inner.sessions.get(&sid_clone).and_then(|s| s.ws_tx.as_ref()).is_some_and(|tx| tx.same_channel(&owner_tx))
+            };
             match msg {
                 Message::Text(text) => {
                     if let Ok(mut val) = serde_json::from_str::<Value>(&text) {
+                        if !owner && val["type"] != "ack" && (val.get("type").is_some() || val.get("id").is_none()) { continue; }
                         if val["type"] == "runtime-capabilities" {
                             let mut inner = state_clone.inner.lock().await;
                             if let Some(s) = inner.sessions.get_mut(&sid_clone) {
@@ -581,6 +582,7 @@ async fn handle_socket(
                 Message::Binary(bin_bytes) => {
                     // Fast Binary IPC (MessagePack)
                     if let Ok(mut val) = rmp_serde::from_slice::<Value>(&bin_bytes) {
+                        if !owner && (val.get("type").is_some() || val.get("id").is_none()) { continue; }
                         if matches!(val["type"].as_str(), Some("nodes-invalidated" | "node-patch" | "index-start" | "index-chunk" | "index-update" | "index-abort")) {
                             state_clone.receive_index_event(&sid_clone, &val).await;
                             continue;
@@ -645,7 +647,7 @@ async fn handle_socket(
                         }
                     }
                 }
-                Message::Ping(_) => {
+                Message::Ping(_) if owner => {
                     let mut inner = state_clone.inner.lock().await;
                     if let Some(s) = inner.sessions.get_mut(&sid_clone) {
                         s.last_poll_at = now_ms();
@@ -673,7 +675,8 @@ async fn handle_socket(
     if let Some(s) = inner.sessions.get_mut(&sid) {
         if !s.ws_tx.as_ref().is_some_and(|tx| tx.same_channel(&socket_tx)) { return; }
         s.ws_tx = None;
-        if s.long_poll.is_none() { s.last_poll_at = 0; }
+        s.disconnected_at = now_ms();
+        if s.long_poll.as_ref().is_none_or(|poll| poll.is_closed()) { s.long_poll = None; s.last_poll_at = 0; }
 
         let unacked_ids: Vec<String> = s
             .pending
@@ -703,17 +706,8 @@ async fn handle_socket(
                 requeued.len()
             );
             s.queue.extend(requeued.clone());
-
             // Hand them straight to a waiting long poll, if there is one.
-            if let Some(responder) = s.long_poll.take() {
-                s.last_poll_at = now_ms();
-                let flushed = std::mem::take(&mut s.queue);
-                let _ = responder.send(PollResponse {
-                    requests: flushed,
-                    mode: "ready".to_string(),
-                    session_id: sid.clone(),
-                });
-            }
+            s.flush_to_long_poll();
         }
     }
 }
@@ -1177,6 +1171,38 @@ mod contract_tests {
         assert_eq!(client.get(&url).header("host", "evil.test").send().await.unwrap().status(), 403);
         assert_eq!(client.get(format!("http://127.0.0.1:{port}/clear")).send().await.unwrap().status(), 405);
         server.abort();
+    }
+
+    #[test]
+    fn ops_for_a_dead_long_poll_stay_queued() {
+        let mut session = Session::new("s".into(), None);
+        let (tx, rx) = oneshot::channel();
+        session.long_poll = Some(tx);
+        drop(rx); // poll timed out or the plugin aborted it
+        session.queue.push(QueuedOp { id: "op".into(), operation: "modify".into(), params: json!({}) });
+        session.flush_to_long_poll();
+        assert_eq!(session.queue.len(), 1);
+        assert!(session.long_poll.is_none());
+
+        let (tx, mut rx) = oneshot::channel();
+        session.long_poll = Some(tx);
+        session.flush_to_long_poll();
+        assert!(session.queue.is_empty());
+        assert_eq!(rx.try_recv().unwrap().requests[0].id, "op");
+    }
+
+    #[tokio::test]
+    async fn disconnected_session_survives_until_expiry() {
+        let state = BridgeState::new(0);
+        let mut inner = state.inner.lock().await;
+        let now = now_ms();
+        let mut session = Session::new("s".into(), None);
+        session.disconnected_at = now; // WebSocket just closed; last_poll_at stays 0
+        inner.sessions.insert("s".into(), session);
+        inner.expire_sessions(now + 60_000);
+        assert!(inner.sessions.contains_key("s"), "a sleep or plugin restart must not drop tasks within a minute");
+        inner.expire_sessions(now + crate::bridge::session::SESSION_EXPIRE_MS + 1);
+        assert!(!inner.sessions.contains_key("s"));
     }
 
     #[test]

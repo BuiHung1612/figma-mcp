@@ -366,9 +366,12 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                     let frame_id = match args["frameId"].as_str().filter(|id| !id.is_empty()) {
                         Some(id) => id, None => return ToolResult::error("frameId is required"),
                     };
+                    // The tool lock wait can outlast the session (expired while we queued).
+                    let Some(document_id) = state.inner.lock().await.sessions.get(sid).map(|s| s.document_id.clone().unwrap_or_else(|| sid.into())) else {
+                        return ToolResult::error("Figma tab disconnected; reconnect the plugin and retry");
+                    };
                     let task = crate::bridge::server::TaskBinding {
-                        task_id: uuid::Uuid::new_v4().to_string(), session_id: sid.into(), frame_id: frame_id.into(),
-                        document_id: state.inner.lock().await.sessions[sid].document_id.clone().unwrap_or_else(|| sid.into()),
+                        task_id: uuid::Uuid::new_v4().to_string(), session_id: sid.into(), frame_id: frame_id.into(), document_id,
                     };
                     {
                         let mut inner = state.inner.lock().await;
@@ -378,13 +381,14 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                         // Reserve before awaiting the plugin: another tab can start concurrently.
                         inner.tasks.insert(task.task_id.clone(), task.clone());
                     }
-                    let data = match state.send_operation("task_start", json!({"taskId": task.task_id, "frameId": frame_id}), Some(sid)).await {
-                        Ok(data) => data,
-                        Err(error) => {
-                            state.inner.lock().await.tasks.remove(&task.task_id);
-                            return ToolResult::error(error);
-                        }
-                    };
+                    // Spawned so a failed start always releases the reservation, even if this call is dropped.
+                    let (start_state, start_task, start_sid) = (state.clone(), task.clone(), sid.to_string());
+                    let started = tokio::spawn(async move {
+                        let result = start_state.send_operation("task_start", json!({"taskId": start_task.task_id, "frameId": start_task.frame_id}), Some(&start_sid)).await;
+                        if result.is_err() { start_state.inner.lock().await.tasks.remove(&start_task.task_id); }
+                        result
+                    }).await.unwrap_or_else(|e| Err(format!("task_start failed: {e}")));
+                    let data = match started { Ok(data) => data, Err(error) => return ToolResult::error(error) };
                     ToolResult::text(json!({"taskId": task.task_id, "sessionId": sid, "frameId": frame_id, "frame": data,
                         "instructions": "Pass taskId on every subsequent tool call. Writes are confined to this frame; release with figma_status task=end."}).to_string())
                 }
@@ -392,7 +396,10 @@ async fn handle_tool_call_inner(bridge: BridgeHandle, params: Option<Value>) -> 
                     let task_id = match args["taskId"].as_str() { Some(id) => id, None => return ToolResult::error("taskId is required") };
                     {
                         let mut inner = state.inner.lock().await;
-                        let session = &inner.sessions[sid];
+                        let Some(session) = inner.sessions.get(sid) else {
+                            inner.tasks.remove(task_id);
+                            return ToolResult::text(json!({"taskId": task_id, "released": true, "pluginDisconnected": true}).to_string());
+                        };
                         if !session.is_connected() {
                             if !session.pending.is_empty() { return ToolResult::error("Disconnected task still has pending operations; wait for them to settle before releasing"); }
                             inner.tasks.remove(task_id);
