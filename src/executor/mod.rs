@@ -75,6 +75,35 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
+/// Converts a script result through JSON.stringify, which rejects cycles with a TypeError;
+/// JsValue::to_json recurses into a cycle until the stack overflows and aborts the daemon.
+fn js_to_json(value: &JsValue, context: &mut Context) -> Result<Option<Value>, String> {
+    // Boa's native stringify recurses per level too, so a deep (or cyclic) value is
+    // measured iteratively first. serde_json rejects more than 128 levels anyway.
+    let mut stack = vec![(value.clone(), 0usize)];
+    let mut visited = 0usize;
+    while let Some((item, depth)) = stack.pop() {
+        let Some(object) = item.as_object() else { continue };
+        if depth >= 128 { return Err("nested more than 128 levels (or cyclic)".into()); }
+        visited += 1;
+        if visited > 1_000_000 { return Err("more than 1,000,000 objects".into()); }
+        for key in object.own_property_keys(context).map_err(|e| e.to_string())? {
+            let child = object.get(key, context).map_err(|e| e.to_string())?;
+            if child.is_object() { stack.push((child, depth + 1)); }
+        }
+    }
+    let json = context.global_object().get(js_string!("JSON"), context).map_err(|e| e.to_string())?;
+    let stringify = json.as_object()
+        .and_then(|object| object.get(js_string!("stringify"), context).ok())
+        .and_then(|function| function.as_callable().cloned())
+        .ok_or("JSON.stringify is unavailable")?;
+    let text = stringify.call(&json, std::slice::from_ref(value), context).map_err(|e| e.to_string())?;
+    match text.as_string() {
+        Some(text) => serde_json::from_str(&text.to_std_string_escaped()).map(Some).map_err(|e| e.to_string()),
+        None => Ok(None), // functions and symbols stringify to undefined
+    }
+}
+
 pub async fn execute_code(
     code: &str,
     bridge: BridgeHandle,
@@ -456,7 +485,12 @@ figma.loadIconIn = async (iconName, opts = {}) => {
                 } else if let Some(n) = js_val.as_number() {
                     Some(json!(n))
                 } else {
-                    js_val.to_json(&mut context).ok()
+                    // The script's writes already ran, so report success (a failure invites a
+                    // duplicate re-run) but say why the value is missing instead of returning null.
+                    match js_to_json(&js_val, &mut context) {
+                        Ok(value) => value,
+                        Err(e) => Some(json!(format!("[result not JSON-serializable: {e}]"))),
+                    }
                 };
 
                 (true, result_val, None)
@@ -495,6 +529,18 @@ figma.loadIconIn = async (iconName, opts = {}) => {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn unserializable_result_is_explained_not_null() {
+        let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));
+        for code in ["const a = {}; a.self = a; return a;", "let a = []; for (let i = 0; i < 100000; i++) a = [a]; return a;"] {
+            let res = super::execute_code(code, bridge.clone(), None).await;
+            assert!(res.success);
+            assert!(res.result.as_ref().and_then(|v| v.as_str()).is_some_and(|s| s.contains("not JSON-serializable")), "{:?}", res.result);
+        }
+        let res = super::execute_code("return { a: [1, { b: 'x' }], f() {} };", bridge, None).await;
+        assert_eq!(res.result, Some(serde_json::json!({"a": [1, {"b": "x"}]})));
+    }
+
     #[tokio::test]
     async fn code_escaping_the_async_wrapper_does_not_panic() {
         let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));

@@ -28,12 +28,13 @@ pub(super) async fn figma_export_assets(bridge: BridgeHandle, args: Value) -> To
             let mut exported_icons = Vec::new();
             let mut exported_images = Vec::new();
             let mut barrel_lines = Vec::new();
+            let mut errors = Vec::new();
 
             // Save SVG icons
             if let Some(icons) = data.get("icons").and_then(|v| v.as_array()) {
                 let target_icon_dir = icon_dir.unwrap_or("src/assets/icons");
                 let dir_path = std::path::Path::new(target_icon_dir);
-                let _ = tokio::fs::create_dir_all(dir_path).await;
+                if let Err(e) = tokio::fs::create_dir_all(dir_path).await { errors.push(format!("{target_icon_dir}: {e}")); }
 
                 for item in icons {
                     let file_name = item.get("fileName").and_then(|v| v.as_str()).unwrap_or("icon.svg");
@@ -41,7 +42,9 @@ pub(super) async fn figma_export_assets(bridge: BridgeHandle, args: Value) -> To
                     let svg = item.get("svg").and_then(|v| v.as_str()).unwrap_or("");
 
                     let file_path = dir_path.join(file_name);
-                    if tokio::fs::write(&file_path, svg.as_bytes()).await.is_ok() {
+                    if let Err(e) = tokio::fs::write(&file_path, svg.as_bytes()).await {
+                        errors.push(format!("{}: {e}", file_path.display()));
+                    } else {
                         let abs = std::fs::canonicalize(&file_path).unwrap_or(file_path.clone());
                         exported_icons.push(json!({
                             "name": name,
@@ -50,20 +53,23 @@ pub(super) async fn figma_export_assets(bridge: BridgeHandle, args: Value) -> To
                             "sizeBytes": svg.len(),
                         }));
 
-                        let comp_name = name.split('-').map(|w| {
+                        let comp_name = name.split(|c: char| !c.is_ascii_alphanumeric()).map(|w| {
                             let mut c = w.chars();
                             match c.next() {
                                 None => String::new(),
                                 Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
                             }
                         }).collect::<String>() + "Icon";
+                        let comp_name = if comp_name.starts_with(|c: char| c.is_ascii_digit()) { format!("_{comp_name}") } else { comp_name };
                         barrel_lines.push(format!("export {{ default as {} }} from './{}';", comp_name, file_name));
                     }
                 }
 
                 if create_barrel && !barrel_lines.is_empty() {
+                    // Append to an existing barrel: it may hold earlier batches or hand-written exports.
                     let barrel_path = dir_path.join("index.ts");
-                    let _ = tokio::fs::write(barrel_path, barrel_lines.join("\n").as_bytes()).await;
+                    let barrel = merge_barrel(tokio::fs::read_to_string(&barrel_path).await.unwrap_or_default(), &barrel_lines);
+                    if let Err(e) = tokio::fs::write(&barrel_path, barrel).await { errors.push(format!("{}: {e}", barrel_path.display())); }
                 }
             }
 
@@ -71,7 +77,7 @@ pub(super) async fn figma_export_assets(bridge: BridgeHandle, args: Value) -> To
             if let Some(images) = data.get("images").and_then(|v| v.as_array()) {
                 let target_img_dir = image_dir.unwrap_or("public/images");
                 let dir_path = std::path::Path::new(target_img_dir);
-                let _ = tokio::fs::create_dir_all(dir_path).await;
+                if let Err(e) = tokio::fs::create_dir_all(dir_path).await { errors.push(format!("{target_img_dir}: {e}")); }
 
                 for item in images {
                     let file_name = item.get("fileName").and_then(|v| v.as_str()).unwrap_or("image.png");
@@ -84,9 +90,15 @@ pub(super) async fn figma_export_assets(bridge: BridgeHandle, args: Value) -> To
                             data_url
                         };
 
-                        if let Ok(bytes) = BASE64_STANDARD.decode(b64.trim()) {
+                        let bytes = match BASE64_STANDARD.decode(b64.trim()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => { errors.push(format!("{file_name}: invalid image data ({e})")); continue; }
+                        };
+                        {
                             let file_path = dir_path.join(file_name);
-                            if tokio::fs::write(&file_path, &bytes).await.is_ok() {
+                            if let Err(e) = tokio::fs::write(&file_path, &bytes).await {
+                                errors.push(format!("{}: {e}", file_path.display()));
+                            } else {
                                 let abs = std::fs::canonicalize(&file_path).unwrap_or(file_path.clone());
                                 exported_images.push(json!({
                                     "name": name,
@@ -101,7 +113,10 @@ pub(super) async fn figma_export_assets(bridge: BridgeHandle, args: Value) -> To
             }
 
             let out = json!({
-                "success": true,
+                "success": errors.is_empty(),
+                "errors": errors,
+                "pluginFailures": data.get("failures"),
+                "truncated": data.get("truncated"),
                 "sourceNode": data.get("sourceNodeName").unwrap_or(&json!("canvas")),
                 "totalIconsExported": exported_icons.len(),
                 "totalImagesExported": exported_images.len(),
@@ -115,6 +130,18 @@ pub(super) async fn figma_export_assets(bridge: BridgeHandle, args: Value) -> To
         }
         Err(e) => ToolResult::error(e),
     }
+}
+
+/// Adds the export lines an icon barrel is missing, keeping everything already in it.
+fn merge_barrel(mut barrel: String, lines: &[String]) -> String {
+    for line in lines {
+        if !barrel.lines().any(|existing| existing.trim() == line) {
+            if !barrel.is_empty() && !barrel.ends_with('\n') { barrel.push('\n'); }
+            barrel.push_str(line);
+            barrel.push('\n');
+        }
+    }
+    barrel
 }
 
 pub(super) async fn figma_verify_ui(bridge: BridgeHandle, args: Value) -> ToolResult {
@@ -595,6 +622,14 @@ pub(super) async fn figma_scaffold_project(bridge: BridgeHandle, args: Value) ->
 
 #[cfg(test)]
 mod scaffold_tests {
+    #[test]
+    fn icon_barrel_keeps_earlier_exports() {
+        let existing = "export { default as HomeIcon } from './home.svg';\nexport * from './custom';".to_string();
+        let lines = ["export { default as HomeIcon } from './home.svg';".to_string(), "export { default as _2faIcon } from './2fa.svg';".to_string()];
+        let merged = super::merge_barrel(existing, &lines);
+        assert_eq!(merged, "export { default as HomeIcon } from './home.svg';\nexport * from './custom';\nexport { default as _2faIcon } from './2fa.svg';\n");
+    }
+
     use super::scaffold_plan;
     use crate::mcp::component_matcher::{ComponentScanResult, DiscoveredComponent};
     use serde_json::json;

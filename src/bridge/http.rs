@@ -782,13 +782,31 @@ struct McpMessageQuery {
     session_id: Option<String>,
 }
 
+/// The stdio proxy resolves paths against the client's folder; an HTTP client's folder is
+/// unknown, so a relative path would silently land in the daemon's working directory.
+fn relative_path_error(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+    if req.method != "tools/call" { return None; }
+    let params = super::proxy::with_path_defaults(req.params.clone().unwrap_or_else(|| json!({})));
+    let relative: Vec<&str> = super::proxy::PATH_ARGS.into_iter()
+        .filter(|key| params["arguments"][*key].as_str().is_some_and(|p| std::path::Path::new(p).is_relative()))
+        .collect();
+    if relative.is_empty() { return None; }
+    let error = crate::mcp::protocol::ToolResult::error(format!(
+        "This client connects over HTTP, so the server cannot see its project folder. Pass absolute paths for: {}",
+        relative.join(", ")));
+    Some(JsonRpcResponse::success(req.id.clone(), serde_json::to_value(error).ok()?))
+}
+
 async fn handle_mcp_message(
     State(state): State<BridgeState>,
     Query(query): Query<McpMessageQuery>,
     Json(req): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
     let bridge = BridgeHandle::Direct(state.clone());
-    let resp = crate::mcp::server::handle_jsonrpc_request(bridge, req).await;
+    let resp = match relative_path_error(&req) {
+        Some(error) => Some(error),
+        None => crate::mcp::server::handle_jsonrpc_request(bridge, req).await,
+    };
 
     if let Some(resp) = resp {
         if let Some(ref sid) = query.session_id {
@@ -807,7 +825,10 @@ async fn handle_mcp_direct(
     Json(req): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
     let bridge = BridgeHandle::Direct(state.clone());
-    let resp = crate::mcp::server::handle_jsonrpc_request(bridge, req).await;
+    let resp = match relative_path_error(&req) {
+        Some(error) => Some(error),
+        None => crate::mcp::server::handle_jsonrpc_request(bridge, req).await,
+    };
 
     if let Some(resp) = resp {
         (StatusCode::OK, Json(serde_json::to_value(resp).unwrap_or(json!({})))).into_response()
@@ -1140,6 +1161,19 @@ mod contract_tests {
         assert_eq!(client.get(&url).header("host", "evil.test").send().await.unwrap().status(), 403);
         assert_eq!(client.get(format!("http://127.0.0.1:{port}/clear")).send().await.unwrap().status(), 405);
         server.abort();
+    }
+
+    #[test]
+    fn http_tool_calls_need_absolute_paths() {
+        let call = |args: Value| JsonRpcRequest { jsonrpc: "2.0".into(), id: Some(json!(1)), method: "tools/call".into(),
+            params: Some(json!({"name": "figma_prepare_design", "arguments": args})) };
+        let error = relative_path_error(&call(json!({}))).expect("default iconDir/projectDir are relative");
+        let text = error.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("iconDir") && text.contains("projectDir"), "{text}");
+        let root = std::env::temp_dir().to_string_lossy().into_owned();
+        assert!(relative_path_error(&call(json!({"iconDir": root, "projectDir": root}))).is_none());
+        let read = JsonRpcRequest { jsonrpc: "2.0".into(), id: None, method: "tools/call".into(), params: Some(json!({"name": "figma_read", "arguments": {}})) };
+        assert!(relative_path_error(&read).is_none());
     }
 
     #[test]

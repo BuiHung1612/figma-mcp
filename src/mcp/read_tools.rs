@@ -220,7 +220,7 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
                 }
             }
             if let Some(out_path) = output_path {
-                if ["export_image", "export_svg", "screenshot"].contains(&operation) {
+                if ["export_image", "export_node", "exportNode", "export_svg", "screenshot"].contains(&operation) {
                     match save_export_to_disk(out_path, &data, "png").await {
                         Ok(disk_res) => return ToolResult::text(serde_json::to_string(&disk_res).unwrap_or_default()),
                         Err(e) => return ToolResult::error(e),

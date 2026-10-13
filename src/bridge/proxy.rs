@@ -23,7 +23,11 @@ pub struct HttpProxy {
     pub client: Client,
 }
 
-fn resolve_tool_paths(mut params: Value, cwd: &std::path::Path) -> Value {
+/// Tool arguments that name a file or folder in the client's project.
+pub const PATH_ARGS: [&str; 4] = ["outputPath", "projectDir", "iconDir", "imageDir"];
+
+/// Fills the folder defaults the handler a call routes to would use, so callers can see every path.
+pub fn with_path_defaults(mut params: Value) -> Value {
     if params.get("arguments").is_none() { params["arguments"] = json!({}); }
     // Defaults follow the handler the call routes to; the public name is forwarded unchanged.
     let name = crate::mcp::tools::route(params["name"].as_str().unwrap_or(""), &mut params["arguments"].clone());
@@ -35,8 +39,15 @@ fn resolve_tool_paths(mut params: Value, cwd: &std::path::Path) -> Value {
         if matches!(name.as_str(), "figma_prepare_design" | "figma_match_components" | "figma_scaffold_project") {
             args.entry("projectDir").or_insert(json!("."));
         }
+    }
+    params
+}
+
+fn resolve_tool_paths(params: Value, cwd: &std::path::Path) -> Value {
+    let mut params = with_path_defaults(params);
+    if let Some(args) = params["arguments"].as_object_mut() {
         if let Some(icon_dir) = args.get("iconDir").cloned() { args.insert("_importIconDir".into(), icon_dir); }
-        for key in ["outputPath", "projectDir", "iconDir", "imageDir"] {
+        for key in PATH_ARGS {
             if let Some(path) = args.get(key).and_then(Value::as_str) {
                 if std::path::Path::new(path).is_relative() { args.insert(key.into(), json!(cwd.join(path).to_string_lossy())); }
             }

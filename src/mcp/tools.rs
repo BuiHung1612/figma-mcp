@@ -55,7 +55,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "format": { "type": "string", "enum": ["png", "jpg"], "description": "export_image format (default png)." },
                     "scale": { "type": "number", "description": "screenshot (default 1) / export_image (default 2) scale." },
                     "withAnnotations": { "type": "boolean", "description": "screenshot: numbered bounding-box overlays." },
-                    "outputPath": { "type": "string", "description": "Save exports or the full get_spec scope to this file; returns the path." },
+                    "outputPath": { "type": "string", "description": "Save exports or the full get_spec scope to this file; returns the path. Absolute path." },
                     "sessionId": { "type": "string", "description": "Target a specific Figma file/tab when multiple are connected. Omit to auto-select." }
                 },
                 "required": ["operation"]
@@ -101,21 +101,21 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "detail": {"type":"string","enum":["compact","full"],"description":"Default compact omits the duplicate colorPalette; full retains it."},
-                    "outputPath": {"type":"string","description":"Save the grounding pack and raw design nodes to JSON outside model context; return coverage, screenshot path and warnings only."},
+                    "outputPath": {"type":"string","description":"Save the grounding pack and raw design nodes to JSON outside model context; return coverage, screenshot path and warnings only. Absolute path."},
                     "nodeId": {
                         "type": "string",
                         "description": "Target Figma frame / screen node ID (omit to use active selection)."
                     },
                     "iconDir": {
                         "type": "string",
-                        "description": "Project directory where SVG icons should be exported (e.g. 'src/assets/icons' or 'assets/images'). Default: 'src/assets/icons'."
+                        "description": "Project directory where SVG icons should be exported (e.g. 'src/assets/icons' or 'assets/images'). Default: 'src/assets/icons'. Absolute path."
                     },
                     "only": {"type": "string", "enum": ["assets", "components"], "description": "Run one part only: assets export or codebase component matching."},
-                    "imageDir": {"type": "string", "description": "only=assets: directory for raster images (default 'public/images')."},
+                    "imageDir": {"type": "string", "description": "only=assets: directory for raster images (default 'public/images'). Absolute path."},
                     "createBarrel": {"type": "boolean", "description": "only=assets: write an index.ts barrel in iconDir (default true)."},
                     "projectDir": {
                         "type": "string",
-                        "description": "Base directory of your project for component discovery (default: '.')."
+                        "description": "Base directory of your project for component discovery (default: '.'). Absolute path."
                     },
                     "sessionId": {
                         "type": "string",
@@ -150,14 +150,14 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     },
                     "outputPath": {
                         "type": "string",
-                        "description": "Optional file path to save the generated component file directly into your codebase (e.g. 'src/components/Navbar.tsx')."
+                        "description": "Optional file path to save the generated component file directly into your codebase (e.g. 'src/components/Navbar.tsx'). Absolute path."
                     },
                     "target": {"type": "string", "enum": ["component", "tokens", "project"], "description": "component (default): one node to code. tokens: design tokens file. project: scaffold design system."},
                     "format": {"type": "string", "enum": ["css", "tailwind", "typescript", "w3c", "json"], "description": "target=tokens: output format (default css)."},
                     "collection": {"type": "string", "description": "target=tokens: filter by variable collection name."},
                     "mode": {"type": "string", "description": "target=tokens: one mode (e.g. Light, Dark); omit for all modes."},
                     "prefix": {"type": "string", "description": "target=tokens: CSS variable prefix."},
-                    "projectDir": {"type": "string", "description": "target=project: project root; other paths are relative to it (default '.')."},
+                    "projectDir": {"type": "string", "description": "target=project: project root; other paths are relative to it (default '.'). Absolute path."},
                     "componentDir": {"type": "string", "description": "target=project: component directory (default 'src/components/ui')."},
                     "stylesPath": {"type": "string", "description": "target=project: global CSS path (default 'src/styles/globals.css')."},
                     "tailwindConfigPath": {"type": "string", "description": "target=project: Tailwind config path (default 'tailwind.config.ts'; skipped for html unless given)."},

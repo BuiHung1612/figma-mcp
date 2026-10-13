@@ -15,11 +15,16 @@
 - Acks and replies still in flight on a replaced WebSocket were discarded on reconnect, losing results or running a write twice. They are processed, and the plugin runs each op id once.
 - An op whose caller disconnected stayed pending forever: the session never expired, `task=end` refused, and the write ran whenever the plugin reconnected. Cleanup now always runs; a failed `task=start` always releases its frame.
 - A WebSocket disconnect (sleep, plugin restart) deleted the session, its index and its tasks within about a minute instead of 30 minutes.
+- A `figma_write` script returning a cyclic or very deeply nested object overflowed the stack and killed the daemon. Such results now come back as an explanation; ordinary results are unchanged.
+- `figma_prepare_design only=assets` overwrote an existing `index.ts` barrel with this batch only; it now appends missing exports. Icon names starting with a digit produce valid identifiers.
+- `figma_prepare_design only=assets` reported `success: true` when folders or files could not be written; it now lists `errors`, plugin `failures` and `truncated`.
+- `figma_read export_node` ignored `outputPath` and returned the full base64.
 - `figma_status task=start|end` panicked when the session expired while waiting for the tab lock.
 - A panic anywhere in the daemon aborted the whole process (`panic = "abort"`), so the existing "Execution task panicked" handling never ran. Panics now stay in the failing request.
 - `figma_write` code that closed the async wrapper early (`})(); (() => {`) panicked the executor; its completion value is now returned.
 
 ### Changed
+- Over HTTP (`/mcp`, `/sse`, how setup configures every agent) the server cannot see the client's folder, so relative `outputPath`, `iconDir`, `imageDir` and `projectDir` (including their defaults) are rejected with a message asking for absolute paths. Before, they resolved against the daemon's working directory, which is `/` for the background service. Tool schemas say so.
 - Release binary 12.7 → 11.9 MB and 7.5 → 6.7 MB RSS (fat LTO, one codegen unit, trimmed tokio/tower-http features, unused `url` crate removed).
 - npm package no longer ships `scripts/` (test and bench files).
 - CI fails when the committed plugin bundle is stale.
