@@ -92,12 +92,11 @@ struct Args {
 }
 
 fn setup_thin_plugin(custom_dir: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
+    let app_dir = bridge::app_dir().ok_or("HOME is not set")?;
+    let token = bridge::load_or_create_plugin_token(&app_dir)?;
     let target_dir = match custom_dir {
         Some(d) => std::path::PathBuf::from(d),
-        None => std::path::PathBuf::from(home).join(".figma-rust-mcp").join("plugin"),
+        None => app_dir.join("plugin"),
     };
     std::fs::create_dir_all(&target_dir)?;
 
@@ -107,7 +106,7 @@ fn setup_thin_plugin(custom_dir: Option<&str>) -> Result<(), Box<dyn std::error:
 
     std::fs::write(&manifest_path, LOADER_MANIFEST)?;
     std::fs::write(&code_path, LOADER_CODE)?;
-    std::fs::write(&ui_path, LOADER_UI)?;
+    std::fs::write(&ui_path, LOADER_UI.replace("{{PAIRING_TOKEN}}", &token))?;
 
     println!();
     println!("\x1b[32m✓ Figma Rust MCP Dynamic Thin Plugin installed to:\x1b[0m");

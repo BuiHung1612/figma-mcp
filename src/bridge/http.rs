@@ -948,23 +948,40 @@ fn is_loopback_host(host: &str) -> bool {
     matches!(name.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1")
 }
 
-/// Browsers always send Origin on CORS/WebSocket requests; native MCP clients send none.
-/// "null" is the Figma plugin iframe.
-// ponytail: "null" is also what a sandboxed iframe on any site sends; a pairing token closes that.
-fn is_allowed_origin(origin: &str) -> bool {
-    if origin == "null" || origin == "https://www.figma.com" || origin == "https://figma.com" {
-        return true;
-    }
-    origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")).is_some_and(is_loopback_host)
+/// "null" is the Figma plugin iframe, but any site can send it from a sandboxed iframe,
+/// so plugin-origin requests must also carry the pairing token.
+fn is_plugin_origin(origin: &str) -> bool {
+    matches!(origin, "null" | "https://www.figma.com" | "https://figma.com")
 }
 
-async fn local_only(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+/// Browsers always send Origin on CORS/WebSocket requests; native MCP clients send none.
+fn is_allowed_origin(origin: &str) -> bool {
+    is_plugin_origin(origin)
+        || origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")).is_some_and(is_loopback_host)
+}
+
+/// Whether a request must prove it comes from the installed plugin loader.
+fn needs_plugin_token(path: &str, origin: Option<&str>) -> bool {
+    let public = path == "/health" || path.starts_with("/plugin/");
+    !public && (matches!(path, "/ws" | "/poll" | "/response") || origin.is_some_and(is_plugin_origin))
+}
+
+async fn local_only(
+    State(state): State<BridgeState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
     let headers = req.headers();
     let header = |name| headers.get(name).map(|v: &axum::http::HeaderValue| v.to_str().unwrap_or(""));
-    let foreign = header(axum::http::header::HOST).is_some_and(|h| !is_loopback_host(h))
-        || header(axum::http::header::ORIGIN).is_some_and(|o| !is_allowed_origin(o));
-    if foreign {
+    let origin = header(axum::http::header::ORIGIN);
+    if header(axum::http::header::HOST).is_some_and(|h| !is_loopback_host(h)) || origin.is_some_and(|o| !is_allowed_origin(o)) {
         return (StatusCode::FORBIDDEN, "figma-rust-mcp only accepts local requests").into_response();
+    }
+    if needs_plugin_token(req.uri().path(), origin) {
+        let token = req.uri().query().unwrap_or("").split('&').find_map(|pair| pair.strip_prefix("token="));
+        if token != Some(&*state.plugin_token) {
+            return (StatusCode::UNAUTHORIZED, "Figma plugin is not paired with this server. Run `npx -y figma-rust-mcp@latest --setup-plugin`, then restart the plugin.").into_response();
+        }
     }
     next.run(req).await
 }
@@ -997,7 +1014,7 @@ pub fn create_router(state: BridgeState) -> Router {
         // Large design trees arrive through /response; axum's 2MB default would 413 them.
         .layer(axum::extract::DefaultBodyLimit::max(64 << 20))
         .layer(cors)
-        .layer(axum::middleware::from_fn(local_only))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), local_only))
         .with_state(state)
 }
 
@@ -1134,15 +1151,26 @@ mod contract_tests {
         for host in ["evil.test:41730", "127.0.0.1.evil.test", "localhost.evil.test:41730"] { assert!(!is_loopback_host(host), "{host}"); }
         for origin in ["null", "https://www.figma.com", "http://localhost:6274", "http://127.0.0.1:41730"] { assert!(is_allowed_origin(origin), "{origin}"); }
         for origin in ["https://evil.test", "http://localhost.evil.test", "https://figma.com.evil.test"] { assert!(!is_allowed_origin(origin), "{origin}"); }
+        assert!(needs_plugin_token("/poll", None) && needs_plugin_token("/mcp", Some("null")));
+        assert!(!needs_plugin_token("/mcp", None) && !needs_plugin_token("/plugin/code.js", Some("null")) && !needs_plugin_token("/health", Some("null")));
     }
 
     #[tokio::test]
     async fn middleware_blocks_foreign_origin_and_rebound_host() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(async move { axum::serve(listener, create_router(BridgeState::new(port))).await.unwrap(); });
+        let state = BridgeState::new(port);
+        let token = state.plugin_token.clone();
+        let server = tokio::spawn(async move { axum::serve(listener, create_router(state)).await.unwrap(); });
         let client = reqwest::Client::new();
-        let url = format!("http://127.0.0.1:{port}/health");
+        let base = format!("http://127.0.0.1:{port}");
+        let sessions = format!("{base}/sessions");
+        assert_eq!(client.get(&sessions).header("origin", "null").send().await.unwrap().status(), 401);
+        assert_eq!(client.get(format!("{sessions}?token=wrong")).header("origin", "null").send().await.unwrap().status(), 401);
+        assert_eq!(client.get(format!("{sessions}?token={token}")).header("origin", "null").send().await.unwrap().status(), 200);
+        assert_eq!(client.get(format!("{base}/poll")).send().await.unwrap().status(), 401);
+        assert_eq!(client.get(&sessions).send().await.unwrap().status(), 200);
+        let url = format!("{base}/health");
         assert_eq!(client.get(&url).send().await.unwrap().status(), 200);
         assert_eq!(client.get(&url).header("origin", "null").send().await.unwrap().status(), 200);
         assert_eq!(client.get(&url).header("origin", "https://evil.test").send().await.unwrap().status(), 403);

@@ -180,6 +180,7 @@
 
         // 3. Inject full UI cleanly; the runtime reads the port from here (globals survive document.open).
         window.__FIGMA_MCP_PORT = port;
+        window.__FIGMA_MCP_TOKEN = "{{PAIRING_TOKEN}}"; // written by --setup-plugin from ~/.figma-rust-mcp/plugin-token
         document.open();
         document.write(uiHtml);
         document.close();

@@ -250,6 +250,25 @@ mod read_cache_tests {
     }
 }
 
+/// `~/.figma-rust-mcp`, shared with the npm CLI (`os.homedir()`).
+pub fn app_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|home| std::path::PathBuf::from(home).join(".figma-rust-mcp"))
+}
+
+/// Secret the installed plugin loader carries; a web page can fake `Origin: null` but cannot read this file.
+pub fn load_or_create_plugin_token(dir: &std::path::Path) -> std::io::Result<String> {
+    let path = dir.join("plugin-token");
+    if let Ok(token) = std::fs::read_to_string(&path) {
+        if token.trim().len() >= 32 { return Ok(token.trim().to_string()); }
+    }
+    std::fs::create_dir_all(dir)?;
+    let token = Uuid::new_v4().simple().to_string();
+    std::fs::write(&path, &token)?;
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?; }
+    Ok(token)
+}
+
 /// Where tool usage counts persist across daemon restarts; unset in tests.
 pub static USAGE_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
@@ -302,6 +321,7 @@ pub struct TaskBinding {
 pub struct BridgeState {
     pub inner: Arc<Mutex<BridgeInner>>,
     pub task_scope: Option<TaskBinding>,
+    pub plugin_token: Arc<str>,
 }
 
 impl BridgeState {
@@ -318,6 +338,7 @@ impl BridgeState {
                 last_cleanup_at: 0,
             })),
             task_scope: None,
+            plugin_token: Uuid::new_v4().simple().to_string().into(),
         }
     }
 

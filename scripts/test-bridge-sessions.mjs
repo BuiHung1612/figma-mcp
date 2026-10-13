@@ -11,6 +11,8 @@ import vm from 'node:vm';
 // Spawned servers persist tool usage under HOME; keep the user's real file untouched.
 process.env.HOME = process.env.USERPROFILE = mkdtempSync(join(tmpdir(), 'figma-mcp-test-'));
 
+// The server writes the pairing token under HOME on start; the installed plugin loader carries it.
+const pluginToken = () => readFileSync(join(process.env.HOME, '.figma-rust-mcp', 'plugin-token'), 'utf8').trim();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) {
@@ -35,6 +37,8 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   t.after(() => { for (const socket of sockets) socket.close(); for (const process of processes) process.kill(); });
   const base = `http://127.0.0.1:${port}`;
   await until(async () => { try { return (await fetch(`${base}/health`)).ok; } catch { assert.equal(server.exitCode, null, stderr); return false; } });
+  const token = pluginToken();
+  assert.equal((await fetch(`${base}/poll`)).status, 401, 'plugin endpoints require the pairing token');
   let rpcId = 0;
   async function rpc(name, args) {
     const response = await fetch(`${base}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -78,7 +82,7 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
       };
       state.tail = Promise.resolve();
     }
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=${sid}&fileName=SameFile&documentId=same-document`);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}&sessionId=${sid}&fileName=SameFile&documentId=same-document`);
     sockets.push(socket); state.socket = socket; latest.set(sid, state);
     socket.addEventListener('message', event => {
       const message = JSON.parse(event.data);
@@ -149,7 +153,7 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   const routed = rpc('figma_read', { operation: 'get_design', nodeId: 'frame-a', sessionId: 'tab-a' });
   const waiting = await tabA.ignored.promise;
   tabB.socket.send(JSON.stringify({ id: waiting.id, success: true, data: { hijacked: true } }));
-  const wrongHttp = await fetch(`${base}/response`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: waiting.id, sessionId: 'tab-b', success: true, data: { hijacked: true } }) });
+  const wrongHttp = await fetch(`${base}/response?token=${token}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: waiting.id, sessionId: 'tab-b', success: true, data: { hijacked: true } }) });
   assert.equal((await wrongHttp.json()).ok, false);
   tabA.socket.send(JSON.stringify({ id: waiting.id, sessionId: 'tab-a', success: true, data: { id: 'frame-a', tab: 'tab-a' } }));
   assert.equal(decode(ok(await routed)).tab, 'tab-a');
@@ -187,7 +191,7 @@ test('index sync travels from plugin through UI to bridge and returns a matching
   runtime.handlers.get_styles = async () => ({});
   runtime.handlers.get_variables = async () => ({});
   const html = readFileSync('plugin-runtime/ui.html', 'utf8');
-  Object.assign(ui, { WebSocket, BRIDGE: base, sessionId: 'sync-test', fileName: 'Sync test', documentId: 'sync-doc',
+  Object.assign(ui, { WebSocket, BRIDGE: base, TOKEN_QS: `token=${pluginToken()}`, sessionId: 'sync-test', fileName: 'Sync test', documentId: 'sync-doc',
     uiDisposed: false, wsConnected: false, everConnected: false, retryTimer: null, polling: false, consecutiveErrors: 0,
     currentPort: port, window: {}, READ_OPS: [], setInterval: () => 1, clearInterval() {},
     sendRuntimeCapabilities() {}, setStatus() {}, updateRuntimeVersion() {}, startLongPoll() {},

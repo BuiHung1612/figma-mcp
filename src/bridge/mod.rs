@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
 pub use proxy::HttpProxy;
-pub use server::{BridgeState, DEFAULT_PORT, PORT_RANGE};
+pub use server::{app_dir, load_or_create_plugin_token, BridgeState, DEFAULT_PORT, PORT_RANGE};
 pub use session::SessionInfo;
 
 #[derive(Clone)]
@@ -197,7 +197,7 @@ pub async fn connect_or_start(base: u16) -> Result<BridgeStart, String> {
 }
 
 async fn bind_bridge_server(port: u16) -> Result<BridgeState, String> {
-    let addr_v4 = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr_v4 = SocketAddr::from(([127, 0, 0, 1], port)); // loopback only: the bridge has no auth for native clients
     let addr_v6 = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port));
     let listener_v4 = TcpListener::bind(addr_v4).await.map_err(|e| e.to_string())?;
     // `localhost` may resolve to ::1 first; if another process holds it there, the
@@ -208,10 +208,13 @@ async fn bind_bridge_server(port: u16) -> Result<BridgeState, String> {
         Err(_) => None, // IPv6 unavailable on this machine
     };
     bench::mark_ready();
-    let state = BridgeState::new(port);
+    let mut state = BridgeState::new(port);
     // Tests must not read or overwrite the user's real usage file.
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|_| !cfg!(test)) {
-        let dir = std::path::PathBuf::from(home).join(".figma-rust-mcp");
+    if let Some(dir) = server::app_dir().filter(|_| !cfg!(test)) {
+        match server::load_or_create_plugin_token(&dir) {
+            Ok(token) => state.plugin_token = token.into(),
+            Err(e) => eprintln!("[figma-rust-mcp bridge] Cannot store plugin token in {}: {e}", dir.display()),
+        }
         if std::fs::create_dir_all(&dir).is_ok() && server::USAGE_PATH.set(dir.join("usage.json")).is_ok() {
             state.inner.lock().await.tool_timings = server::load_usage();
         }

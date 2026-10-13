@@ -848,6 +848,7 @@
     };
     var currentPort = window.__FIGMA_MCP_PORT || 41730; // set by the thin loader; 41730-41739 must match the server range
     var BRIDGE  = "http://localhost:" + currentPort;
+    var TOKEN_QS = "token=" + encodeURIComponent(window.__FIGMA_MCP_TOKEN || ""); // pairing token from the thin loader
     var POLL_MS = 300;
     var POLL_MAX_MS = 3000;
     var LONG_POLL_TIMEOUT = 12000;
@@ -975,7 +976,7 @@
       btn.disabled = true;
       btn.textContent = "Running…";
       try {
-        var res = await fetch(BRIDGE + "/benchmark", { method: "POST", signal: AbortSignal.timeout(30000) });
+        var res = await fetch(BRIDGE + "/benchmark?" + TOKEN_QS, { method: "POST", signal: AbortSignal.timeout(30000) });
         if (!res.ok) throw new Error("HTTP " + res.status + " (server older than v4.1?)");
         var r = await res.json();
         var rows = [
@@ -1008,7 +1009,7 @@
     async function loadUsage() {
       var out = document.getElementById("usage-results");
       try {
-        var res = await fetch(BRIDGE + "/usage", { signal: AbortSignal.timeout(2000) });
+        var res = await fetch(BRIDGE + "/usage?" + TOKEN_QS, { signal: AbortSignal.timeout(2000) });
         if (!res.ok) throw new Error("HTTP " + res.status + " (server older than v7?)");
         var r = await res.json();
         out.innerHTML = "";
@@ -1599,11 +1600,11 @@
 
       var wsHost = BRIDGE.replace(/^http:\/\//, "ws://");
       var wsUrl = wsHost + "/ws";
-      var qs = [];
+      var qs = [TOKEN_QS];
       if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
       if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
       if (documentId) qs.push("documentId=" + encodeURIComponent(documentId));
-      if (qs.length) wsUrl += "?" + qs.join("&");
+      wsUrl += "?" + qs.join("&");
 
       try {
         ws = new WebSocket(wsUrl);
@@ -1737,7 +1738,7 @@
           try {
             var pollSid = sessionId;
             var pollUrl = BRIDGE + "/poll";
-            var qs = [];
+            var qs = [TOKEN_QS];
             if (sessionId) qs.push("sessionId=" + encodeURIComponent(sessionId));
             if (fileName) qs.push("fileName=" + encodeURIComponent(fileName));
       if (documentId) qs.push("documentId=" + encodeURIComponent(documentId));
@@ -1761,6 +1762,13 @@
               }
             }
 
+            if (res.status === 401) {
+              setStatus("red", "Not paired");
+              if (consecutiveErrors === 0) log(await res.text(), "err");
+              consecutiveErrors++;
+              await sleep(POLL_MAX_MS);
+              continue;
+            }
             if (!res.ok) {
               setStatus("yellow", "Busy");
               consecutiveErrors++;
@@ -1825,7 +1833,7 @@
       }
 
       try {
-        var res = await fetch(BRIDGE + "/response", {
+        var res = await fetch(BRIDGE + "/response?" + TOKEN_QS, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: body

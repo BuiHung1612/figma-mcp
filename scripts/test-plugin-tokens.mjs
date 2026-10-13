@@ -635,7 +635,7 @@ test('a runtime hash change hot-reloads once, not on every later server-hello', 
     close() {} send() {}
   }
   const r = vm.createContext({
-    uiDisposed: false, ws: null, wsConnected: false, sessionId: 'tab-a', fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730',
+    uiDisposed: false, ws: null, wsConnected: false, sessionId: 'tab-a', fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730', TOKEN_QS: 'token=test',
     WebSocket: Socket, setInterval: () => 1, clearInterval: () => {}, setTimeout: () => { reloads++; return 1; }, clearTimeout: () => {},
     sendRuntimeCapabilities: () => {}, consecutiveErrors: 0, everConnected: false, retryTimer: null, polling: true,
     setStatus: () => {}, log: () => {}, currentPort: 41730, READ_OPS: [], updateRuntimeVersion: () => {},
@@ -660,7 +660,7 @@ test('old UI socket callbacks cannot clear or dispatch through a replacement soc
     close() {} send() {}
   }
   const r = vm.createContext({
-    uiDisposed: false, ws: null, wsConnected: false, sessionId: null, fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730',
+    uiDisposed: false, ws: null, wsConnected: false, sessionId: null, fileName: 'File', documentId: 'doc', BRIDGE: 'http://localhost:41730', TOKEN_QS: 'token=test',
     WebSocket: Socket, setInterval: () => 1, clearInterval: () => {}, setTimeout: () => 1, clearTimeout: () => {},
     sendRuntimeCapabilities: () => {}, consecutiveErrors: 0, everConnected: false, retryTimer: null, polling: true,
     setStatus: () => {}, log: () => {}, currentPort: 41730, READ_OPS: [],

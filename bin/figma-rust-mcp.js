@@ -8,7 +8,7 @@
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import https from 'node:https';
@@ -516,6 +516,19 @@ function isServiceInstalled() {
   return false;
 }
 
+/** Same file and format as load_or_create_plugin_token in src/bridge/server.rs. */
+function pluginToken() {
+  const tokenPath = path.join(os.homedir(), '.figma-rust-mcp', 'plugin-token');
+  try {
+    const token = fs.readFileSync(tokenPath, 'utf8').trim();
+    if (token.length >= 32) return token;
+  } catch (_) {}
+  const token = randomBytes(16).toString('hex');
+  fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+  fs.writeFileSync(tokenPath, token, { mode: 0o600 });
+  return token;
+}
+
 function setupPlugin(customDir) {
   const pluginDir = customDir || path.join(os.homedir(), '.figma-rust-mcp', 'plugin');
   const sourcePluginDir = path.resolve(__dirname, '../plugin');
@@ -526,9 +539,8 @@ function setupPlugin(customDir) {
   for (const f of files) {
     const src = path.join(sourcePluginDir, f);
     const dest = path.join(pluginDir, f);
-    if (fs.existsSync(src)) {
-      fs.copyFileSync(src, dest);
-    }
+    if (f === 'ui.html') fs.writeFileSync(dest, fs.readFileSync(src, 'utf8').replace('{{PAIRING_TOKEN}}', pluginToken()));
+    else if (fs.existsSync(src)) fs.copyFileSync(src, dest);
   }
 
   const manifestPath = path.join(pluginDir, 'manifest.json');

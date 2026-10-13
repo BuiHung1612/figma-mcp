@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Security
+- The bridge listened on `0.0.0.0`, so any machine on the same network could drive Figma through `/mcp` and `/exec`. It now binds `127.0.0.1` and `::1` only.
+- Plugin pairing: setup writes a secret to `~/.figma-rust-mcp/plugin-token` and into the installed plugin loader. `/ws`, `/poll`, `/response` and any request from the plugin origin (`null`, which any site can also send from a sandboxed iframe) must carry it. Native MCP clients are unaffected. An already installed loader is refreshed by `--upgrade`/`--init`; one imported from elsewhere shows **Not paired** until `npx -y figma-rust-mcp@latest --setup-plugin` is run.
 - The bridge rejects requests whose `Host` is not loopback (DNS rebinding) and browser requests from origins other than the Figma plugin, `figma.com` and `localhost`. `/clear` is POST-only.
 - The prebuilt binary is verified against the release's `SHA256SUMS.txt`; the fallback to the `latest` release (possibly another major) is removed.
 
