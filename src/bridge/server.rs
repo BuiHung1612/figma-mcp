@@ -252,7 +252,9 @@ mod read_cache_tests {
 
 /// `~/.figma-rust-mcp`, shared with the npm CLI (`os.homedir()`).
 pub fn app_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|home| std::path::PathBuf::from(home).join(".figma-rust-mcp"))
+    // Node's os.homedir() reads USERPROFILE on Windows even when HOME is set (MSYS, Cygwin).
+    let (first, second) = if cfg!(windows) { ("USERPROFILE", "HOME") } else { ("HOME", "USERPROFILE") };
+    std::env::var_os(first).or_else(|| std::env::var_os(second)).map(|home| std::path::PathBuf::from(home).join(".figma-rust-mcp"))
 }
 
 /// Secret the installed plugin loader carries; a web page can fake `Origin: null` but cannot read this file.
