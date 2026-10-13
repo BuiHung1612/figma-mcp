@@ -128,6 +128,12 @@ test('multiple tabs, reconnect ownership and independent frame tasks across MCP 
   ok(await rpc('figma_write', { taskId: taskC.taskId, code: 'await figma.modify({id:"child-c",note:"other-tab"});' }));
   assert.deepEqual(actions, ['paused', 'other-tab']);
   resume.resolve(); ok(await writeA); ok(await writeB);
+  // Scripts run in a worker process: a result comes back, and one that exhausts memory fails alone.
+  const value = ok(await rpc('figma_write', { taskId: taskC.taskId, code: 'console.log("hi"); return { tab: (await figma.status()).tab };' }));
+  assert.match(value.content[0].text, /"tab":"tab-b"/); assert.match(value.content[0].text, /hi/);
+  const oom = await rpc('figma_write', { taskId: taskC.taskId, code: 'let s = "x"; while (true) s += s;' });
+  assert.equal(oom.isError, true); assert.match(oom.content[0].text, /out of memory/);
+  assert.equal(server.exitCode, null, 'the daemon survives a script that runs out of memory');
   assert.deepEqual(actions, ['paused', 'other-tab', 'second', 'other-task']);
   const returned = ok(await first('figma_write', { taskId: taskA.taskId,
     code: 'await figma.modify({id:"child-a",note:"settled"}); return "done";' }));

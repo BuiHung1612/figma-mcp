@@ -6,7 +6,7 @@ authors = ["BuiHung1612"]
 description = "High-performance Rust MCP bridge for Figma"
 
 [dependencies]
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "io-std", "sync", "time", "signal"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "io-std", "sync", "time", "signal", "process"] }
 axum = { version = "0.7", features = ["json", "macros", "ws"] }
 tower-http = { version = "0.5", features = ["cors"] }
 serde = { version = "1.0", features = ["derive"] }

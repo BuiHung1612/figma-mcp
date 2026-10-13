@@ -15,40 +15,39 @@ use boa_engine::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::RefCell;
-use std::sync::mpsc::{channel as sync_channel, Sender as SyncSender};
-use std::sync::Arc;
+use std::io::{BufRead, Write};
+use std::sync::{Arc, Mutex, OnceLock};
 
-/// Per-loop iteration cap so a runaway `while (true) {}` errors out instead of pinning a blocking thread forever.
+/// Per-loop iteration cap so a runaway `while (true) {}` errors out early.
 pub const LOOP_ITERATION_LIMIT: u64 = 1_000_000;
 /// Wall-clock cap for one figma_write script, including bridge round-trips.
 pub const SCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+/// Heap cap for the script worker process (see `crate::CappedAlloc`).
+pub const WORKER_MEMORY_BYTES: usize = 1 << 30;
 const MAX_LOG_LINES: usize = 200;
 const MAX_LOG_BYTES: usize = 16 << 10;
 
-pub enum HostRequest {
-    Op {
-        operation: String,
-        params: Value,
-        resp: SyncSender<Result<Value, String>>,
-    },
-    Icon {
-        name: String,
-        opts: Value,
-        resp: SyncSender<Result<Value, String>>,
-    },
-    Image {
-        url: String,
-        opts: Value,
-        resp: SyncSender<Result<Value, String>>,
-    },
-    Log {
-        level: String,
-        msg: String,
-    },
+/// A call from the script to the host. Crosses the worker's stdin/stdout as one JSON line.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "call", rename_all = "lowercase")]
+pub enum HostCall {
+    Op { operation: String, params: Value },
+    Icon { name: String, opts: Value },
+    Image { url: String, opts: Value },
+    Log { level: String, msg: String },
 }
 
+type Host = Box<dyn Fn(HostCall) -> Result<Value, String>>;
+
 thread_local! {
-    static HOST_TX: RefCell<Option<tokio::sync::mpsc::UnboundedSender<HostRequest>>> = const { RefCell::new(None) };
+    static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
+}
+
+fn call_host(call: HostCall) -> Result<Value, String> {
+    HOST.with(|cell| match cell.borrow().as_ref() {
+        Some(host) => host(call),
+        None => Err("Host channel closed".to_string()),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,7 +58,14 @@ pub struct ExecResult {
     pub logs: Vec<String>,
 }
 
-use std::sync::OnceLock;
+type ScriptOutcome = (bool, Option<Value>, Option<String>);
+
+#[derive(Default)]
+struct Logs {
+    lines: Vec<String>,
+    bytes: usize,
+    dropped: usize,
+}
 
 // Shared HTTP client — reused across all execute_code calls so connection
 // pooling is preserved and TLS handshakes are not repeated per call.
@@ -104,230 +110,239 @@ fn js_to_json(value: &JsValue, context: &mut Context) -> Result<Option<Value>, S
     }
 }
 
+/// Runs one host call from a script: bridge ops, icon/image downloads, logs.
+async fn handle_host(call: HostCall, bridge: &BridgeHandle, sid: Option<&str>, logs: &Mutex<Logs>) -> Result<Value, String> {
+    let http_client = http_client();
+    match call {
+        HostCall::Op { operation, params } => bridge.send_operation(&operation, params, sid).await,
+        HostCall::Icon { name, opts } => {
+            let size = opts.get("size").and_then(|v| v.as_f64()).unwrap_or(24.0);
+            let fill = opts.get("fill").and_then(|v| v.as_str()).unwrap_or("#1E3150").to_string();
+            let svg = fetch_svg_icon(http_client, &name, size, &fill).await?;
+            let mut create_params = json!({
+                "type": "SVG",
+                "name": opts.get("name").and_then(|v| v.as_str()).unwrap_or(&format!("icon/{}", name)),
+                "width": size,
+                "height": size,
+                "svg": svg,
+                "fill": fill,
+            });
+            if let Some(pid) = opts.get("parentId") { create_params["parentId"] = pid.clone(); }
+            if let Some(x) = opts.get("x") { create_params["x"] = x.clone(); }
+            if let Some(y) = opts.get("y") { create_params["y"] = y.clone(); }
+            bridge.send_operation("create", create_params, sid).await
+        }
+        HostCall::Image { url, opts } => {
+            let bytes = match http_client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => assets::read_capped(r, assets::MAX_IMAGE_BYTES).await
+                    .map_err(|e| format!("Failed to read image bytes: {}", e))?,
+                Ok(r) => return Err(format!("Image download failed with HTTP {}", r.status())),
+                Err(e) => return Err(format!("Failed to fetch image: {}", e)),
+            };
+            let mut create_params = json!({
+                "type": "IMAGE",
+                "name": opts.get("name").and_then(|v| v.as_str()).unwrap_or("image"),
+                "width": opts.get("width").and_then(|v| v.as_f64()).unwrap_or(100.0),
+                "height": opts.get("height").and_then(|v| v.as_f64()).unwrap_or(100.0),
+                "imageData": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                "scaleMode": opts.get("scaleMode").and_then(|v| v.as_str()).unwrap_or("FILL"),
+            });
+            if let Some(pid) = opts.get("parentId") { create_params["parentId"] = pid.clone(); }
+            if let Some(x) = opts.get("x") { create_params["x"] = x.clone(); }
+            if let Some(y) = opts.get("y") { create_params["y"] = y.clone(); }
+            if let Some(cr) = opts.get("cornerRadius") { create_params["cornerRadius"] = cr.clone(); }
+            bridge.send_operation("create", create_params, sid).await
+        }
+        HostCall::Log { level, msg } => {
+            let line = match level.as_str() {
+                "error" | "warn" | "info" => format!("[{}] {}", level, msg),
+                _ => msg,
+            };
+            let mut logs = logs.lock().unwrap_or_else(|e| e.into_inner());
+            if logs.lines.len() < MAX_LOG_LINES && logs.bytes + line.len() <= MAX_LOG_BYTES {
+                logs.bytes += line.len();
+                logs.lines.push(line);
+            } else {
+                logs.dropped += 1;
+            }
+            Ok(Value::Null)
+        }
+    }
+}
+
 pub async fn execute_code(
     code: &str,
     bridge: BridgeHandle,
     session_id: Option<String>,
 ) -> ExecResult {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostRequest>();
-    let code_owned = code.to_string();
-
-    let logs = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let logs_collector = logs.clone();
-
-    // Spawn async handler for host requests
-    let bridge_clone = bridge.clone();
-    let sid_clone = session_id.clone();
-    let http_client = http_client();
-
-    let host_handler = tokio::spawn(async move {
-        let (mut log_bytes, mut dropped_logs) = (0usize, 0usize);
-        while let Some(req) = rx.recv().await {
-            match req {
-                HostRequest::Op { operation, params, resp } => {
-                    let res = bridge_clone.send_operation(&operation, params, sid_clone.as_deref()).await;
-                    let _ = resp.send(res);
-                }
-                HostRequest::Icon { name, opts, resp } => {
-                    let size = opts.get("size").and_then(|v| v.as_f64()).unwrap_or(24.0);
-                    let fill = opts.get("fill").and_then(|v| v.as_str()).unwrap_or("#1E3150").to_string();
-
-                    let res = match fetch_svg_icon(http_client, &name, size, &fill).await {
-                        Ok(svg) => {
-                            let mut create_params = json!({
-                                "type": "SVG",
-                                "name": opts.get("name").and_then(|v| v.as_str()).unwrap_or(&format!("icon/{}", name)),
-                                "width": size,
-                                "height": size,
-                                "svg": svg,
-                                "fill": fill,
-                            });
-                            if let Some(pid) = opts.get("parentId") { create_params["parentId"] = pid.clone(); }
-                            if let Some(x) = opts.get("x") { create_params["x"] = x.clone(); }
-                            if let Some(y) = opts.get("y") { create_params["y"] = y.clone(); }
-                            bridge_clone.send_operation("create", create_params, sid_clone.as_deref()).await
-                        }
-                        Err(e) => Err(e),
-                    };
-                    let _ = resp.send(res);
-                }
-                HostRequest::Image { url, opts, resp } => {
-                    let res = match http_client.get(&url).send().await {
-                        Ok(r) if r.status().is_success() => match assets::read_capped(r, assets::MAX_IMAGE_BYTES).await {
-                            Ok(bytes) => {
-                                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                let mut create_params = json!({
-                                    "type": "IMAGE",
-                                    "name": opts.get("name").and_then(|v| v.as_str()).unwrap_or("image"),
-                                    "width": opts.get("width").and_then(|v| v.as_f64()).unwrap_or(100.0),
-                                    "height": opts.get("height").and_then(|v| v.as_f64()).unwrap_or(100.0),
-                                    "imageData": b64,
-                                    "scaleMode": opts.get("scaleMode").and_then(|v| v.as_str()).unwrap_or("FILL"),
-                                });
-                                if let Some(pid) = opts.get("parentId") { create_params["parentId"] = pid.clone(); }
-                                if let Some(x) = opts.get("x") { create_params["x"] = x.clone(); }
-                                if let Some(y) = opts.get("y") { create_params["y"] = y.clone(); }
-                                if let Some(cr) = opts.get("cornerRadius") { create_params["cornerRadius"] = cr.clone(); }
-                                bridge_clone.send_operation("create", create_params, sid_clone.as_deref()).await
-                            }
-                            Err(e) => Err(format!("Failed to read image bytes: {}", e)),
-                        },
-                        Ok(r) => Err(format!("Image download failed with HTTP {}", r.status())),
-                        Err(e) => Err(format!("Failed to fetch image: {}", e)),
-                    };
-                    let _ = resp.send(res);
-                }
-                HostRequest::Log { level, msg } => {
-                    let line = match level.as_str() {
-                        "error" => format!("[error] {}", msg),
-                        "warn" => format!("[warn] {}", msg),
-                        "info" => format!("[info] {}", msg),
-                        _ => msg,
-                    };
-                    if let Ok(mut l) = logs_collector.lock() {
-                        if l.len() < MAX_LOG_LINES && log_bytes + line.len() <= MAX_LOG_BYTES {
-                            log_bytes += line.len();
-                            l.push(line);
-                        } else {
-                            dropped_logs += 1;
-                        }
-                    }
-                }
+    let logs = Arc::new(Mutex::new(Logs::default()));
+    let run = async {
+        // Unit tests run in-process: the test binary cannot act as the worker.
+        if !cfg!(test) {
+            if let Some(child) = spawn_worker() {
+                return run_in_worker(child, code, &bridge, session_id.as_deref(), &logs).await;
             }
         }
-        if dropped_logs > 0 {
-            if let Ok(mut l) = logs_collector.lock() { l.push(format!("…{dropped_logs} more lines")); }
+        run_in_process(code.to_string(), bridge.clone(), session_id.clone(), logs.clone()).await
+    };
+    // Dropping a timed-out worker kills it (kill_on_drop), so a runaway script stops using CPU.
+    let (success, result, error) = tokio::time::timeout(SCRIPT_DEADLINE, run).await
+        .unwrap_or_else(|_| (false, None, Some(format!("Script exceeded the {}s deadline", SCRIPT_DEADLINE.as_secs()))));
+
+    let logs = std::mem::take(&mut *logs.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut lines = logs.lines;
+    if logs.dropped > 0 { lines.push(format!("…{} more lines", logs.dropped)); }
+    ExecResult { success, result, error, logs: lines }
+}
+
+/// Scripts run in a child process so one that exhausts memory, overflows the stack or
+/// outlives the deadline takes down only itself, never the daemon.
+fn spawn_worker() -> Option<tokio::process::Child> {
+    let exe = std::env::current_exe().ok()?;
+    let mut command = tokio::process::Command::new(exe);
+    command.arg("--script-worker")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the daemon has no console to share
+    command.spawn().ok()
+}
+
+async fn run_in_worker(mut child: tokio::process::Child, code: &str, bridge: &BridgeHandle, sid: Option<&str>, logs: &Mutex<Logs>) -> ScriptOutcome {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    let (Some(mut stdin), Some(stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
+        return (false, None, Some("Script worker has no stdio".into()));
+    };
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let send = |value: Value| format!("{value}\n");
+    if stdin.write_all(send(json!({"code": code})).as_bytes()).await.is_err() {
+        return (false, None, Some("Script worker did not start".into()));
+    }
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+        if let Some(done) = message.get("done") {
+            return (done["success"].as_bool().unwrap_or(false), done.get("result").filter(|v| !v.is_null()).cloned(), done["error"].as_str().map(str::to_owned));
+        }
+        let Ok(call) = serde_json::from_value::<HostCall>(message) else { continue };
+        let is_log = matches!(call, HostCall::Log { .. });
+        let reply = match handle_host(call, bridge, sid, logs).await {
+            Ok(value) => json!({"ok": value}),
+            Err(error) => json!({"err": error}),
+        };
+        if !is_log && stdin.write_all(send(reply).as_bytes()).await.is_err() { break; }
+    }
+    // The worker ended without a result: it crashed. Its stderr says why.
+    let mut detail = String::new();
+    let _ = (&mut stderr).take(4096).read_to_string(&mut detail).await;
+    let reason = if detail.contains("memory allocation") {
+        format!("Script ran out of memory ({} MB limit)", WORKER_MEMORY_BYTES >> 20)
+    } else if detail.contains("overflow") {
+        "Script overflowed the stack (too deep recursion or nesting)".to_string()
+    } else {
+        format!("Script worker crashed: {}", detail.trim())
+    };
+    (false, None, Some(reason))
+}
+
+async fn run_in_process(code: String, bridge: BridgeHandle, sid: Option<String>, logs: Arc<Mutex<Logs>>) -> ScriptOutcome {
+    type Request = (HostCall, std::sync::mpsc::Sender<Result<Value, String>>);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+    let handler = tokio::spawn(async move {
+        while let Some((call, resp)) = rx.recv().await {
+            let _ = resp.send(handle_host(call, &bridge, sid.as_deref(), &logs).await);
         }
     });
+    let outcome = tokio::task::spawn_blocking(move || {
+        run_script(&code, Box::new(move |call| {
+            let (resp_tx, resp_rx) = std::sync::mpsc::channel();
+            tx.send((call, resp_tx)).map_err(|_| "Host channel closed".to_string())?;
+            resp_rx.recv().map_err(|_| "Bridge request cancelled".to_string())?
+        }))
+    }).await.unwrap_or_else(|e| (false, None, Some(format!("Execution task panicked: {}", e))));
+    let _ = handler.await;
+    outcome
+}
 
-    let eval_task = tokio::task::spawn_blocking(move || {
-        HOST_TX.with(|cell| {
-            *cell.borrow_mut() = Some(tx);
-        });
+/// Entry point of `figma-rust-mcp --script-worker`: reads `{"code"}` from stdin, answers host calls
+/// over stdin/stdout, and prints `{"done": …}`. Nothing else may write to stdout.
+pub fn run_worker() {
+    fn read_line(input: &mut impl BufRead) -> Option<Value> {
+        let mut line = String::new();
+        input.read_line(&mut line).ok().filter(|n| *n > 0)?;
+        serde_json::from_str(&line).ok()
+    }
+    fn write_line(value: &Value) {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{value}");
+        let _ = out.flush();
+    }
+    let mut input = std::io::stdin().lock();
+    let Some(code) = read_line(&mut input).and_then(|v| v["code"].as_str().map(str::to_owned)) else { return };
+    let input = RefCell::new(input);
+    let outcome = run_script(&code, Box::new(move |call| {
+        let is_log = matches!(call, HostCall::Log { .. });
+        write_line(&serde_json::to_value(&call).map_err(|e| e.to_string())?);
+        if is_log { return Ok(Value::Null); }
+        let reply = read_line(&mut *input.borrow_mut()).ok_or("Host closed the channel")?;
+        match reply.get("err").and_then(Value::as_str) {
+            Some(error) => Err(error.to_string()),
+            None => Ok(reply.get("ok").cloned().unwrap_or(Value::Null)),
+        }
+    }));
+    let (success, result, error) = outcome;
+    write_line(&json!({"done": {"success": success, "result": result, "error": error}}));
+}
 
-        let mut context = Context::default();
-        context.runtime_limits_mut().set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
+fn arg_string(args: &[JsValue], index: usize) -> String {
+    args.get(index).and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_default()
+}
 
-        // Register __host_console
-        let console_fn = NativeFunction::from_copy_closure(|_this, args, _ctx| {
-            let level = args.first().and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_default();
-            let msg = args.get(1).and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_default();
-            HOST_TX.with(|cell| {
-                if let Some(tx) = cell.borrow().as_ref() {
-                    let _ = tx.send(HostRequest::Log { level, msg });
-                }
-            });
-            Ok(JsValue::undefined())
-        });
-        let console_obj = FunctionObjectBuilder::new(context.realm(), console_fn)
-            .name(js_string!("__host_console"))
-            .length(2)
-            .build();
-        context.register_global_property(js_string!("__host_console"), console_obj, Attribute::all()).unwrap();
+fn arg_json(args: &[JsValue], index: usize) -> Value {
+    args.get(index).and_then(|v| v.as_string()).and_then(|s| serde_json::from_str(&s.to_std_string_escaped()).ok()).unwrap_or_else(|| json!({}))
+}
 
-        // Register __host_op
-        let host_op_fn = NativeFunction::from_copy_closure(|_this, args, _ctx| {
-            let op = args.first().and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_default();
-            let params_json = args.get(1).and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_else(|| "{}".to_string());
-            let params: Value = serde_json::from_str(&params_json).unwrap_or(json!({}));
+/// Host results reach JS as a JSON string the prelude parses; errors become exceptions.
+fn host_result(result: Result<Value, String>) -> Result<JsValue, JsError> {
+    match result {
+        Ok(value) => Ok(JsValue::String(js_string!(serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string())))),
+        Err(error) => Err(JsError::from_opaque(JsValue::String(js_string!(error)))),
+    }
+}
 
-            let (resp_tx, resp_rx) = sync_channel();
-            let sent = HOST_TX.with(|cell| {
-                if let Some(tx) = cell.borrow().as_ref() {
-                    tx.send(HostRequest::Op { operation: op, params, resp: resp_tx }).is_ok()
-                } else {
-                    false
-                }
-            });
+fn register(context: &mut Context, name: &'static str, function: NativeFunction) {
+    let object = FunctionObjectBuilder::new(context.realm(), function).name(js_string!(name)).length(2).build();
+    context.register_global_property(js_string!(name), object, Attribute::all()).expect("fresh context has no host globals");
+}
 
-            if !sent {
-                return Err(JsError::from_opaque(JsValue::String(js_string!("Host channel closed"))));
-            }
+/// Runs a script synchronously against `host`; used by the worker and the in-process fallback.
+fn run_script(code: &str, host: Host) -> ScriptOutcome {
+    HOST.with(|cell| *cell.borrow_mut() = Some(host));
+    let outcome = eval_script(code);
+    HOST.with(|cell| *cell.borrow_mut() = None);
+    outcome
+}
 
-            match resp_rx.recv() {
-                Ok(Ok(val)) => {
-                    let out_json = serde_json::to_string(&val).unwrap_or_else(|_| "null".to_string());
-                    Ok(JsValue::String(js_string!(out_json)))
-                }
-                Ok(Err(e)) => Err(JsError::from_opaque(JsValue::String(js_string!(e)))),
-                Err(_) => Err(JsError::from_opaque(JsValue::String(js_string!("Bridge request cancelled")))),
-            }
-        });
-        let host_op_obj = FunctionObjectBuilder::new(context.realm(), host_op_fn)
-            .name(js_string!("__host_op"))
-            .length(2)
-            .build();
-        context.register_global_property(js_string!("__host_op"), host_op_obj, Attribute::all()).unwrap();
+fn eval_script(code: &str) -> ScriptOutcome {
+    let mut context = Context::default();
+    context.runtime_limits_mut().set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
 
-        // Register __host_icon
-        let host_icon_fn = NativeFunction::from_copy_closure(|_this, args, _ctx| {
-            let name = args.first().and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_default();
-            let opts_json = args.get(1).and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_else(|| "{}".to_string());
-            let opts: Value = serde_json::from_str(&opts_json).unwrap_or(json!({}));
+    register(&mut context, "__host_console", NativeFunction::from_copy_closure(|_this, args, _ctx| {
+        let _ = call_host(HostCall::Log { level: arg_string(args, 0), msg: arg_string(args, 1) });
+        Ok(JsValue::undefined())
+    }));
+    register(&mut context, "__host_op", NativeFunction::from_copy_closure(|_this, args, _ctx| {
+        host_result(call_host(HostCall::Op { operation: arg_string(args, 0), params: arg_json(args, 1) }))
+    }));
+    register(&mut context, "__host_icon", NativeFunction::from_copy_closure(|_this, args, _ctx| {
+        host_result(call_host(HostCall::Icon { name: arg_string(args, 0), opts: arg_json(args, 1) }))
+    }));
+    register(&mut context, "__host_image", NativeFunction::from_copy_closure(|_this, args, _ctx| {
+        host_result(call_host(HostCall::Image { url: arg_string(args, 0), opts: arg_json(args, 1) }))
+    }));
 
-            let (resp_tx, resp_rx) = sync_channel();
-            let sent = HOST_TX.with(|cell| {
-                if let Some(tx) = cell.borrow().as_ref() {
-                    tx.send(HostRequest::Icon { name, opts, resp: resp_tx }).is_ok()
-                } else {
-                    false
-                }
-            });
-
-            if !sent {
-                return Err(JsError::from_opaque(JsValue::String(js_string!("Host channel closed"))));
-            }
-
-            match resp_rx.recv() {
-                Ok(Ok(val)) => {
-                    let out_json = serde_json::to_string(&val).unwrap_or_else(|_| "null".to_string());
-                    Ok(JsValue::String(js_string!(out_json)))
-                }
-                Ok(Err(e)) => Err(JsError::from_opaque(JsValue::String(js_string!(e)))),
-                Err(_) => Err(JsError::from_opaque(JsValue::String(js_string!("Bridge icon request cancelled")))),
-            }
-        });
-        let host_icon_obj = FunctionObjectBuilder::new(context.realm(), host_icon_fn)
-            .name(js_string!("__host_icon"))
-            .length(2)
-            .build();
-        context.register_global_property(js_string!("__host_icon"), host_icon_obj, Attribute::all()).unwrap();
-
-        // Register __host_image
-        let host_img_fn = NativeFunction::from_copy_closure(|_this, args, _ctx| {
-            let url = args.first().and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_default();
-            let opts_json = args.get(1).and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped()).unwrap_or_else(|| "{}".to_string());
-            let opts: Value = serde_json::from_str(&opts_json).unwrap_or(json!({}));
-
-            let (resp_tx, resp_rx) = sync_channel();
-            let sent = HOST_TX.with(|cell| {
-                if let Some(tx) = cell.borrow().as_ref() {
-                    tx.send(HostRequest::Image { url, opts, resp: resp_tx }).is_ok()
-                } else {
-                    false
-                }
-            });
-
-            if !sent {
-                return Err(JsError::from_opaque(JsValue::String(js_string!("Host channel closed"))));
-            }
-
-            match resp_rx.recv() {
-                Ok(Ok(val)) => {
-                    let out_json = serde_json::to_string(&val).unwrap_or_else(|_| "null".to_string());
-                    Ok(JsValue::String(js_string!(out_json)))
-                }
-                Ok(Err(e)) => Err(JsError::from_opaque(JsValue::String(js_string!(e)))),
-                Err(_) => Err(JsError::from_opaque(JsValue::String(js_string!("Bridge image request cancelled")))),
-            }
-        });
-        let host_img_obj = FunctionObjectBuilder::new(context.realm(), host_img_fn)
-            .name(js_string!("__host_image"))
-            .length(2)
-            .build();
-        context.register_global_property(js_string!("__host_image"), host_img_obj, Attribute::all()).unwrap();
-
-        let prelude = r##"
+    let prelude = r##"
 const console = {
     log: (...args) => __host_console("log", args.map(x => typeof x === "object" ? JSON.stringify(x, null, 2) : String(x)).join(" ")),
     error: (...args) => __host_console("error", args.map(x => typeof x === "object" ? JSON.stringify(x, null, 2) : String(x)).join(" ")),
@@ -456,74 +471,50 @@ figma.loadIconIn = async (iconName, opts = {}) => {
 };
 "##;
 
-        if let Err(e) = context.eval(Source::from_bytes(prelude)) {
-            HOST_TX.with(|cell| *cell.borrow_mut() = None);
-            return (false, None, Some(format!("Sandbox initialization failed: {}", e)));
+    if let Err(e) = context.eval(Source::from_bytes(prelude)) {
+        return (false, None, Some(format!("Sandbox initialization failed: {}", e)));
+    }
+
+    let wrapped_code = format!("(async () => {{\n{}\n}})()", code);
+    let eval_res = context.eval(Source::from_bytes(&wrapped_code)).and_then(|value| {
+        // Code can close the async wrapper early, leaving a non-promise completion value.
+        let Some(object) = value.as_object() else { return Ok(value) };
+        let promise = JsPromise::from_object(object.clone())?;
+        context.run_jobs();
+        match promise.state() {
+            PromiseState::Fulfilled(value) => Ok(value),
+            PromiseState::Rejected(error) => Err(JsError::from_opaque(error)),
+            PromiseState::Pending => Err(JsError::from_opaque(JsValue::String(js_string!("Sandbox promise did not settle")))),
         }
-
-        let wrapped_code = format!("(async () => {{\n{}\n}})()", code_owned);
-        let eval_res = context.eval(Source::from_bytes(&wrapped_code)).and_then(|value| {
-            // Code can close the async wrapper early, leaving a non-promise completion value.
-            let Some(object) = value.as_object() else { return Ok(value) };
-            let promise = JsPromise::from_object(object.clone())?;
-            context.run_jobs();
-            match promise.state() {
-                PromiseState::Fulfilled(value) => Ok(value),
-                PromiseState::Rejected(error) => Err(JsError::from_opaque(error)),
-                PromiseState::Pending => Err(JsError::from_opaque(JsValue::String(js_string!("Sandbox promise did not settle")))),
-            }
-        });
-
-        let out = match eval_res {
-            Ok(js_val) => {
-                let result_val: Option<Value> = if js_val.is_undefined() || js_val.is_null() {
-                    None
-                } else if let Some(s) = js_val.as_string() {
-                    Some(Value::String(s.to_std_string_escaped()))
-                } else if let Some(b) = js_val.as_boolean() {
-                    Some(Value::Bool(b))
-                } else if let Some(n) = js_val.as_number() {
-                    Some(json!(n))
-                } else {
-                    // The script's writes already ran, so report success (a failure invites a
-                    // duplicate re-run) but say why the value is missing instead of returning null.
-                    match js_to_json(&js_val, &mut context) {
-                        Ok(value) => value,
-                        Err(e) => Some(json!(format!("[result not JSON-serializable: {e}]"))),
-                    }
-                };
-
-                (true, result_val, None)
-            }
-            Err(e) => {
-                let mut err_msg = e.to_string();
-                if err_msg.contains("ReferenceError") {
-                    err_msg.push_str("\nNote: Each figma_write call runs in an isolated sandbox — variables from previous calls are not available. Re-query node IDs with figma.get_page_nodes() or figma.query() at the start of each call.");
-                }
-                (false, None, Some(err_msg))
-            }
-        };
-        // Drop the sender so the host handler drains trailing logs and exits.
-        HOST_TX.with(|cell| *cell.borrow_mut() = None);
-        out
     });
 
-    let (success, result, error) = match tokio::time::timeout(SCRIPT_DEADLINE, eval_task).await {
-        Ok(Ok(out)) => { let _ = host_handler.await; out }
-        Ok(Err(e)) => { host_handler.abort(); (false, None, Some(format!("Execution task panicked: {}", e))) }
-        Err(_) => {
-            host_handler.abort();
-            (false, None, Some(format!("Script exceeded the {}s deadline", SCRIPT_DEADLINE.as_secs())))
+    match eval_res {
+        Ok(js_val) => {
+            let result_val: Option<Value> = if js_val.is_undefined() || js_val.is_null() {
+                None
+            } else if let Some(s) = js_val.as_string() {
+                Some(Value::String(s.to_std_string_escaped()))
+            } else if let Some(b) = js_val.as_boolean() {
+                Some(Value::Bool(b))
+            } else if let Some(n) = js_val.as_number() {
+                Some(json!(n))
+            } else {
+                // The script's writes already ran, so report success (a failure invites a
+                // duplicate re-run) but say why the value is missing instead of returning null.
+                match js_to_json(&js_val, &mut context) {
+                    Ok(value) => value,
+                    Err(e) => Some(json!(format!("[result not JSON-serializable: {e}]"))),
+                }
+            };
+            (true, result_val, None)
         }
-    };
-
-    let captured_logs = logs.lock().map(|l| l.clone()).unwrap_or_default();
-
-    ExecResult {
-        success,
-        result,
-        error,
-        logs: captured_logs,
+        Err(e) => {
+            let mut err_msg = e.to_string();
+            if err_msg.contains("ReferenceError") {
+                err_msg.push_str("\nNote: Each figma_write call runs in an isolated sandbox — variables from previous calls are not available. Re-query node IDs with figma.get_page_nodes() or figma.query() at the start of each call.");
+            }
+            (false, None, Some(err_msg))
+        }
     }
 }
 

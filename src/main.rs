@@ -7,6 +7,58 @@ use bridge::{BridgeHandle, BridgeStart, HttpProxy, DEFAULT_PORT};
 use clap::Parser;
 use std::io::IsTerminal;
 
+/// Counts live heap bytes so the script worker can cap its memory. RLIMIT_AS is not enforced on
+/// macOS and does not exist on Windows; failing an allocation aborts the worker, which the
+/// daemon reports as "ran out of memory". The daemon itself runs with no limit.
+struct CappedAlloc;
+
+static HEAP_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+static HEAP_USED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl CappedAlloc {
+    fn reserve(size: usize) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if HEAP_USED.fetch_add(size, Relaxed) + size > HEAP_LIMIT.load(Relaxed) {
+            HEAP_USED.fetch_sub(size, Relaxed);
+            return false;
+        }
+        true
+    }
+}
+
+unsafe impl std::alloc::GlobalAlloc for CappedAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if !Self::reserve(layout.size()) { return std::ptr::null_mut(); }
+        let ptr = std::alloc::System.alloc(layout);
+        if ptr.is_null() { HEAP_USED.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed); }
+        ptr
+    }
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if !Self::reserve(layout.size()) { return std::ptr::null_mut(); }
+        let ptr = std::alloc::System.alloc_zeroed(layout);
+        if ptr.is_null() { HEAP_USED.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed); }
+        ptr
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        std::alloc::System.dealloc(ptr, layout);
+        HEAP_USED.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        let old_size = layout.size();
+        if new_size > old_size && !Self::reserve(new_size - old_size) { return std::ptr::null_mut(); }
+        let new_ptr = std::alloc::System.realloc(ptr, layout, new_size);
+        if new_ptr.is_null() {
+            if new_size > old_size { HEAP_USED.fetch_sub(new_size - old_size, std::sync::atomic::Ordering::Relaxed); }
+        } else if new_size < old_size {
+            HEAP_USED.fetch_sub(old_size - new_size, std::sync::atomic::Ordering::Relaxed);
+        }
+        new_ptr
+    }
+}
+
+#[global_allocator]
+static GLOBAL: CappedAlloc = CappedAlloc;
+
 const LOADER_MANIFEST: &str = include_str!("../plugin/manifest.json");
 const LOADER_CODE: &str = include_str!("../plugin/code.js");
 const LOADER_UI: &str = include_str!("../plugin/ui.html");
@@ -175,6 +227,12 @@ fn start_background() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     bridge::bench::mark_process_start();
+    // Internal: executes one figma_write script for the daemon (see executor::spawn_worker).
+    if std::env::args().nth(1).as_deref() == Some("--script-worker") {
+        HEAP_LIMIT.store(HEAP_USED.load(std::sync::atomic::Ordering::Relaxed) + executor::WORKER_MEMORY_BYTES, std::sync::atomic::Ordering::Relaxed);
+        executor::run_worker();
+        return Ok(());
+    }
     let args = Args::parse();
 
     #[cfg(target_os = "windows")]

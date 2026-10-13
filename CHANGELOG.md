@@ -15,6 +15,7 @@
 - Acks and replies still in flight on a replaced WebSocket were discarded on reconnect, losing results or running a write twice. They are processed, and the plugin runs each op id once.
 - An op whose caller disconnected stayed pending forever: the session never expired, `task=end` refused, and the write ran whenever the plugin reconnected. Cleanup now always runs; a failed `task=start` always releases its frame.
 - A WebSocket disconnect (sleep, plugin restart) deleted the session, its index and its tasks within about a minute instead of 30 minutes.
+- `figma_write` scripts run in a separate worker process with a 1 GB heap cap. Before, a script could exhaust memory and kill the daemon (`"x".repeat(2**31)`), and one that outlived the 300s deadline (nested loops slip past the per-loop limit) kept a thread and a CPU core busy forever; the worker is now killed at the deadline. Overhead is about 5 ms per call.
 - A `figma_write` script returning a cyclic or very deeply nested object overflowed the stack and killed the daemon. Such results now come back as an explanation; ordinary results are unchanged.
 - `figma_prepare_design only=assets` overwrote an existing `index.ts` barrel with this batch only; it now appends missing exports. Icon names starting with a digit produce valid identifiers.
 - `figma_prepare_design only=assets` reported `success: true` when folders or files could not be written; it now lists `errors`, plugin `failures` and `truncated`.
