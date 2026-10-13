@@ -101,7 +101,9 @@ impl HttpProxy {
         let cwd = std::env::current_dir().map_err(|e| format!("Cannot resolve client project directory: {e}"))?;
         let params = resolve_tool_paths(params, &cwd);
         let response = self.client.post(format!("http://127.0.0.1:{}/mcp", self.port))
-            .timeout(Duration::from_secs(300))
+            // Longer than the daemon's own limits (120s tab-lock wait + script deadline), so the
+            // client gets the daemon's explanation instead of a bare connection timeout.
+            .timeout(crate::executor::SCRIPT_DEADLINE + Duration::from_secs(180))
             .json(&json!({"jsonrpc": "2.0", "id": uuid::Uuid::new_v4().to_string(), "method": "tools/call", "params": params}))
             .send().await.map_err(|e| format!("MCP daemon connection failed: {e}"))?
             .error_for_status().map_err(|e| format!("MCP daemon rejected request: {e}"))?
