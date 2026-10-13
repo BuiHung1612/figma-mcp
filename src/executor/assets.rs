@@ -220,7 +220,14 @@ async fn load_icon(
     }
     for lib in libraries {
         let url = (lib.url_fn)(icon_name);
-        if let Ok(res) = client.get(&url).send().await {
+        // Only a 404 means "not in this library". Falling through on a network error would
+        // silently swap in another library's style (and wait up to 30s per library).
+        let res = client.get(&url).timeout(std::time::Duration::from_secs(5)).send().await
+            .map_err(|e| format!("Could not load icon \"{icon_name}\" from {}: {e}", lib.name))?;
+        if res.status() != reqwest::StatusCode::NOT_FOUND && !res.status().is_success() {
+            return Err(format!("Could not load icon \"{icon_name}\" from {}: HTTP {}", lib.name, res.status()));
+        }
+        {
             if res.status().is_success() {
                 if let Ok(text) = read_capped(res, MAX_ICON_BYTES).await.map(|b| String::from_utf8_lossy(&b).into_owned()) {
                     if text.contains("<svg") {
@@ -328,6 +335,22 @@ mod tests {
         let client = reqwest::Client::new();
         assert_eq!(read_capped(client.get(format!("{base}/small")).send().await.unwrap(), 1024).await.unwrap().len(), 10);
         assert!(read_capped(client.get(format!("{base}/big")).send().await.unwrap(), 1024).await.unwrap_err().contains("larger"));
+        let libraries = |first: fn(&str) -> String| [
+            IconLib { name: "first", fill_type: "none", url_fn: first },
+            IconLib { name: "second", fill_type: "none", url_fn: |base| format!("{base}/svg") },
+        ];
+        let app = axum::Router::new()
+            .route("/missing", axum::routing::get(|| async { (axum::http::StatusCode::NOT_FOUND, "") }))
+            .route("/broken", axum::routing::get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "") }))
+            .route("/svg", axum::routing::get(|| async { "<svg/>" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let icons = format!("http://{}", listener.local_addr().unwrap());
+        let icon_server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let cache = Mutex::new(VecDeque::new());
+        assert!(load_icon(&client, &icons, &libraries(|base| format!("{base}/missing")), &cache).await.is_ok(), "404 falls through");
+        let cache = Mutex::new(VecDeque::new());
+        assert!(load_icon(&client, &icons, &libraries(|base| format!("{base}/broken")), &cache).await.err().is_some_and(|e| e.contains("HTTP 500")));
+        icon_server.abort();
         server.abort();
         for name in ["../../evil@1.0.0/x", "a/b", "", "home?x=1"] {
             assert!(fetch_svg_icon(&client, name, 24.0, "#000").await.unwrap_err().contains("Invalid icon name"), "{name}");

@@ -21,10 +21,20 @@
 - Setup wrote agent configs in place, so a crash could truncate `~/.claude.json` or VS Code's `mcp.json`; writes now go through a temp file and rename (symlinked dotfiles stay symlinked).
 - Codex setup replaced the whole `[mcp_servers.figma-rust-mcp]` table, dropping keys such as `startup_timeout_sec`, and appended a duplicate table when the header had a trailing comment. Only `url`/`command`/`args` are replaced now.
 - Saving a Figma file key in the plugin cleared the server's runtime version and operation list for that tab.
+- Windows: the background service is registered under the per-user `Run` key instead of an `ONLOGON` scheduled task, which needs an elevated shell ("Access is denied"). A failed service install no longer aborts quick setup before agents are configured. Uninstall stops the running server.
+- macOS uninstall used `pkill -f figma-rust-mcp`, which also killed `tail -f` on its logs or an editor with the repo open; it matches the process name only.
+- An interrupted extract left a truncated cached binary that every later run failed on, and two `npx` processes starting together overwrote each other's download. Downloads now extract in a private folder and publish with one rename; a stalled download times out after 30s.
+- Paths with spaces, quotes or `%` broke the systemd unit, the PowerShell unzip fallback and the launchd plist.
+- Exports without `outputPath` piled up in the shared temp folder forever; they now go to `~/.figma-rust-mcp/exports` and files older than a day are pruned. The design-pack preview no longer uses a predictable `/tmp` name.
+- Icons: a network error on one library silently fell through to another library's style; only a 404 falls through now, with a 5s timeout per library.
+- Plugin: the reply replay cache is capped at 8M characters, a re-sent op is replayed from it once answered, and a request reaching a reloaded runtime is answered with an error instead of timing out.
 - `figma_read export_node` ignored `outputPath` and returned the full base64.
 - `figma_status task=start|end` panicked when the session expired while waiting for the tab lock.
 - A panic anywhere in the daemon aborted the whole process (`panic = "abort"`), so the existing "Execution task panicked" handling never ran. Panics now stay in the failing request.
 - `figma_write` code that closed the async wrapper early (`})(); (() => {`) panicked the executor; its completion value is now returned.
+
+### Removed
+- The `figma-rust-mcp://` URL scheme and `--register-scheme`. Nothing opened it, yet every server start rewrote an app bundle and ran `lsregister` (macOS) or three `reg.exe` calls (Windows).
 
 ### Changed
 - Over HTTP (`/mcp`, `/sse`, how setup configures every agent) the server cannot see the client's folder, so relative `outputPath`, `iconDir`, `imageDir` and `projectDir` (including their defaults) are rejected with a message asking for absolute paths. Before, they resolved against the daemon's working directory, which is `/` for the background service. Tool schemas say so.

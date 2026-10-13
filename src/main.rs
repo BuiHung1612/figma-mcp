@@ -2,7 +2,6 @@ pub mod bridge;
 pub mod docs;
 pub mod executor;
 pub mod mcp;
-pub mod protocol;
 
 use bridge::{BridgeHandle, BridgeStart, HttpProxy, DEFAULT_PORT};
 use clap::Parser;
@@ -37,10 +36,6 @@ struct Args {
     /// Force stdio mode for JSON-RPC MCP clients (e.g. spawned subprocesses)
     #[arg(long)]
     stdio: bool,
-
-    /// Register figma-rust-mcp:// URL protocol scheme with the OS
-    #[arg(long)]
-    register_scheme: bool,
 
     /// Setup permanent Figma thin plugin in ~/.figma-rust-mcp/plugin
     #[arg(long)]
@@ -85,10 +80,6 @@ struct Args {
     /// Print generated code for a saved get_design_context JSON (scripts/codegen-accuracy.mjs)
     #[arg(long, hide = true, num_args = 2, value_names = ["FRAMEWORK", "CONTEXT_JSON"])]
     codegen: Option<Vec<String>>,
-
-    /// URL or argument passed by OS protocol handler (e.g. figma-rust-mcp://start)
-    #[arg(hide = true)]
-    protocol_url: Option<String>,
 }
 
 fn setup_thin_plugin(custom_dir: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
@@ -236,22 +227,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  \x1b[32mnpx -y figma-rust-mcp@latest --service-status\x1b[0m\n");
         return Ok(());
     }
-
-    if args.register_scheme {
-        match protocol::register_url_scheme() {
-            Ok(_) => {
-                eprintln!("[figma-rust-mcp] ✓ Successfully registered figma-rust-mcp:// URL scheme!");
-                return Ok(());
-            }
-            Err(e) => {
-                eprintln!("[figma-rust-mcp] ⚠️ Failed to register URL scheme: {}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    // Auto-register URL scheme in background on startup
-    let _ = protocol::register_url_scheme();
 
     let port = std::env::var("FIGMA_RUST_MCP_PORT")
         .ok()

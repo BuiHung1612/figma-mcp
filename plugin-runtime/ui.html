@@ -1844,14 +1844,14 @@
       }
     }
 
-    // The bridge re-sends unacknowledged ops after a reconnect (at-least-once); run each op id once.
-    // Kept on window so the list survives a hot reload.
-    var dispatchedOps = window.__figmaMcpDispatched || (window.__figmaMcpDispatched = []);
+    // The bridge re-sends unacknowledged ops after a reconnect (at-least-once). A copy that arrives
+    // while the op still runs is dropped; one that arrives after the reply goes through, and the
+    // runtime replays its cached reply. Reset on hot reload: the new runtime finishes none of these.
+    var inFlightOps = {};
     function dispatchToMain(req) {
       if (req.id) {
-        if (dispatchedOps.indexOf(req.id) >= 0) return;
-        dispatchedOps.push(req.id);
-        if (dispatchedOps.length > 500) dispatchedOps.shift();
+        if (inFlightOps[req.id]) return;
+        inFlightOps[req.id] = true;
       }
       parent.postMessage({ pluginMessage: req }, "*");
     }
@@ -2084,6 +2084,7 @@
       var payloadJson = msg.dataJson !== undefined
         ? msg.dataJson
         : (msg.data !== undefined ? JSON.stringify(msg.data) : null);
+      if (msg.id) delete inFlightOps[msg.id];
       await sendResponse(msg.id, msg.success, payloadJson, msg.error, msg.sessionId);
     };
 

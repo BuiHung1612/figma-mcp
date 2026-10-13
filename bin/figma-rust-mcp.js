@@ -125,7 +125,7 @@ function downloadFile(url, destPath) {
       }
 
       const client = currentUrl.startsWith('https') ? https : http;
-      client.get(currentUrl, { headers: { 'User-Agent': 'figma-rust-mcp-npx' } }, (res) => {
+      const req = client.get(currentUrl, { headers: { 'User-Agent': 'figma-rust-mcp-npx' } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           followRedirects(res.headers.location, redirectCount + 1);
           return;
@@ -137,6 +137,7 @@ function downloadFile(url, destPath) {
         }
 
         const fileStream = fs.createWriteStream(destPath);
+        res.on('error', reject); // connection reset mid-body
         const progress = downloadProgress(Number(res.headers['content-length']) || 0);
         res.on('data', chunk => progress.add(chunk.length));
         res.pipe(fileStream);
@@ -153,6 +154,7 @@ function downloadFile(url, destPath) {
       }).on('error', (err) => {
         reject(err);
       });
+      req.setTimeout(30000, () => req.destroy(new Error(`No data for 30s from ${currentUrl}`)));
     };
 
     followRedirects(url);
@@ -171,15 +173,16 @@ function extractArchive(archivePath, targetDir, ext) {
 
   if (ext === 'zip') {
     try {
-      execSync(`tar -xf "${archivePath}" -C "${targetDir}"`, { stdio: 'pipe' });
+      execFileSync('tar', ['-xf', archivePath, '-C', targetDir], { stdio: 'pipe' });
       return;
     } catch (_) {
-      execSync(`powershell -Command "Expand-Archive -Path '${archivePath}' -DestinationPath '${targetDir}' -Force"`, { stdio: 'pipe' });
+      const quote = p => `'${p.replace(/'/g, "''")}'`; // PowerShell single-quoted literal
+      execFileSync('powershell', ['-NoProfile', '-Command', `Expand-Archive -LiteralPath ${quote(archivePath)} -DestinationPath ${quote(targetDir)} -Force`], { stdio: 'pipe', windowsHide: true });
       return;
     }
   }
 
-  execSync(`tar -xzf "${archivePath}" -C "${targetDir}"`, { stdio: 'pipe' });
+  execFileSync('tar', ['-xzf', archivePath, '-C', targetDir], { stdio: 'pipe' });
 }
 
 async function findOrDownloadBinary() {
@@ -208,44 +211,33 @@ async function findOrDownloadBinary() {
     return cachedBin;
   }
 
+  // Download and extract in a private folder, then publish the binary with one rename: an
+  // interrupted extract or a second npx running at the same time never leaves a half-written binary.
   fs.mkdirSync(cacheDir, { recursive: true });
-  const archivePath = path.join(cacheDir, info.assetName);
-
+  const workDir = fs.mkdtempSync(path.join(cacheDir, 'tmp-'));
+  const archivePath = path.join(workDir, info.assetName);
+  const sumsPath = path.join(workDir, 'SHA256SUMS.txt');
   const releaseBase = `https://github.com/${repoOwner}/${repoName}/releases/download/v${pkgVersion}`;
-  const sumsPath = path.join(cacheDir, 'SHA256SUMS.txt');
 
   process.stderr.write(`${tag(36)} Downloading binary for ${info.osName}-${info.archName} (v${pkgVersion})...\n`);
 
   try {
-    await downloadFile(`${releaseBase}/${info.assetName}`, archivePath);
-    await downloadFile(`${releaseBase}/SHA256SUMS.txt`, sumsPath);
-    verifyChecksum(archivePath, info.assetName, fs.readFileSync(sumsPath, 'utf8'));
-  } catch (err) {
-    try { fs.unlinkSync(archivePath); } catch (_) {}
-    throw new Error(`Failed to install figma-rust-mcp v${pkgVersion} prebuilt binary: ${err.message}\n\nPlease verify your internet connection or build from source: cargo build --release`);
-  } finally {
-    try { fs.unlinkSync(sumsPath); } catch (_) {}
-  }
-
-  try {
-    extractArchive(archivePath, cacheDir, info.ext);
-  } finally {
-    try { fs.unlinkSync(archivePath); } catch (_) {}
-  }
-
-  if (!fs.existsSync(cachedBin)) {
-    const files = fs.readdirSync(cacheDir, { recursive: true });
-    const found = files.find(f => path.basename(f) === info.binName);
-    if (found) {
-      const foundPath = path.join(cacheDir, found);
-      fs.renameSync(foundPath, cachedBin);
-    } else {
-      throw new Error(`Binary ${info.binName} not found inside downloaded archive`);
+    try {
+      await downloadFile(`${releaseBase}/${info.assetName}`, archivePath);
+      await downloadFile(`${releaseBase}/SHA256SUMS.txt`, sumsPath);
+      verifyChecksum(archivePath, info.assetName, fs.readFileSync(sumsPath, 'utf8'));
+    } catch (err) {
+      throw new Error(`Failed to install figma-rust-mcp v${pkgVersion} prebuilt binary: ${err.message}\n\nPlease verify your internet connection or build from source: cargo build --release`);
     }
-  }
-
-  if (process.platform !== 'win32') {
-    fs.chmodSync(cachedBin, 0o755);
+    const extractDir = path.join(workDir, 'out');
+    extractArchive(archivePath, extractDir, info.ext);
+    const found = fs.readdirSync(extractDir, { recursive: true }).find(f => path.basename(f) === info.binName);
+    if (!found) throw new Error(`Binary ${info.binName} not found inside downloaded archive`);
+    if (process.platform !== 'win32') fs.chmodSync(path.join(extractDir, found), 0o755);
+    try { fs.renameSync(path.join(extractDir, found), cachedBin); }
+    catch (err) { if (!fs.existsSync(cachedBin)) throw err; } // Windows: another process already published it
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
   }
 
   process.stderr.write(`${tag(32)} Downloaded to ${tilde(cacheDir)}\n`);
@@ -254,11 +246,14 @@ async function findOrDownloadBinary() {
 
 // ─── SERVICE MANAGEMENT ───────────────────────────────────────────────────────
 
+const WIN_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const WIN_RUN_VALUE = 'FigmaRustMCP';
+
 /**
  * Install figma-rust-mcp as a background service that auto-starts on login.
  * - macOS: LaunchAgent plist (~/.config/figma-rust-mcp/launchd.plist → ~/Library/LaunchAgents/)
  * - Linux: systemd user service (~/.config/systemd/user/figma-rust-mcp.service)
- * - Windows: Task Scheduler XML via schtasks
+ * - Windows: per-user Run registry key (no admin needed)
  */
 async function installService(binPath) {
   // An outdated CLI (e.g. an old global install run via plain `npx figma-rust-mcp`) must not replace a newer service.
@@ -282,6 +277,7 @@ async function installService(binPath) {
     const logDir = path.join(os.homedir(), 'Library', 'Logs', 'figma-rust-mcp');
     fs.mkdirSync(logDir, { recursive: true });
 
+    const xml = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -290,7 +286,7 @@ async function installService(binPath) {
   <string>${plistLabel}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${binPath}</string>
+    <string>${xml(binPath)}</string>
     <string>--server</string>
   </array>
   <key>RunAtLoad</key>
@@ -298,9 +294,9 @@ async function installService(binPath) {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${path.join(logDir, 'stdout.log')}</string>
+  <string>${xml(path.join(logDir, 'stdout.log'))}</string>
   <key>StandardErrorPath</key>
-  <string>${path.join(logDir, 'stderr.log')}</string>
+  <string>${xml(path.join(logDir, 'stderr.log'))}</string>
   <key>ThrottleInterval</key>
   <integer>5</integer>
 </dict>
@@ -308,7 +304,7 @@ async function installService(binPath) {
 
     fs.writeFileSync(plistPath, plist, 'utf8');
 
-    execSync(`launchctl load -w "${plistPath}"`, { stdio: 'pipe' });
+    execFileSync('launchctl', ['load', '-w', plistPath], { stdio: 'pipe' });
 
     await serviceInstalled(`Logs ${tilde(path.join(logDir, 'stdout.log'))}`);
 
@@ -324,7 +320,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${binPath} --server
+ExecStart="${binPath.replace(/%/g, '%%')}" --server
 Restart=on-failure
 RestartSec=5
 
@@ -339,17 +335,12 @@ WantedBy=default.target
     await serviceInstalled('Logs: journalctl --user -u figma-rust-mcp');
 
   } else if (platform === 'win32') {
-    const taskName = 'FigmaRustMCPServer';
-    // Use schtasks to create a task that runs at login
+    // schtasks /SC ONLOGON needs an elevated shell ("Access is denied"); the per-user Run key does not.
     // The native launcher detaches the server and redirects output to a log file.
-    const taskCommand = `"${binPath}" --background`;
-    execFileSync('schtasks', ['/Create', '/F', '/TN', taskName,
-      '/TR', taskCommand, '/SC', 'ONLOGON'], { stdio: 'pipe', windowsHide: true });
+    execFileSync('reg', ['add', WIN_RUN_KEY, '/v', WIN_RUN_VALUE, '/t', 'REG_SZ', '/d', `"${binPath}" --background`, '/f'], { stdio: 'pipe', windowsHide: true });
+    spawn(binPath, ['--background'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 
-    // Start it immediately too
-    try { execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'pipe' }); } catch (_) {}
-
-    await serviceInstalled(`Task Scheduler: ${taskName}`);
+    await serviceInstalled(`Registry: HKCU Run\\${WIN_RUN_VALUE}`);
 
   } else {
     console.error(`\x1b[31mUnsupported platform: ${platform}\x1b[0m`);
@@ -417,7 +408,7 @@ async function stopRunningServer() {
     quiet('systemctl --user stop figma-rust-mcp');
     quiet('pkill -x figma-rust-mcp');
   } else if (process.platform === 'win32') {
-    quiet('schtasks /End /TN "FigmaRustMCPServer"');
+    quiet('schtasks /End /TN "FigmaRustMCPServer"'); // pre-v9 installs
     quiet('taskkill /F /T /IM figma-rust-mcp.exe');
   }
   const port = Number(process.env.FIGMA_RUST_MCP_PORT) || 41730;
@@ -443,7 +434,7 @@ async function uninstallService() {
 
     if (fs.existsSync(plistPath)) {
       try { execSync(`launchctl unload -w "${plistPath}"`, { stdio: 'inherit' }); } catch (_) {}
-      try { execSync(`pkill -f figma-rust-mcp 2>/dev/null`, { stdio: 'pipe' }); } catch (_) {}
+      try { execSync('pkill -x figma-rust-mcp', { stdio: 'pipe' }); } catch (_) {}
       fs.unlinkSync(plistPath);
     }
     removeLegacyService();
@@ -460,8 +451,8 @@ async function uninstallService() {
     ok('Background service removed');
 
   } else if (platform === 'win32') {
-    const taskName = 'FigmaRustMCPServer';
-    try { execSync(`schtasks /Delete /F /TN "${taskName}"`, { stdio: 'inherit' }); } catch (_) {}
+    try { execFileSync('reg', ['delete', WIN_RUN_KEY, '/v', WIN_RUN_VALUE, '/f'], { stdio: 'pipe', windowsHide: true }); } catch (_) {}
+    try { execSync('taskkill /F /T /IM figma-rust-mcp.exe', { stdio: 'pipe', windowsHide: true }); } catch (_) {}
     removeLegacyService();
 
     ok('Background service removed');
@@ -488,8 +479,11 @@ function removeLegacyService() {
       try { execSync('systemctl --user daemon-reload', { stdio: 'pipe' }); } catch (_) {}
     }
   } else if (process.platform === 'win32') {
-    try { execSync('schtasks /End /TN "FigmaMCPServer"', { stdio: 'pipe' }); } catch (_) {}
-    try { execSync('schtasks /Delete /F /TN "FigmaMCPServer"', { stdio: 'pipe' }); } catch (_) {}
+    // Scheduled tasks from older versions (FigmaRustMCPServer up to v8, FigmaMCPServer before that).
+    for (const task of ['FigmaRustMCPServer', 'FigmaMCPServer']) {
+      try { execSync(`schtasks /End /TN "${task}"`, { stdio: 'pipe', windowsHide: true }); } catch (_) {}
+      try { execSync(`schtasks /Delete /F /TN "${task}"`, { stdio: 'pipe', windowsHide: true }); } catch (_) {}
+    }
   }
 }
 
@@ -505,13 +499,9 @@ function isServiceInstalled() {
     const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-rust-mcp.service');
     return fs.existsSync(servicePath) || fs.existsSync(path.join(os.homedir(), '.config', 'systemd', 'user', 'figma-mcp.service'));
   } else if (platform === 'win32') {
-    try {
-      execSync('schtasks /Query /TN "FigmaRustMCPServer"', { stdio: 'pipe' });
-      return true;
-    } catch (_) {
-      try { execSync('schtasks /Query /TN "FigmaMCPServer"', { stdio: 'pipe' }); return true; }
-      catch (_) { return false; }
-    }
+    const succeeds = (file, args) => { try { execFileSync(file, args, { stdio: 'pipe', windowsHide: true }); return true; } catch (_) { return false; } };
+    return succeeds('reg', ['query', WIN_RUN_KEY, '/v', WIN_RUN_VALUE])
+      || succeeds('schtasks', ['/Query', '/TN', 'FigmaRustMCPServer']) || succeeds('schtasks', ['/Query', '/TN', 'FigmaMCPServer']);
   }
   return false;
 }
@@ -654,8 +644,12 @@ async function setupMenu() {
         step(1, 3, 'Figma plugin');
         setupPlugin();
         step(2, 3, 'Background service');
-        const binPath = await findOrDownloadBinary();
-        await installService(binPath);
+        try {
+          await installService(await findOrDownloadBinary());
+        } catch (err) {
+          console.log(`  ${red('✗')} Background service: ${err.message}`);
+          note('Agents are still configured; start the server with option 3.');
+        }
         step(3, 3, 'AI agents');
         await configureDetectedAgents(rl, agents);
         console.log(`\n${green('✓')} ${bold('Setup complete.')} Restart your agents, then run the plugin in Figma.\n`);

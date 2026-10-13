@@ -87,13 +87,26 @@ pub(super) async fn save_export_to_disk(
     }))
 }
 
+/// Per-user folder for exports the model receives as a path (a shared /tmp lets other users
+/// pre-create or read them). Files older than a day are pruned on each use.
+pub(super) fn export_dir() -> std::path::PathBuf {
+    let dir = crate::bridge::app_dir().unwrap_or_else(|| std::env::temp_dir().join("figma-rust-mcp")).join("exports");
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if entry.metadata().and_then(|m| m.modified()).is_ok_and(|modified| modified < cutoff) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    dir
+}
+
 /// Raster exports without an outputPath go to a temp file; the model gets the path, not base64.
 pub(super) async fn save_export_to_temp(data: &Value, default_ext: &str) -> Option<Result<Value, String>> {
     data.get("base64").and_then(Value::as_str)?;
     let ext = data["format"].as_str().unwrap_or(default_ext).to_lowercase();
     let node = data["nodeId"].as_str().unwrap_or("export").replace(|c: char| !c.is_ascii_alphanumeric(), "_");
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-    let path = std::env::temp_dir().join("figma-rust-mcp").join("exports").join(format!("{node}-{stamp}.{ext}"));
+    let path = export_dir().join(format!("{node}-{stamp}.{ext}"));
     Some(save_export_to_disk(&path.to_string_lossy(), data, &ext).await)
 }
 

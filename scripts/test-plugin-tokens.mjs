@@ -970,7 +970,7 @@ test('get_variables finishes when Figma never answers a library alias lookup', a
   assert.ok(out.diagnostics.some(d => /did not answer variable VariableID:lib\/1/.test(d.message)), JSON.stringify(out.diagnostics));
 });
 
-test('an op re-sent after a reconnect is dispatched to the plugin only once', () => {
+test('a re-sent op is dropped while it runs and replayed by the runtime once answered', () => {
   const html = readFileSync('plugin-runtime/ui.html', 'utf8');
   const start = html.indexOf('    // The bridge re-sends unacknowledged ops');
   const posted = [];
@@ -978,4 +978,7 @@ test('an op re-sent after a reconnect is dispatched to the plugin only once', ()
   vm.runInContext(html.slice(start, html.indexOf('    function reconnect()', start)), ui);
   for (const id of ['a', 'a', 'b', undefined, undefined]) ui.dispatchToMain({ id, operation: 'modify' });
   assert.deepEqual(posted, ['a', 'b', undefined, undefined]);
+  delete ui.inFlightOps.a; // the runtime replied
+  ui.dispatchToMain({ id: 'a', operation: 'modify' });
+  assert.deepEqual(posted.at(-1), 'a', 'after the reply, a re-send reaches the runtime reply cache');
 });

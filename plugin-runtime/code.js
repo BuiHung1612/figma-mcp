@@ -7178,6 +7178,7 @@ function disposeRuntime() {
   clearTimeout(startupIndexTimer);
   nodeReadCursors.clear();
   bridgeReplies.clear();
+  bridgeReplyChars = 0;
 }
 
 async function publishIndex(deferComponents) {
@@ -7216,21 +7217,33 @@ function stringifyForBridge(data) {
 }
 
 var bridgeReplies = new Map();
+var bridgeReplyChars = 0;
+var BRIDGE_REPLY_CACHE_CHARS = 8 * 1024 * 1024;
+function replySize(reply) { return typeof reply.dataJson === "string" ? reply.dataJson.length : 0; }
 function sendBridgeReply(reply) {
   reply.sessionId = currentSessionId;
-  // Large replies (base64 screenshots, big trees) are not cached: 256 of them
-  // would pin hundreds of MB. A replay of those simply re-runs the request.
-  var size = typeof reply.dataJson === "string" ? reply.dataJson.length : 0;
-  if (size < 262144) bridgeReplies.set(reply.id, reply);
-  else bridgeReplies.delete(reply.id);
-  // ponytail: replay cache covers the last 256 requests in this runtime;
+  // Large replies (base64 screenshots, big trees) are not cached; a replay of those re-runs the request.
+  var size = replySize(reply);
+  var previous = bridgeReplies.get(reply.id);
+  if (previous) { bridgeReplyChars -= replySize(previous); bridgeReplies.delete(reply.id); }
+  if (size < 262144) { bridgeReplies.set(reply.id, reply); bridgeReplyChars += size; }
+  // ponytail: replay cache covers recent requests in this runtime (256 entries / 8M chars);
   // durable replay after a plugin restart needs a persisted operation journal.
-  if (bridgeReplies.size > 256) bridgeReplies.delete(bridgeReplies.keys().next().value);
+  while (bridgeReplies.size > 256 || bridgeReplyChars > BRIDGE_REPLY_CACHE_CHARS) {
+    var oldest = bridgeReplies.keys().next().value;
+    bridgeReplyChars -= replySize(bridgeReplies.get(oldest));
+    bridgeReplies.delete(oldest);
+  }
   figma.ui.postMessage(reply);
 }
 
 async function handlePluginRequest(request) {
-  if (!request || runtimeDisposed) return;
+  if (!request) return;
+  if (runtimeDisposed) {
+    // A reload replaced this runtime; answer instead of leaving the agent waiting for the timeout.
+    if (request.id && request.operation) figma.ui.postMessage({ id: request.id, operation: request.operation, success: false, error: "Plugin runtime reloaded; retry the request", sessionId: currentSessionId });
+    return;
+  }
   if (request.id && bridgeReplies.has(request.id)) {
     figma.ui.postMessage(bridgeReplies.get(request.id));
     return;

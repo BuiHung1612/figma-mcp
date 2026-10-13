@@ -348,8 +348,9 @@ pub(super) async fn figma_prepare_design(bridge: BridgeHandle, args: Value) -> T
             data_url
         };
         if let Ok(bytes) = BASE64_STANDARD.decode(b64.trim()) {
-            let temp_path = std::env::temp_dir().join(format!("figma_preview_{}.png", resolved_id.replace([':', ';', '/'], "_")));
-            if tokio::fs::write(&temp_path, &bytes).await.is_ok() {
+            let dir = super::server::export_dir();
+            let temp_path = dir.join(format!("figma_preview_{}.png", resolved_id.replace([':', ';', '/'], "_")));
+            if tokio::fs::create_dir_all(&dir).await.is_ok() && tokio::fs::write(&temp_path, &bytes).await.is_ok() {
                 local_screenshot_path = Some(temp_path.to_string_lossy().to_string());
             }
         }
