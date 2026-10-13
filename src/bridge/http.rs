@@ -77,7 +77,7 @@ async fn handle_root(State(state): State<BridgeState>) -> impl IntoResponse {
             "/poll",
             "/response",
             "/exec",
-            "/clear",
+            "/clear (POST)",
             "/sessions",
             "/sse",
             "/message",
@@ -939,6 +939,36 @@ async fn handle_plugin_ui(headers: HeaderMap) -> impl IntoResponse {
     ).into_response()
 }
 
+/// Only loopback hosts: a DNS-rebound name (evil.test -> 127.0.0.1) arrives with its own Host.
+fn is_loopback_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => host.split(':').next().unwrap_or(""),
+    };
+    matches!(name.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1")
+}
+
+/// Browsers always send Origin on CORS/WebSocket requests; native MCP clients send none.
+/// "null" is the Figma plugin iframe.
+// ponytail: "null" is also what a sandboxed iframe on any site sends; a pairing token closes that.
+fn is_allowed_origin(origin: &str) -> bool {
+    if origin == "null" || origin == "https://www.figma.com" || origin == "https://figma.com" {
+        return true;
+    }
+    origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")).is_some_and(is_loopback_host)
+}
+
+async fn local_only(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let headers = req.headers();
+    let header = |name| headers.get(name).map(|v: &axum::http::HeaderValue| v.to_str().unwrap_or(""));
+    let foreign = header(axum::http::header::HOST).is_some_and(|h| !is_loopback_host(h))
+        || header(axum::http::header::ORIGIN).is_some_and(|o| !is_allowed_origin(o));
+    if foreign {
+        return (StatusCode::FORBIDDEN, "figma-rust-mcp only accepts local requests").into_response();
+    }
+    next.run(req).await
+}
+
 pub fn create_router(state: BridgeState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -955,7 +985,7 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/health", get(handle_health))
         .route("/benchmark", post(handle_benchmark))
         .route("/usage", get(handle_usage))
-        .route("/clear", get(handle_clear).post(handle_clear))
+        .route("/clear", post(handle_clear))
         .route("/sse", get(handle_mcp_sse))
         .route("/message", post(handle_mcp_message))
         .route("/messages", post(handle_mcp_message))
@@ -967,6 +997,7 @@ pub fn create_router(state: BridgeState) -> Router {
         // Large design trees arrive through /response; axum's 2MB default would 413 them.
         .layer(axum::extract::DefaultBodyLimit::max(64 << 20))
         .layer(cors)
+        .layer(axum::middleware::from_fn(local_only))
         .with_state(state)
 }
 
@@ -1095,6 +1126,29 @@ mod contract_tests {
         }
         assert_eq!(task.await.unwrap().unwrap()["svg"], "<svg/>");
         assert!(state.send_operation("export_node", json!({"format":"PDF"}), Some("test")).await.unwrap_err().contains("supports PNG"));
+    }
+
+    #[test]
+    fn rejects_foreign_hosts_and_origins() {
+        for host in ["127.0.0.1:41730", "localhost:41731", "[::1]:41730", "LOCALHOST"] { assert!(is_loopback_host(host), "{host}"); }
+        for host in ["evil.test:41730", "127.0.0.1.evil.test", "localhost.evil.test:41730"] { assert!(!is_loopback_host(host), "{host}"); }
+        for origin in ["null", "https://www.figma.com", "http://localhost:6274", "http://127.0.0.1:41730"] { assert!(is_allowed_origin(origin), "{origin}"); }
+        for origin in ["https://evil.test", "http://localhost.evil.test", "https://figma.com.evil.test"] { assert!(!is_allowed_origin(origin), "{origin}"); }
+    }
+
+    #[tokio::test]
+    async fn middleware_blocks_foreign_origin_and_rebound_host() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, create_router(BridgeState::new(port))).await.unwrap(); });
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/health");
+        assert_eq!(client.get(&url).send().await.unwrap().status(), 200);
+        assert_eq!(client.get(&url).header("origin", "null").send().await.unwrap().status(), 200);
+        assert_eq!(client.get(&url).header("origin", "https://evil.test").send().await.unwrap().status(), 403);
+        assert_eq!(client.get(&url).header("host", "evil.test").send().await.unwrap().status(), 403);
+        assert_eq!(client.get(format!("http://127.0.0.1:{port}/clear")).send().await.unwrap().status(), 405);
+        server.abort();
     }
 
     #[test]

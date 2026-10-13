@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+- The bridge rejects requests whose `Host` is not loopback (DNS rebinding) and browser requests from origins other than the Figma plugin, `figma.com` and `localhost`. `/clear` is POST-only.
+- The prebuilt binary is verified against the release's `SHA256SUMS.txt`; the fallback to the `latest` release (possibly another major) is removed.
+
+### Changed
+- Release binary 12.7 → 9.9 MB and 7.5 → 6.4 MB RSS (fat LTO, one codegen unit, trimmed tokio/tower-http features, unused `url` crate removed).
+- npm package no longer ships `scripts/` (test and bench files).
+- CI fails when the committed plugin bundle is stale.
+
 ## [8.0.2] — 2026-10-12
 
 ### Fixed

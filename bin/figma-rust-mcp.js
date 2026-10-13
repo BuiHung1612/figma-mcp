@@ -8,6 +8,7 @@
 
 import { spawn, execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import https from 'node:https';
@@ -158,6 +159,13 @@ function downloadFile(url, destPath) {
   });
 }
 
+function verifyChecksum(filePath, assetName, sums) {
+  const line = sums.split('\n').find(l => l.trim().split(/\s+\*?/)[1] === assetName);
+  if (!line) throw new Error(`No checksum for ${assetName} in SHA256SUMS.txt`);
+  const actual = createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  if (actual !== line.trim().split(/\s+/)[0].toLowerCase()) throw new Error(`Checksum mismatch for ${assetName}`);
+}
+
 function extractArchive(archivePath, targetDir, ext) {
   fs.mkdirSync(targetDir, { recursive: true });
 
@@ -203,20 +211,20 @@ async function findOrDownloadBinary() {
   fs.mkdirSync(cacheDir, { recursive: true });
   const archivePath = path.join(cacheDir, info.assetName);
 
-  const releaseUrl = `https://github.com/${repoOwner}/${repoName}/releases/download/v${pkgVersion}/${info.assetName}`;
-  const latestUrl = `https://github.com/${repoOwner}/${repoName}/releases/latest/download/${info.assetName}`;
+  const releaseBase = `https://github.com/${repoOwner}/${repoName}/releases/download/v${pkgVersion}`;
+  const sumsPath = path.join(cacheDir, 'SHA256SUMS.txt');
 
   process.stderr.write(`${tag(36)} Downloading binary for ${info.osName}-${info.archName} (v${pkgVersion})...\n`);
 
   try {
-    await downloadFile(releaseUrl, archivePath);
+    await downloadFile(`${releaseBase}/${info.assetName}`, archivePath);
+    await downloadFile(`${releaseBase}/SHA256SUMS.txt`, sumsPath);
+    verifyChecksum(archivePath, info.assetName, fs.readFileSync(sumsPath, 'utf8'));
   } catch (err) {
-    process.stderr.write(`${tag(33)} Release v${pkgVersion} not found, trying latest release...\n`);
-    try {
-      await downloadFile(latestUrl, archivePath);
-    } catch (fallbackErr) {
-      throw new Error(`Failed to download figma-rust-mcp prebuilt binary:\n  - ${err.message}\n  - ${fallbackErr.message}\n\nPlease verify your internet connection or build from source: cargo build --release`);
-    }
+    try { fs.unlinkSync(archivePath); } catch (_) {}
+    throw new Error(`Failed to install figma-rust-mcp v${pkgVersion} prebuilt binary: ${err.message}\n\nPlease verify your internet connection or build from source: cargo build --release`);
+  } finally {
+    try { fs.unlinkSync(sumsPath); } catch (_) {}
   }
 
   try {

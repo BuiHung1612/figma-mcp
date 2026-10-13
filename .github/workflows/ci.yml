@@ -31,17 +31,14 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Build Figma Plugin
-        run: node scripts/build-plugin.js
+      - name: Check Figma plugin bundle is up to date
+        run: node scripts/build-plugin.js --check
 
       - name: Test plugin token extraction and version
         run: node --test scripts/test-plugin-tokens.mjs scripts/test-bench.mjs
 
       - name: Rust regression tests
         run: cargo test
-
-      - name: Cargo Check
-        run: cargo check --verbose
 
       - name: Cargo Clippy
         run: cargo clippy --all-targets -- -D warnings
