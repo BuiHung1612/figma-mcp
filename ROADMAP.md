@@ -12,7 +12,6 @@
 - Responsive breakpoint & flex inference
 - Realtime selection streaming over WebSocket
 - Scoped, viewport-first indexing with revisioned delta updates (v4.0.0)
-- Local asset server (`/assets/*path`)
 
 ## 🧭 Next
 

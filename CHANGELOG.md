@@ -6,6 +6,8 @@
 - The bridge listened on `0.0.0.0`, so any machine on the same network could drive Figma through `/mcp` and `/exec`. It now binds `127.0.0.1` and `::1` only.
 - Plugin pairing: setup writes a secret to `~/.figma-rust-mcp/plugin-token` and into the installed plugin loader. `/ws`, `/poll`, `/response` and any request from the plugin origin (`null`, which any site can also send from a sandboxed iframe) must carry it. Native MCP clients are unaffected. An already installed loader is refreshed by `--upgrade`/`--init`; one imported from elsewhere shows **Not paired** until `npx -y figma-rust-mcp@latest --setup-plugin` is run.
 - The bridge rejects requests whose `Host` is not loopback (DNS rebinding) and browser requests from origins other than the Figma plugin, `figma.com` and `localhost`. `/clear` is POST-only.
+- Removed the `/assets/*path` route: nothing wrote to its folder, and on Windows a drive path (`C:\…`) let it read any file.
+- `figma.loadImage` downloads are capped at 20 MB and icons at 256 KB instead of buffering any size into memory. Icon names are limited to letters, digits, `-` and `_`, so `../` can no longer pull an arbitrary npm package's SVG.
 - The prebuilt binary is verified against the release's `SHA256SUMS.txt`; the fallback to the `latest` release (possibly another major) is removed.
 
 ### Fixed

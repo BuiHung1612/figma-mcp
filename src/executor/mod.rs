@@ -124,7 +124,7 @@ pub async fn execute_code(
                 }
                 HostRequest::Image { url, opts, resp } => {
                     let res = match http_client.get(&url).send().await {
-                        Ok(r) if r.status().is_success() => match r.bytes().await {
+                        Ok(r) if r.status().is_success() => match assets::read_capped(r, assets::MAX_IMAGE_BYTES).await {
                             Ok(bytes) => {
                                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                                 let mut create_params = json!({

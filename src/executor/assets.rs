@@ -172,12 +172,32 @@ fn remember_icon(cache: &IconCache, name: &str, icon: &RawIcon) {
     entries.push_back((name.to_string(), icon.clone()));
 }
 
+/// Largest image figma.loadImage accepts; it is base64'd and copied through the bridge.
+pub const MAX_IMAGE_BYTES: usize = 20 << 20;
+const MAX_ICON_BYTES: usize = 256 * 1024;
+
+/// Reads a response body, failing as soon as it exceeds `max` instead of buffering it all.
+pub async fn read_capped(mut res: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+    let too_large = || format!("Response is larger than {} KB", max / 1024);
+    if res.content_length().is_some_and(|len| len > max as u64) { return Err(too_large()); }
+    let mut body = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
+        if body.len() + chunk.len() > max { return Err(too_large()); }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 pub async fn fetch_svg_icon(
     client: &reqwest::Client,
     icon_name: &str,
     size: f64,
     fill: &str,
 ) -> Result<String, String> {
+    // Names are spliced into unpkg paths; `../` would escape the pinned package.
+    if icon_name.is_empty() || icon_name.len() > 100 || !icon_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("Invalid icon name \"{icon_name}\": use letters, digits, '-' or '_'"));
+    }
     let cache = ICON_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     let raw = load_icon(client, icon_name, ICON_LIBRARIES, cache).await?;
     Ok(render_icon(&raw.svg, raw.fill_type, size, fill))
@@ -202,7 +222,7 @@ async fn load_icon(
         let url = (lib.url_fn)(icon_name);
         if let Ok(res) = client.get(&url).send().await {
             if res.status().is_success() {
-                if let Ok(text) = res.text().await {
+                if let Ok(text) = read_capped(res, MAX_ICON_BYTES).await.map(|b| String::from_utf8_lossy(&b).into_owned()) {
                     if text.contains("<svg") {
                         let icon = RawIcon {
                             svg: Arc::from(text),
@@ -296,6 +316,23 @@ fn render_icon(text: &str, fill_type: &str, size: f64, fill: &str) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn downloads_stop_at_the_size_cap_and_icon_names_cannot_escape() {
+        let app = axum::Router::new()
+            .route("/small", axum::routing::get(|| async { "x".repeat(10) }))
+            .route("/big", axum::routing::get(|| async { "x".repeat(2048) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let client = reqwest::Client::new();
+        assert_eq!(read_capped(client.get(format!("{base}/small")).send().await.unwrap(), 1024).await.unwrap().len(), 10);
+        assert!(read_capped(client.get(format!("{base}/big")).send().await.unwrap(), 1024).await.unwrap_err().contains("larger"));
+        server.abort();
+        for name in ["../../evil@1.0.0/x", "a/b", "", "home?x=1"] {
+            assert!(fetch_svg_icon(&client, name, 24.0, "#000").await.unwrap_err().contains("Invalid icon name"), "{name}");
+        }
+    }
 
     #[tokio::test]
     async fn cached_raw_icon_reuses_download_without_reusing_color_or_size() {

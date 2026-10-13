@@ -816,36 +816,6 @@ async fn handle_mcp_direct(
     }
 }
 
-async fn handle_asset_serve(
-    axum::extract::Path(path): axum::extract::Path<String>,
-) -> impl IntoResponse {
-    let clean_path = path.trim_start_matches('/');
-    if clean_path.contains("..") {
-        return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
-    }
-    let base_cache = std::env::temp_dir().join("figma-rust-mcp").join("assets");
-    let asset_path = base_cache.join(clean_path);
-
-    if let Ok(bytes) = tokio::fs::read(&asset_path).await {
-        let mime = if clean_path.ends_with(".png") {
-            "image/png"
-        } else if clean_path.ends_with(".svg") {
-            "image/svg+xml"
-        } else if clean_path.ends_with(".jpg") || clean_path.ends_with(".jpeg") {
-            "image/jpeg"
-        } else {
-            "application/octet-stream"
-        };
-        (
-            StatusCode::OK,
-            [("content-type", mime), ("cache-control", "public, max-age=3600")],
-            bytes,
-        ).into_response()
-    } else {
-        (StatusCode::NOT_FOUND, "Asset not found").into_response()
-    }
-}
-
 pub const PLUGIN_RUNTIME_CODE_JS: &str = include_str!("../../plugin-runtime/code.js");
 pub const PLUGIN_RUNTIME_UI_HTML: &str = include_str!("../../plugin-runtime/ui.html");
 
@@ -1004,7 +974,6 @@ pub fn create_router(state: BridgeState) -> Router {
         .route("/plugin/version", get(handle_plugin_version))
         .route("/plugin/code.js", get(handle_plugin_code))
         .route("/plugin/ui.html", get(handle_plugin_ui))
-        .route("/assets/*path", get(handle_asset_serve))
         // Large design trees arrive through /response; axum's 2MB default would 413 them.
         .layer(axum::extract::DefaultBodyLimit::max(64 << 20))
         .layer(cors)
