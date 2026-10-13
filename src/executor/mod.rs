@@ -434,7 +434,9 @@ figma.loadIconIn = async (iconName, opts = {}) => {
 
         let wrapped_code = format!("(async () => {{\n{}\n}})()", code_owned);
         let eval_res = context.eval(Source::from_bytes(&wrapped_code)).and_then(|value| {
-            let promise = JsPromise::from_object(value.as_object().unwrap().clone())?;
+            // Code can close the async wrapper early, leaving a non-promise completion value.
+            let Some(object) = value.as_object() else { return Ok(value) };
+            let promise = JsPromise::from_object(object.clone())?;
             context.run_jobs();
             match promise.state() {
                 PromiseState::Fulfilled(value) => Ok(value),
@@ -481,7 +483,7 @@ figma.loadIconIn = async (iconName, opts = {}) => {
         }
     };
 
-    let captured_logs = logs.lock().unwrap().clone();
+    let captured_logs = logs.lock().map(|l| l.clone()).unwrap_or_default();
 
     ExecResult {
         success,
@@ -493,6 +495,13 @@ figma.loadIconIn = async (iconName, opts = {}) => {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn code_escaping_the_async_wrapper_does_not_panic() {
+        let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));
+        let res = super::execute_code("})(); (() => {", bridge, None).await;
+        assert!(res.error.as_deref().is_none_or(|e| !e.contains("panicked")), "{:?}", res.error);
+    }
+
     #[tokio::test]
     async fn runaway_loop_fails_instead_of_hanging() {
         let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));

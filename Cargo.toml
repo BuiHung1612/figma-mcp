@@ -28,5 +28,4 @@ csscolorparser = "0.8.4"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
 strip = true
