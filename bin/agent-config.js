@@ -37,6 +37,16 @@ export function detectAgents({ home = os.homedir(), env = process.env, platform 
   return agents.filter(agent => agent.installed).map(({ installed, ...agent }) => agent);
 }
 
+/** Write via a temp file + rename so a crash never leaves the agent's config truncated. */
+function writeAtomic(filePath, text) {
+  const target = fs.existsSync(filePath) ? fs.realpathSync(filePath) : filePath; // keep dotfile symlinks
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const mode = fs.existsSync(target) ? fs.statSync(target).mode & 0o777 : 0o644;
+  const temp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, text, { mode });
+  fs.renameSync(temp, target);
+}
+
 function upsertJsonc(filePath, rootKey, value) {
   const source = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '{}\n';
   const errors = [];
@@ -49,10 +59,7 @@ function upsertJsonc(filePath, rootKey, value) {
     if (!Object.hasOwn(value, key) && Object.hasOwn(merged, key)) delete merged[key];
   }
   const edits = modify(source, [rootKey, SERVER_NAME], merged, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' } });
-  if (edits.length) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, applyEdits(source, edits));
-  }
+  if (edits.length) writeAtomic(filePath, applyEdits(source, edits));
   return edits.length > 0;
 }
 
@@ -60,22 +67,28 @@ function upsertCodex(filePath) {
   const source = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
   const lines = source.match(/[^\n]*\n|[^\n]+$/g) || [];
   const headers = ['[mcp_servers.figma-rust-mcp]', '[mcp_servers."figma-rust-mcp"]'];
-  const start = lines.findIndex(line => headers.includes(line.trim()));
-  const block = `[mcp_servers.figma-rust-mcp]\nurl = ${JSON.stringify(HTTP_URL)}\n`;
+  const start = lines.findIndex(line => headers.includes(line.replace(/#.*/, '').trim()));
+  const urlLine = `url = ${JSON.stringify(HTTP_URL)}\n`;
   let output;
   if (start < 0) {
-    output = `${source.trimEnd()}${source.trim() ? '\n\n' : ''}${block}`;
+    output = `${source.trimEnd()}${source.trim() ? '\n\n' : ''}[mcp_servers.figma-rust-mcp]\n${urlLine}`;
   } else {
     let end = start + 1;
     while (end < lines.length && !/^\s*\[/.test(lines[end])) end++;
-    const oldBlock = lines.slice(start, end).join('');
-    const newBlock = `${block}\n`;
-    if (oldBlock === newBlock || oldBlock === block) return false;
-    lines.splice(start, end - start, newBlock);
+    // Replace only the transport keys; the user's other keys (enabled, timeouts) and comments stay.
+    const kept = [];
+    for (let i = start + 1; i < end; i++) {
+      const transport = lines[i].match(/^\s*(url|command|args)\s*=\s*(.*)\n?$/);
+      if (!transport) { kept.push(lines[i]); continue; }
+      // ponytail: a multi-line array is skipped up to its closing ']' line; nested arrays are not expected here.
+      if (transport[2].trim().startsWith('[') && !transport[2].includes(']')) while (i + 1 < end && !lines[++i].includes(']'));
+    }
+    const header = lines[start].endsWith('\n') ? lines[start] : `${lines[start]}\n`;
+    lines.splice(start, end - start, header, urlLine, ...kept);
     output = lines.join('');
   }
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, output);
+  if (output === source) return false;
+  writeAtomic(filePath, output);
   return true;
 }
 

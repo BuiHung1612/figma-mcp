@@ -340,6 +340,10 @@ test('agent setup detects installed clients and preserves existing JSONC and TOM
     assert.match(codexText, /\[mcp_servers\.other\]/);
     assert.match(codexText, /\[mcp_servers\.figma-rust-mcp\]\nurl = "http:\/\/127\.0\.0\.1:41730\/mcp"/);
     assert.equal(configureAgent(codex), false);
+    writeFileSync(codex.configPath, '[mcp_servers.figma-rust-mcp] # mine\ncommand = "npx"\nargs = [\n  "-y",\n  "figma-rust-mcp",\n]\nstartup_timeout_sec = 30\n\n# next table\n[other]\nx = 1\n');
+    assert.equal(configureAgent(codex), true);
+    assert.equal(readFileSync(codex.configPath, 'utf8'), '[mcp_servers.figma-rust-mcp] # mine\nurl = "http://127.0.0.1:41730/mcp"\nstartup_timeout_sec = 30\n\n# next table\n[other]\nx = 1\n');
+    assert.equal(configureAgent(codex), false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

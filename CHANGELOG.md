@@ -18,6 +18,9 @@
 - A `figma_write` script returning a cyclic or very deeply nested object overflowed the stack and killed the daemon. Such results now come back as an explanation; ordinary results are unchanged.
 - `figma_prepare_design only=assets` overwrote an existing `index.ts` barrel with this batch only; it now appends missing exports. Icon names starting with a digit produce valid identifiers.
 - `figma_prepare_design only=assets` reported `success: true` when folders or files could not be written; it now lists `errors`, plugin `failures` and `truncated`.
+- Setup wrote agent configs in place, so a crash could truncate `~/.claude.json` or VS Code's `mcp.json`; writes now go through a temp file and rename (symlinked dotfiles stay symlinked).
+- Codex setup replaced the whole `[mcp_servers.figma-rust-mcp]` table, dropping keys such as `startup_timeout_sec`, and appended a duplicate table when the header had a trailing comment. Only `url`/`command`/`args` are replaced now.
+- Saving a Figma file key in the plugin cleared the server's runtime version and operation list for that tab.
 - `figma_read export_node` ignored `outputPath` and returned the full base64.
 - `figma_status task=start|end` panicked when the session expired while waiting for the tab lock.
 - A panic anywhere in the daemon aborted the whole process (`panic = "abort"`), so the existing "Execution task panicked" handling never ran. Panics now stay in the failing request.

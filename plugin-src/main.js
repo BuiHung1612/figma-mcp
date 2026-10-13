@@ -58,9 +58,10 @@ var currentSessionId = currentDocumentId + ":tab:" + Date.now().toString(36) + "
 var currentFileName = figma.root ? figma.root.name : "Untitled";
 var currentFileKey = getSavedFileKey();
 
-// Broadcast active file / session metadata on startup
-try {
-  figma.ui.postMessage({
+// Always the full payload: the UI forwards it as runtime capabilities, and missing
+// fields would clear the server's runtimeVersion/operations for this session.
+function sessionInfo() {
+  return {
     type: "session-info",
     sessionId: currentSessionId,
     fileName: currentFileName,
@@ -69,7 +70,12 @@ try {
     runtimeVersion: "{{PLUGIN_VERSION}}",
     protocolVersion: 3,
     operations: Object.keys(handlers)
-  });
+  };
+}
+
+// Broadcast active file / session metadata on startup
+try {
+  figma.ui.postMessage(sessionInfo());
 } catch (e) {}
 
 // Broadcast selection changes live to UI and expand only the selected scope.
@@ -323,10 +329,7 @@ async function handlePluginRequest(request) {
   }
 
   if (request.type === "runtime-ready") {
-    figma.ui.postMessage({ type: "session-info", sessionId: currentSessionId,
-      fileName: currentFileName, fileKey: currentFileKey,
-    documentId: currentDocumentId,
-      runtimeVersion: "{{PLUGIN_VERSION}}", protocolVersion: 3, operations: Object.keys(handlers) });
+    figma.ui.postMessage(sessionInfo());
     publishIndex(true).catch(function() {});
     return;
   }
@@ -367,12 +370,7 @@ async function handlePluginRequest(request) {
       if (newFileKey) {
         figma.root.setPluginData("figma_file_key", newFileKey);
         currentFileKey = newFileKey;
-        figma.ui.postMessage({
-          type: "session-info",
-          sessionId: currentSessionId,
-          fileName: currentFileName,
-          fileKey: newFileKey
-        });
+        figma.ui.postMessage(sessionInfo());
         figma.notify("Figma File Key saved!", { timeout: 1500 });
       }
     } catch(e) {}
