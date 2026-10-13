@@ -1,6 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [9.0.0] — 2026-10-13
+
+### Breaking
+- **Plugin pairing.** The plugin loader must carry the token setup writes to `~/.figma-rust-mcp/plugin-token`. Upgrading with `npx -y figma-rust-mcp@latest --init` (a v8 `--upgrade` stays on v8) refreshes the installed loader; a loader imported from `plugin.zip` or the repo shows **Not paired** until `npx -y figma-rust-mcp@latest --setup-plugin` is run.
+- **Absolute paths over HTTP.** Agents connected through `/mcp` or `/sse` (every agent setup configures) must pass absolute `outputPath`, `iconDir`, `imageDir` and `projectDir`; relative ones are rejected with an explanation. `--stdio` clients are unchanged.
+- **Loopback only.** The bridge no longer answers on LAN addresses, and browser requests from other origins are refused.
+- **Windows service** moves from a scheduled task to the per-user `Run` key; the v9 install migrates it. The old task is removed.
+- Removed `--register-scheme` and the `figma-rust-mcp://` URL scheme, the `/assets/*path` route and `GET /clear` (use `POST`).
 
 ### Security
 - The bridge listened on `0.0.0.0`, so any machine on the same network could drive Figma through `/mcp` and `/exec`. It now binds `127.0.0.1` and `::1` only.

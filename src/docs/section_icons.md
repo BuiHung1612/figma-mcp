@@ -329,5 +329,5 @@ await figma.create({ type: "FRAME", layoutMode: "HORIZONTAL",
 
 ```js
 figma_read({ operation: "screenshot", nodeId: "123:456", scale: 1 })
-figma_read({ operation: "export_image", nodeId: "123:456", scale: 2, format: "png", outputPath: "src/assets/hero.png" })
+figma_read({ operation: "export_image", nodeId: "123:456", scale: 2, format: "png", outputPath: "/abs/path/to/project/src/assets/hero.png" })
 ```

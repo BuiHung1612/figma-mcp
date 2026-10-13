@@ -242,8 +242,9 @@ var { results } = await figma.search_nodes({ type: "TEXT", includeHidden: true }
 
 **export_image / export_svg / screenshot:**
 ```js
-figma_read({ operation: "export_image", nodeId: "89:209", scale: 2, format: "png", outputPath: "public/hero.png" })
-// → { savedTo, sizeBytes, ... }; without outputPath the file goes to the temp folder and its path is returned
+figma_read({ operation: "export_image", nodeId: "89:209", scale: 2, format: "png", outputPath: "/abs/path/to/project/public/hero.png" })
+// → { savedTo, sizeBytes, ... }; use absolute paths (HTTP clients get an error for relative ones).
+// Without outputPath the file goes to ~/.figma-rust-mcp/exports (pruned after a day) and its path is returned
 figma_read({ operation: "screenshot", nodeId: "89:209", scale: 0.5 })   // inline image for visual review
 ```
 

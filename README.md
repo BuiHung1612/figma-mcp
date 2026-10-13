@@ -49,7 +49,7 @@ Enables AI agents (Google Antigravity, Claude Code, Cursor, Windsurf, VS Code, Z
 ```
 
 ### 🔌 How the Zero-Touch Connection Works:
-1. **Permanent Thin Loader**: You only import the Figma plugin **once** (`~/.figma-rust-mcp/plugin/manifest.json`).
+1. **Permanent Thin Loader**: You only import the Figma plugin **once** (`~/.figma-rust-mcp/plugin/manifest.json`). Setup writes a pairing token (`~/.figma-rust-mcp/plugin-token`) into this loader, so web pages cannot pose as the plugin. If the plugin shows **Not paired**, run `npx -y figma-rust-mcp@latest --setup-plugin` and restart the plugin.
 2. **Dynamic Runtime Streaming**: Upon launch, the Thin Loader contacts `http://127.0.0.1:41730/plugin/code.js` to fetch and execute the latest runtime in memory.
 3. **Live WebSocket Hot-Reload**: The plugin connects to `ws://127.0.0.1:41730/ws`. When you upgrade `figma-rust-mcp` or restart the daemon, the plugin automatically detects the new server version and hot-reloads seamlessly — **no need to re-import or restart the plugin in Figma**.
 4. **Auto-Reconnect & Offline Buffer**: If Figma is opened before the Rust service starts, the plugin displays a waiting screen and connects automatically the instant the service is up.
@@ -119,11 +119,11 @@ The server keeps running after the terminal closes. Logs are appended to
 `%LOCALAPPDATA%\figma-rust-mcp\logs\server.log`. Use `--server` for the foreground
 terminal dashboard, or `--stdio` for an MCP client subprocess.
 
-`--install-service` through the npm runner configures background startup at login.
-Re-run the installation command to update an existing Windows task. Removing the
-task disables future login startup; stop an already detached server through Task
-Manager (`figma-rust-mcp.exe`). The launcher console may appear briefly when opening
-the executable; the server itself does not retain a console window.
+`--install-service` through the npm runner configures background startup at login
+through the per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` key (no
+administrator rights needed) and starts the server right away. `--uninstall-service`
+removes the key and stops the running server. The launcher console may appear briefly
+when opening the executable; the server itself does not retain a console window.
 
 ### 2. Build from Source (Optional)
 
@@ -254,6 +254,7 @@ Built-in documentation, design rules, layout guidelines and examples for `figma_
 ### 5. `figma_prepare_design`
 **Start here for design-to-code.** One call returns a grounding pack: screenshot, every visible text (through expanded instances, with coverage), SVG icons exported to `iconDir` with import statements, matched codebase components and an implementation checklist.
 - **`nodeId`**, **`iconDir`** (default `src/assets/icons`), **`projectDir`** (default `.`), **`detail`**, **`outputPath`**.
+- Path arguments must be absolute when the client connects over HTTP (`/mcp`, `/sse`; what setup configures), because the server cannot see the client's folder. Relative paths and the defaults above resolve against the project only for `--stdio` clients.
 - **`only: "assets"`**: just export SVG icons (`iconDir`) and raster images (`imageDir`, default `public/images`) with an `index.ts` barrel (`createBarrel`).
 - **`only: "components"`**: just list codebase components (`src/components`, `components`, ...) and match `nodeId` against them.
 
