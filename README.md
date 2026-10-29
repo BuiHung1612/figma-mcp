@@ -467,11 +467,19 @@ Use `figma_read` with `operation: "get_spec"` instead of loading a full frame in
 ```
 
 - `overview` defaults to depth 2, returning section IDs for discovery. It does **not** claim deep text coverage.
+- `outline` reads the whole subtree (all pages) and returns one line per layer instead of records: text with font/size/weight/line height/color, auto-layout gap and padding, fills, borders, radius, effects, plus the **variable and text-style names** bound to each value (library ones included). Vectors are pruned, icons and device chrome (status bar, keyboard) become one line, and any block repeated elsewhere is reduced to its head line and its copy. On real mobile screens this is 2–6k characters where `spec` returns 50k+. `outputPath` saves the outline text.
+
+  ```
+  FRAME 'search container' 402x391 col gap12(space-12) pad12,16,16,16 bg #ffffff(Background/Neutral/White) r20,20,0,0
+    TEXT "You search for “NAD+”" Inter 16/Medium lh24 #000000(Text/Neutral/black) style=Inter/Body 16px/Medium
+    FRAME 'Shopping cart card' 370x83 row gap8 pad8 … = same layout as earlier: "GHK-Cu" "$99.99" "Add"
+  ```
 - Read each section with `mode: "spec"`; `mode: "detail"` reads one node at depth 0. `fields` can select geometry/layout or content/text independently.
 - `maxBytes` defaults to 24000 raw node bytes per page. Continue `nextCursor` with the same `sessionId`, mode and optional byte budget. No records are dropped. A single large node, response metadata and resolved component references can exceed this target.
 - Exact repeated style bundles use `_compression.styles`; repeated node properties use `templates`. Decode template references first, then style references. Identity, topology, copy, geometry, variants and mixed text remain reconstructable. This is property sharing, not heuristic merging of visually similar subtrees.
 - `coverage.subtreeComplete` distinguishes a complete deep read from exhausted pagination at a shallow depth. Counts describe the returned page, not unread descendants.
 - Pass `outputPath` on a fresh request to save **all pages of the requested scope** as raw JSON and return only coverage/path. A shallow overview export remains shallow. Raw data is also available through the existing session cache and node-ID reads.
+- `read_nodes` accepts `names: true` to add a `names` map from every variable and style id in the page to its name.
 - Existing `read_nodes` remains raw by default; `detail: "compact"` enables lossless shared-style compression. It also accepts `maxBytes`.
 
 `figma_prepare_design` now follows expanded instance pagination for text and reports separate text/asset coverage. Default compact output omits the redundant `colorPalette`; use `detail: "full"` to retain it. Pass `outputPath` to save the grounding pack plus raw design records outside context. Asset export caps and failures are reported; exported icons do not imply all assets were inspected.

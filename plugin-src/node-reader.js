@@ -61,6 +61,37 @@ function readNodeRecord(node, children, parentId, fields, opaque) {
   return info;
 }
 
+// Variable and style ids are opaque (library ones look like
+// "VariableID:<hash>/5720:158"); names let a reader map values to tokens.
+async function resolveReferenceNames(nodes) {
+  var variableIds = new Set(), styleIds = new Set();
+  function walk(value) {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) { value.forEach(walk); return; }
+    if (value.type === "VARIABLE_ALIAS" && typeof value.id === "string") variableIds.add(value.id);
+    for (var key in value) walk(value[key]);
+  }
+  nodes.forEach(function(node) {
+    walk(node.boundVariables); walk(node.paintData); walk(node.strokes);
+    ["fillStyleId", "strokeStyleId", "textStyleId", "effectStyleId"].forEach(function(key) {
+      if (typeof node[key] === "string" && node[key] && node[key] !== "mixed") styleIds.add(node[key]);
+    });
+  });
+  var names = {};
+  await Promise.all(Array.from(variableIds).map(async function(id) {
+    var variable = await getVariableSafeAsync(id);
+    if (variable && variable.name) names[id] = variable.name;
+  }));
+  await Promise.all(Array.from(styleIds).map(async function(id) {
+    try {
+      var style = typeof figma.getStyleByIdAsync === "function"
+        ? await settleWithin(figma.getStyleByIdAsync(id), 2000, null, "style " + id) : null;
+      if (style && style.name) names[id] = style.name;
+    } catch (e) {}
+  }));
+  return names;
+}
+
 handlers.read_nodes = async function(params) {
   var p = params || {};
   for (var target of ["id", "name"]) {
@@ -74,7 +105,7 @@ handlers.read_nodes = async function(params) {
   if (p.cursor !== undefined) {
     if (typeof p.cursor !== "string" || !nodeReadCursors.has(p.cursor)) throw new Error("Cursor expired; start a new read_nodes request");
     state = nodeReadCursors.get(p.cursor);
-    for (var key of ["id", "depth", "fields", "includeHidden", "expandInstances"]) {
+    for (var key of ["id", "depth", "fields", "includeHidden", "expandInstances", "names"]) {
       if (p[key] !== undefined && JSON.stringify(p[key]) !== JSON.stringify(state.options[key])) {
         throw new Error("Cursor options cannot change; start a new read_nodes request");
       }
@@ -85,7 +116,7 @@ handlers.read_nodes = async function(params) {
     if (!Array.isArray(fields) || !fields.length || fields.some(function(field) { return NODE_FIELDS.indexOf(field) === -1; })) {
       throw new Error("fields must contain geometry, content, text, style, layout, tokens or component");
     }
-    for (var flag of ["includeHidden", "expandInstances"]) {
+    for (var flag of ["includeHidden", "expandInstances", "names"]) {
       if (p[flag] !== undefined && typeof p[flag] !== "boolean") throw new Error(flag + " must be boolean");
     }
     var page = figma.currentPage;
@@ -96,7 +127,7 @@ handlers.read_nodes = async function(params) {
     if (root !== page && ancestor !== page) throw new Error("read_nodes only indexes the active page; switch pages first");
     var depth = p.depth === undefined ? (root === page ? 0 : 256) : p.depth === "full" ? 256 : p.depth;
     if (!Number.isInteger(depth) || depth < 0 || depth > 256) throw new Error("depth must be full or an integer from 0 to 256");
-    var options = { id: root.id, depth: depth, fields: fields, includeHidden: p.includeHidden === true, expandInstances: p.expandInstances === true };
+    var options = { id: root.id, depth: depth, fields: fields, includeHidden: p.includeHidden === true, expandInstances: p.expandInstances === true, names: p.names === true };
     var roots = withInstanceVisibility(options.includeHidden, function() { return root === page ? page.children : [root]; });
     state = { options: options, pageId: page.id, revision: nodeRevision, visited: 0,
       stack: [{ children: roots, next: 0, depth: 0, parentId: root === page || !root.parent || root.parent.type === "PAGE" ? null : root.parent.id }] };
@@ -135,6 +166,7 @@ handlers.read_nodes = async function(params) {
   while (state.stack.length && state.stack[state.stack.length - 1].next >= state.stack[state.stack.length - 1].children.length) state.stack.pop();
   var componentResolution = instances.length ? await resolveInstanceComponents(instances) : null;
   if (state.pageId !== figma.currentPage.id || state.revision !== nodeRevision) throw new Error("Document changed during read; retry read_nodes");
+  var names = state.options.names ? await resolveReferenceNames(nodes) : undefined;
   var nextCursor = null;
   if (state.stack.length && state.visited < 50000) {
     nextCursor = "nodes:" + (++nodeReadSequence);
@@ -145,5 +177,5 @@ handlers.read_nodes = async function(params) {
   return { schemaVersion: 4, pageId: state.pageId, revision: state.revision, scope: state.options,
     nodes: nodes, nextCursor: nextCursor, complete: !state.stack.length, totalRead: state.visited,
     byteLimitReached: byteLimitReached, oversizedNode: maxBytes !== undefined && bytes > maxBytes,
-    budgetReached: state.stack.length > 0 && state.visited >= 50000, componentResolution: componentResolution };
+    budgetReached: state.stack.length > 0 && state.visited >= 50000, componentResolution: componentResolution, names: names };
 };

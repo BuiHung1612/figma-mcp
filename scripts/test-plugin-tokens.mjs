@@ -447,6 +447,24 @@ test('page index is shallow; frame reads paginate and instances expand only on r
   assert.equal(figma.skipInvisibleInstanceChildren, false);
 });
 
+test('read_nodes names resolves variable and style ids, library ones included', async () => {
+  const page = { id: 'page', type: 'PAGE', children: [] };
+  const text = { id: 't', name: 'Title', type: 'TEXT', characters: 'Hi', visible: true, textStyleId: 'S:key,1:2',
+    fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:lib/5:1' } } }],
+    boundVariables: { fontSize: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:4:2' }] } };
+  const frame = { id: 'f', name: 'Frame', type: 'FRAME', parent: page, visible: true, children: [text],
+    boundVariables: { itemSpacing: { type: 'VARIABLE_ALIAS', id: 'VariableID:4:3' } } };
+  text.parent = frame; page.children = [frame];
+  const names = { 'VariableID:lib/5:1': 'text/black', 'VariableID:4:2': 'font/16', 'VariableID:4:3': 'space/8' };
+  const r = runtime({ currentPage: page, root: { name: 'File' }, getNodeByIdAsync: async id => id === 'f' ? frame : null,
+    getStyleByIdAsync: async id => id === 'S:key,1:2' ? { name: 'Body/16 Regular' } : null,
+    variables: { getVariableByIdAsync: async id => names[id] ? { id, name: names[id] } : null } });
+  const read = await r.handlers.read_nodes({ id: 'f', fields: ['style', 'tokens'], names: true });
+  assert.deepEqual(plain(read.names), { ...names, 'S:key,1:2': 'Body/16 Regular' });
+  assert.equal((await r.handlers.read_nodes({ id: 'f', fields: ['style', 'tokens'] })).names, undefined);
+  await assert.rejects(r.handlers.read_nodes({ id: 'f', names: 'yes' }), /names must be boolean/);
+});
+
 test('index yields by elapsed time and cancels when the active page changes', async () => {
   let elapsed = 0, reads = 0, previousReads = 0, yields = 0;
   const messages = [];

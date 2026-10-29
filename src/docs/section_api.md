@@ -15,6 +15,8 @@ await figma.createPage({ name: "Signals" })          // create (no-op if exists)
 ## Reading nodes (MCP tool)
 Use `figma_read { operation: "read_nodes", nodeId, fields, limit }` (optionally `expandInstances`, `includeHidden`). Fields: geometry, content, text, style, layout, tokens, component; default geometry + content. Returns flat `nodes` with `nextCursor` and `complete`; continue with `cursor` and `limit` only, and restart if `revision` changes. Responses are compact by default: decode `_compression` as its `decode` field says, or pass `detail: "full"`. `inspect_node`, `subtree` and `typography` return the same envelope. The sandbox helpers below keep their own formats.
 
+To implement a screen, read each frame with `figma_read { operation: "get_spec", nodeId, mode: "outline" }`: one line per layer with font, color, spacing, radius and the bound variable / text-style names, vectors pruned and repeated blocks collapsed. Map those names to the codebase tokens instead of guessing from screenshots.
+
 ---
 
 ## Query nodes

@@ -45,7 +45,7 @@ pub fn get_tools() -> Vec<ToolDefinition> {
                     "precision": { "type": "string", "enum": ["exact", "rounded"], "description": "rounded uses integer geometry." },
                     "maxNodes": { "type": "number", "description": "get_selection/scan_design node budget; truncation sets meta.nodesTruncated." },
                     "absolute": { "type": "boolean", "description": "get_selection: absoluteBoundingBox on every node." },
-                    "mode": {"type":"string","enum":["overview","spec","detail"],"description":"get_spec: overview (default, depth 2), spec (one section deep), detail (one node)."},
+                    "mode": {"type":"string","enum":["overview","spec","detail","outline"],"description":"get_spec: overview (default, depth 2), spec (one section deep), detail (one node), outline (whole subtree as one line per layer: text styles, spacing, colors with token names; vectors pruned, repeated siblings collapsed — the cheapest way to implement a design)."},
                     "maxBytes": {"type":"integer","minimum":1024,"maximum":1000000,"description":"get_spec page byte target (default 24000)."},
                     "query": { "type": "string", "description": "search_* text." },
                     "nodeType": { "type": "string", "description": "search_nodes type filter (FRAME, TEXT, INSTANCE...)." },

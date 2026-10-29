@@ -2,6 +2,7 @@ pub mod codegen;
 pub mod color;
 pub mod component_matcher;
 pub mod design_pack;
+pub mod outline;
 pub mod project_tools;
 pub mod protocol;
 pub mod read_tools;

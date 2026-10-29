@@ -78,16 +78,21 @@ pub(super) async fn read_all(bridge: &BridgeHandle, mut params: Value, session: 
     let mut nodes = Vec::new();
     let mut resolved = 0;
     let mut components_truncated = false;
+    let mut names = Map::new();
     loop {
         let mut page = bridge.send_operation("read_nodes",params,session).await?;
         resolved += page["componentResolution"]["resolved"].as_u64().unwrap_or(0);
         components_truncated |= page["componentResolution"]["truncated"] == true;
         nodes.extend(page["nodes"].as_array().ok_or("Reader returned no nodes")?.iter().cloned());
+        if let Some(page_names) = page["names"].as_object() {
+            for (id,name) in page_names { names.insert(id.clone(),name.clone()); }
+        }
         if let Some(cursor) = page["nextCursor"].as_str() {
             params = json!({"cursor":cursor,"limit":500});
         } else {
             page["nodes"] = json!(nodes);
             page["componentResolution"] = json!({"resolved":resolved,"truncated":components_truncated});
+            if !names.is_empty() { page["names"] = Value::Object(names); }
             return Ok(page);
         }
     }
@@ -95,7 +100,7 @@ pub(super) async fn read_all(bridge: &BridgeHandle, mut params: Value, session: 
 
 pub(super) async fn get_spec(bridge: BridgeHandle, args: Value) -> ToolResult {
     let mode = args["mode"].as_str().unwrap_or("overview");
-    if !["overview","spec","detail"].contains(&mode) { return ToolResult::error("mode must be overview, spec or detail"); }
+    if !["overview","spec","detail","outline"].contains(&mode) { return ToolResult::error("mode must be overview, spec, detail or outline"); }
     let session = args["sessionId"].as_str();
     let mut params = json!({});
     if let Some(obj) = args.as_object() {
@@ -113,6 +118,7 @@ pub(super) async fn get_spec(bridge: BridgeHandle, args: Value) -> ToolResult {
         if params.get("fields").is_none() { params["fields"] = if mode == "overview" { json!(["geometry","content","layout","component"]) } else { json!(["geometry","content","text","style","layout","tokens","component"]) }; }
         if params.get("expandInstances").is_none() { params["expandInstances"] = json!(true); }
     }
+    if mode == "outline" { return outline(&bridge,params,&args,session).await; }
     if params.get("maxBytes").is_none() { params["maxBytes"] = json!(24000); }
     let data = if args.get("outputPath").is_some() {
         if params.get("cursor").is_some() { return ToolResult::error("outputPath requires a new read, not a cursor"); }
@@ -135,6 +141,27 @@ pub(super) async fn get_spec(bridge: BridgeHandle, args: Value) -> ToolResult {
     out["rawBytes"] = json!(raw_bytes);
     out["hint"] = json!("Use overview node IDs to read sections individually with mode:spec; continue nextCursor with the same sessionId. maxBytes targets raw node bytes; one oversized node, metadata and component resolution may exceed it.");
     ToolResult::text(out.to_string())
+}
+
+// The whole subtree is read (all pages) and only the rendered outline enters context.
+async fn outline(bridge: &BridgeHandle, mut params: Value, args: &Value, session: Option<&str>) -> ToolResult {
+    if params.get("cursor").is_some() { return ToolResult::error("mode outline reads the whole subtree; omit cursor"); }
+    params["names"] = json!(true);
+    let data = match read_all(bridge,params,session).await { Ok(data) => data, Err(e) => return ToolResult::error(e) };
+    let text = super::outline::render(&data);
+    let coverage = coverage(&data);
+    let header = format!("# outline nodes={} lines={} complete={}{}\n",
+        coverage["nodesReturned"], text.lines().count(), coverage["subtreeComplete"],
+        if data["componentResolution"]["truncated"] == true { " (instance components truncated)" } else { "" });
+    if let Some(path) = args["outputPath"].as_str() {
+        let path = std::path::Path::new(path);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await { return ToolResult::error(e.to_string()); }
+        }
+        if let Err(e) = tokio::fs::write(path,format!("{header}{text}")).await { return ToolResult::error(e.to_string()); }
+        return ToolResult::text(json!({"savedTo":std::fs::canonicalize(path).unwrap_or(path.to_path_buf()),"coverage":coverage}).to_string());
+    }
+    ToolResult::text(format!("{header}{text}"))
 }
 
 #[cfg(test)]
