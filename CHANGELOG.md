@@ -1,5 +1,10 @@
 # Changelog
 
+## [9.1.1] — 2026-10-29
+
+### Fixed
+- `get_spec mode:"outline"` repeated the full style line and every text of a collapsed block, even when its copy matched the first occurrence. Collapsed blocks now print type, name and size, and list their text only when it differs. A 27-frame, 4,968-node checkout section drops from 110k to 81k characters.
+
 ## [9.1.0] — 2026-10-29
 
 ### Added
