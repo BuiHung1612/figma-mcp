@@ -2,7 +2,7 @@
 //! maps to code (type, spacing, colors, token names), instead of raw records.
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 const SHAPES: [&str; 6] = ["VECTOR", "BOOLEAN_OPERATION", "STAR", "POLYGON", "LINE", "ELLIPSE"];
 // ponytail: matched by layer name; OS mockups have no stable component key across files.
@@ -12,7 +12,8 @@ struct Tree<'a> {
     nodes: HashMap<&'a str, &'a Value>,
     children: HashMap<&'a str, Vec<&'a str>>,
     names: &'a Value,
-    seen: RefCell<HashSet<String>>,
+    // Block signature -> copy of its first occurrence.
+    seen: RefCell<HashMap<String, Vec<String>>>,
     memo: RefCell<HashMap<String, String>>,
 }
 
@@ -95,14 +96,24 @@ impl Tree<'_> {
             // Blocks repeat across the tree (list items, the same card in two sections);
             // after the first, only the head line and the differing copy are kept.
             let full = self.full(k);
-            if full.lines().count() < 2 || self.seen.borrow_mut().insert(signature(&full)) {
-                self.write(k, depth + 1, out);
-                continue;
-            }
             let mut texts = Vec::new();
             self.texts(k, &mut texts);
-            let head = full.lines().next().unwrap_or_default();
-            out.push_str(&format!("{indent}  {head} = same layout as earlier{}{}\n", if texts.is_empty() { "" } else { ": " }, texts.join(" ")));
+            let first = if full.lines().count() < 2 { None } else {
+                let mut seen = self.seen.borrow_mut();
+                let key = signature(&full);
+                let first = seen.get(&key).cloned();
+                if first.is_none() { seen.insert(key, texts.clone()); }
+                first
+            };
+            let Some(first) = first else {
+                self.write(k, depth + 1, out);
+                continue;
+            };
+            // Styling already printed at the first occurrence; name and size locate the layer.
+            let node = self.nodes[k];
+            let copy = if texts.is_empty() || texts == first { String::new() } else { format!(": {}", texts.join(" ")) };
+            out.push_str(&format!("{indent}  {} '{}' {} = same layout as earlier{copy}\n",
+                node["type"].as_str().unwrap_or(""), node["name"].as_str().unwrap_or(""), size(node)));
         }
     }
 
@@ -307,6 +318,7 @@ mod tests {
         ];
         nodes.extend(card(1, "Retatrutide 30mg"));
         nodes.extend(card(2, "GHK-Cu"));
+        nodes.extend(card(3, "Retatrutide 30mg"));
         let out = render(&json!({"nodes":nodes,"names":{"VariableID:lib/1:2":"text/deep-navy/primary","VariableID:4:305":"spacing/16"}}));
         assert_eq!(out, "\
 FRAME 'Screen' 402x874 col gap12(spacing/16) pad12,16,16,16 bg #ffffff
@@ -315,7 +327,8 @@ FRAME 'Screen' 402x874 col gap12(spacing/16) pad12,16,16,16 bg #ffffff
   FRAME 'List' 370x200 col gap8
     FRAME 'Card' 370x83 row gap8 pad8 border 1.5 #f6f6f6 r10
       TEXT \"Retatrutide 30mg\" Inter 14/Medium lh22 #122936(text/deep-navy/primary)
-    FRAME 'Card' 370x83 row gap8 pad8 border 1.5 #f6f6f6 r10 = same layout as earlier: \"GHK-Cu\"
+    FRAME 'Card' 370x83 = same layout as earlier: \"GHK-Cu\"
+    FRAME 'Card' 370x83 = same layout as earlier
 ");
     }
 
