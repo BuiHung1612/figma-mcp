@@ -1,6 +1,6 @@
 # 🗺️ Figma Rust MCP Roadmap
 
-> Current release: **v9.0.0**. Shipped detail lives in [CHANGELOG.md](CHANGELOG.md); this file only tracks what is next.
+> Current release: **v9.1.0**. Shipped detail lives in [CHANGELOG.md](CHANGELOG.md); this file only tracks what is next.
 
 ---
 

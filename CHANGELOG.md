@@ -1,5 +1,11 @@
 # Changelog
 
+## [9.1.0] — 2026-10-29
+
+### Added
+- `figma_read get_spec mode:"outline"`: the whole subtree as one line per layer — text styles, auto-layout spacing, fills, borders, radius, effects — with bound variable and text-style names (library ones included). Vectors are pruned, icons and device chrome collapse to one line, and repeated blocks keep only their head line and copy. A 110-node mobile screen goes from 56k characters (`mode:"spec"`) to 5.9k.
+- `read_nodes names:true` returns a `names` map resolving every variable and style id on the page to its name.
+
 ## [9.0.0] — 2026-10-13
 
 ### Breaking
