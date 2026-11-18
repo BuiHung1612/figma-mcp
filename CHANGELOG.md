@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [10.0.0] — 2026-11-18
 
 ### Breaking
 - **Strict parameters.** `create`, `modify`, `clone`, `instantiate`, `delete`, `resize`, `detach` and `render` throw on an unknown key, a removed key, or a key that does not fit the node (`fontSize` on a frame, `layoutMode` on a rectangle) — before changing anything. `modify` no longer returns `ignored`.
