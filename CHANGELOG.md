@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking
+- **Strict parameters.** `create`, `modify`, `clone`, `instantiate`, `delete`, `resize`, `detach` and `render` throw on an unknown key, a removed key, or a key that does not fit the node (`fontSize` on a frame, `layoutMode` on a rectangle) — before changing anything. `modify` no longer returns `ignored`.
+- **One sizing control.** `layoutAlign`, `layoutGrow`, `primaryAxisSizingMode` and `counterAxisSizingMode` were removed from create/modify; use `layoutSizingHorizontal` / `layoutSizingVertical` (`"FIXED" | "HUG" | "FILL"`). An auto-layout frame without width/height hugs that axis (per axis now — before, a missing width set the *primary* axis to AUTO even in vertical frames).
+- **No font fallback.** A font family or style that is not installed throws instead of silently becoming Inter Regular. `fontWeight` is matched to the family's own style names ("SemiBold" → "Demi Bold" in Avenir Next); a weight the family lacks throws with the styles it has. `create` now honours `fontFamily` — it was ignored and every new text was Inter.
+- **All-or-nothing.** `figma.batch` stops at the first failing op, removes the nodes the batch created and throws `batch op N (op) failed: …`; it returns the array of results instead of `{ results, total, succeeded }`. A `figma_write` script that throws removes the nodes it created (edits to existing nodes stay).
+- **One node shape.** Write ops, `query`, `getNodeById`, `getChildren` and `getPageNodes` return `{ id, name, type, parentId, childIds, x, y, width, height, key?, layoutPositioning?, warnings? }`. `getNodeById` no longer returns CSS/layout detail — use `getNodeDetail`.
+- **Sandbox names are camelCase.** `get_page_nodes`, `get_variables`, `get_styles`, `ensure_library`, `set_viewport`, `zoom_to_fit`, `loadAllPagesAsync`, `loadFontAsync`, `getNode`, `getCurrentPage`, `append` and the other snake_case helpers were renamed (`getPageNodes`, `getVariables`, …, `loadAllPages`, `loadFont`, `getNodeById`, `status`, `modify({ parentId })`). Old names and Figma Plugin API calls (`figma.createFrame()`, `figma.currentPage`) throw with the replacement.
+- `delete` takes `id` or `ids` only (no name lookup), checks every id before removing any, throws on component masters without `force: true`, and returns `{ deleted, alreadyGone }`. `create`/`instantiate` no longer resolve `parentId` by name; `instantiate` throws on overrides for layers that do not exist.
+- The docs quick start reads the file's variables, styles and components instead of creating a dark "Design Tokens" palette and a "🎨 Design Library" frame in every file.
+
+### Added
+- `figma.render(tree, { parentId, insertIndex })` builds a whole tree in one call (up to 500 nodes); `{ type: "ICON", name }` nodes are fetched and drawn as SVG. Returns `{ root, ids }` mapping each `key` to its node id.
+- `key` on create/render/clone/instantiate/modify and `figma.byKey(key, { parentId })` to find nodes across `figma_write` calls; clones drop copied keys.
+- `figma.detach({ id })` turns an instance into a frame.
+- `warnings` on create results for accepted-but-ineffective input (x/y inside auto-layout).
+
+- `modify` moves nodes (`parentId`, `insertIndex`) and sets `layoutPositioning`, `textAutoResize`, `textAlignHorizontal`, `textDecoration` and `fills` (`[]` clears). `create` takes `layoutPositioning: "ABSOLUTE"` for overlays inside auto-layout.
+- `clone` returns `idMap` (source id → copy id for every copied layer) and accepts `insertIndex`.
+- `query({ deep: true })` lists every descendant; `figma.listAvailableFonts({ query })` and `figma.loadFontAsync({ family, style })` in the sandbox.
+- Icon names accept a library prefix: `figma.loadIcon("lucide:map-pin")`.
+
+### Fixed
+- `modify` silently dropped keys it does not support; they now throw (see Breaking).
+- Every `figma_write` call is one Figma undo step. Before, Ctrl+Z reverted everything the agent had drawn.
+- `setComponentProperties` (and component-property binding) failed on every variant instance with "Can only get component property definitions of a component set or non-variant component".
+- `search_nodes` with `nodeId`, or on a partly indexed file, returned nothing; it now searches the live tree by name and text.
+- `read_nodes` with an empty `cursor` failed with "Cursor expired" instead of starting a new read.
+
 ## [9.1.1] — 2026-10-29
 
 ### Fixed

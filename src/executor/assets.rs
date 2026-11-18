@@ -194,24 +194,36 @@ pub async fn fetch_svg_icon(
     size: f64,
     fill: &str,
 ) -> Result<String, String> {
+    let (libraries, name) = select_libraries(icon_name, ICON_LIBRARIES)?;
     // Names are spliced into unpkg paths; `../` would escape the pinned package.
-    if icon_name.is_empty() || icon_name.len() > 100 || !icon_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(format!("Invalid icon name \"{icon_name}\": use letters, digits, '-' or '_'"));
+    if name.is_empty() || name.len() > 100 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("Invalid icon name \"{icon_name}\": use letters, digits, '-' or '_', optionally prefixed with a library (\"lucide:map-pin\")"));
     }
     let cache = ICON_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
-    let raw = load_icon(client, icon_name, ICON_LIBRARIES, cache).await?;
+    let raw = load_icon(client, name, icon_name, libraries, cache).await?;
     Ok(render_icon(&raw.svg, raw.fill_type, size, fill))
+}
+
+/// "lucide:map-pin" pins the lookup to one library; a bare name tries them all in order.
+fn select_libraries<'a>(icon_name: &'a str, all: &'a [IconLib]) -> Result<(&'a [IconLib], &'a str), String> {
+    let Some((prefix, name)) = icon_name.split_once(':') else { return Ok((all, icon_name)) };
+    match all.iter().position(|lib| lib.name.eq_ignore_ascii_case(prefix)) {
+        Some(i) => Ok((&all[i..=i], name)),
+        None => Err(format!("Unknown icon library \"{prefix}\" in \"{icon_name}\". Use one of: {}",
+            all.iter().map(|lib| lib.name).collect::<Vec<_>>().join(", "))),
+    }
 }
 
 async fn load_icon(
     client: &reqwest::Client,
     icon_name: &str,
+    cache_key: &str,
     libraries: &[IconLib],
     cache: &IconCache,
 ) -> Result<RawIcon, String> {
     {
         let mut entries = cache.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(position) = entries.iter().position(|(name, _)| name == icon_name) {
+        if let Some(position) = entries.iter().position(|(name, _)| name == cache_key) {
             let entry = entries.remove(position).unwrap();
             let icon = entry.1.clone();
             entries.push_back(entry);
@@ -235,7 +247,7 @@ async fn load_icon(
                             svg: Arc::from(text),
                             fill_type: lib.fill_type,
                         };
-                        remember_icon(cache, icon_name, &icon);
+                        remember_icon(cache, cache_key, &icon);
                         return Ok(icon);
                     }
                 }
@@ -347,12 +359,16 @@ mod tests {
         let icons = format!("http://{}", listener.local_addr().unwrap());
         let icon_server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
         let cache = Mutex::new(VecDeque::new());
-        assert!(load_icon(&client, &icons, &libraries(|base| format!("{base}/missing")), &cache).await.is_ok(), "404 falls through");
+        assert!(load_icon(&client, &icons, &icons, &libraries(|base| format!("{base}/missing")), &cache).await.is_ok(), "404 falls through");
         let cache = Mutex::new(VecDeque::new());
-        assert!(load_icon(&client, &icons, &libraries(|base| format!("{base}/broken")), &cache).await.err().is_some_and(|e| e.contains("HTTP 500")));
+        assert!(load_icon(&client, &icons, &icons, &libraries(|base| format!("{base}/broken")), &cache).await.err().is_some_and(|e| e.contains("HTTP 500")));
         icon_server.abort();
         server.abort();
-        for name in ["../../evil@1.0.0/x", "a/b", "", "home?x=1"] {
+        let (libs, name) = select_libraries("Lucide:map-pin", ICON_LIBRARIES).unwrap();
+        assert_eq!((libs.len(), libs[0].name, name), (1, "lucide", "map-pin"));
+        assert_eq!(select_libraries("map-pin", ICON_LIBRARIES).unwrap().0.len(), ICON_LIBRARIES.len());
+        assert!(select_libraries("nope:x", ICON_LIBRARIES).err().unwrap().contains("lucide"));
+        for name in ["../../evil@1.0.0/x", "a/b", "", "home?x=1", "lucide:../x"] {
             assert!(fetch_svg_icon(&client, name, 24.0, "#000").await.unwrap_err().contains("Invalid icon name"), "{name}");
         }
     }
@@ -380,16 +396,16 @@ mod tests {
             fill_type: "none",
             url_fn: |name| format!("{name}/icon.svg"),
         }];
-        let first = load_icon(&client, &base, &libraries, &cache).await.unwrap();
+        let first = load_icon(&client, &base, &base, &libraries, &cache).await.unwrap();
         let red = render_icon(&first.svg, first.fill_type, 24.0, "#ff0000");
-        let second = load_icon(&client, &base, &libraries, &cache).await.unwrap();
+        let second = load_icon(&client, &base, &base, &libraries, &cache).await.unwrap();
         let blue = render_icon(&second.svg, second.fill_type, 48.0, "#0000ff");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(red.contains("#ff0000") && red.contains("stroke-width=\"2\""));
         assert!(blue.contains("#0000ff") && blue.contains("stroke-width=\"4.00\""));
         assert!(!blue.contains("#ff0000") && !blue.contains("class=") && !blue.contains("<!--"));
         let missing = format!("{base}/missing");
-        assert!(load_icon(&client, &missing, &libraries, &cache)
+        assert!(load_icon(&client, &missing, &missing, &libraries, &cache)
             .await
             .is_err());
         assert_eq!(

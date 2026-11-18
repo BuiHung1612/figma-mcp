@@ -404,7 +404,7 @@ handlers.createTextStyle = async function(params) {
   style.name = name;
   style.description = description;
 
-  var figmaStyle = FONT_STYLE_MAP[fontWeight] || fontWeight;
+  var figmaStyle = await resolveFontStyle(fontFamily, fontWeight);
 
   await ensureFontLoaded(fontFamily, figmaStyle);
   style.fontName = { family: fontFamily, style: figmaStyle };
@@ -683,27 +683,22 @@ handlers.setupDesignTokens = async function(params) {
       var familyLiteral = typeof resolvedFamily === "string"
         ? resolvedFamily
         : getStringVarValue(resolvedFamily, defaultModeId) || "Inter";
-      var styleLiteral = typeof resolvedStyle === "string"
-        ? (FONT_STYLE_MAP[resolvedStyle] || resolvedStyle)
-        : (FONT_STYLE_MAP[getStringVarValue(resolvedStyle, defaultModeId)] ||
-           getStringVarValue(resolvedStyle, defaultModeId) || "Regular");
-
+      var weightLiteral = typeof resolvedStyle === "string"
+        ? resolvedStyle
+        : getStringVarValue(resolvedStyle, defaultModeId) || "Regular";
+      var styleLiteral = weightLiteral;
       try {
+        styleLiteral = await resolveFontStyle(familyLiteral, weightLiteral);
         await ensureFontLoaded(familyLiteral, styleLiteral);
       } catch (fontErr) {
         // BUG-FONT-01: system fonts like "SF Mono", "SF Pro" aren't in Figma's font registry.
-        // Suggest a cloud-available replacement instead of cryptic "could not be loaded".
-        try {
-          await ensureFontLoaded(familyLiteral, "Regular");
-          styleLiteral = "Regular";
-        } catch (regularErr) {
-          var hint = "";
-          var lower = familyLiteral.toLowerCase();
-          if (lower.indexOf("sf mono") !== -1)  hint = " Figma cloud doesn't have SF Mono (macOS system font). Use JetBrains Mono, Roboto Mono, or Fira Code.";
-          else if (lower.indexOf("sf pro") !== -1) hint = " Figma cloud doesn't have SF Pro (macOS system font). Use Inter, Manrope, or DM Sans.";
-          else if (lower.indexOf("system-ui") !== -1 || lower.indexOf("-apple-system") !== -1) hint = " CSS system-ui keyword isn't a real font in Figma. Use Inter (closest cross-platform match).";
-          throw new Error('Font "' + familyLiteral + ' ' + styleLiteral + '" not available in Figma.' + hint + ' Text style "' + styleName + '" not created.');
-        }
+        // Suggest a cloud-available replacement instead of substituting another style.
+        var hint = "";
+        var lower = familyLiteral.toLowerCase();
+        if (lower.indexOf("sf mono") !== -1)  hint = " Figma cloud doesn't have SF Mono (macOS system font). Use JetBrains Mono, Roboto Mono, or Fira Code.";
+        else if (lower.indexOf("sf pro") !== -1) hint = " Figma cloud doesn't have SF Pro (macOS system font). Use Inter, Manrope, or DM Sans.";
+        else if (lower.indexOf("system-ui") !== -1 || lower.indexOf("-apple-system") !== -1) hint = " CSS system-ui keyword isn't a real font in Figma. Use Inter (closest cross-platform match).";
+        throw new Error(fontErr.message + hint + ' Text style "' + styleName + '" not created.');
       }
       style.fontName = { family: familyLiteral, style: styleLiteral };
 
@@ -851,14 +846,7 @@ handlers.applyTextStyle = async function(params) {
 // name (componentPropertyReferences, deleteComponentProperty) require the
 // fully-qualified form. Pass it in directly and it's returned unchanged.
 function resolveComponentPropertyName(componentNode, propertyName) {
-  var defs = componentNode.componentPropertyDefinitions;
-  if (!defs) return null;
-  if (defs[propertyName]) return propertyName;
-  var keys = Object.keys(defs);
-  for (var i = 0; i < keys.length; i++) {
-    if (keys[i].split("#")[0] === propertyName) return keys[i];
-  }
-  return null;
+  return resolvePropertyKey(propertyDefinitions(componentNode), propertyName);
 }
 
 // addComponentProperty — create a property definition on a Component or ComponentSet.
@@ -964,7 +952,7 @@ handlers.bindComponentPropertyToText = async function(params) {
       "'. Call addComponentProperty first.");
   }
 
-  var defs = owner.componentPropertyDefinitions;
+  var defs = propertyDefinitions(owner);
   if (defs[resolved].type !== "TEXT") {
     throw new Error("Property '" + resolved + "' is " + defs[resolved].type +
       ", not TEXT. Use componentPropertyReferences.visible / .mainComponent for BOOLEAN / INSTANCE_SWAP.");
@@ -1036,7 +1024,7 @@ handlers.bindComponentProperty = async function(params) {
       "'. Call addComponentProperty first.");
   }
 
-  var defs = owner.componentPropertyDefinitions;
+  var defs = propertyDefinitions(owner);
   if (defs[resolved].type !== expectedType) {
     throw new Error("Property '" + resolved + "' is " + defs[resolved].type +
       ", not " + expectedType + ". Field '" + field + "' requires a " + expectedType + " property.");

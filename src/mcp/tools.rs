@@ -63,13 +63,13 @@ pub fn get_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "figma_write".to_string(),
-            description: "Run JavaScript that creates or modifies designs through the `figma` object (all calls return Promises; await them; return a value to get JSON back). Covers create/modify/delete/clone/batch, auto-layout, variables and text styles, components and variants, prototyping and icons. Call figma_docs first for the rules and API. Sandboxed: no require, fetch, fs or network.".to_string(),
+            description: "Run JavaScript that creates or modifies designs through the `figma` object (all calls return Promises; await them; return a value to get JSON back). figma.render(tree) draws a whole keyed tree in one call; also create/modify/delete/clone/batch, auto-layout, variables and text styles, components and variants, prototyping and icons. Keys are checked strictly, a failing call removes the nodes it created, and each call is one undo step. Call figma_docs first for the rules and API. Sandboxed: no require, fetch, fs or network.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "JavaScript using figma.create(), figma.modify(), figma.setPage(), etc."
+                        "description": "JavaScript using figma.render(), figma.create(), figma.modify(), figma.byKey(), etc."
                     },
                     "sessionId": {
                         "type": "string",

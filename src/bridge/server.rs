@@ -34,7 +34,9 @@ fn is_read_operation(operation: &str) -> bool {
         "getpagenodes" | "getnodedetail" | "getdesigncontext" | "getcss" | "getcomponentmap" | "getunmappedcomponents" |
         "getstyles" | "getvariables" | "getvariabletokens" | "gettokens" | "getlocalcomponents" | "getviewport" |
         "screenshot" | "exportsvg" | "exportimage" | "exportassets" | "scandesign" | "searchnodes" | "indexscan" |
-        "getcomponentproperties" | "getreactions" | "readnodes")
+        "getcomponentproperties" | "getreactions" | "readnodes" |
+        // Undo checkpoints and font lookups never change the document.
+        "commitundo" | "listavailablefonts" | "loadfont" | "findbykey")
 }
 
 /// Viewport/selection changes touch no document nodes, so they keep the index ready.

@@ -24,7 +24,7 @@ jobs:
           node-version: '22'
       - run: npm ci
       - run: node scripts/build-plugin.js --check
-      - run: node --test scripts/test-plugin-tokens.mjs scripts/test-bench.mjs
+      - run: node --test scripts/test-plugin-tokens.mjs scripts/test-plugin-write.mjs scripts/test-bench.mjs
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build
@@ -94,7 +94,7 @@ jobs:
         run: node scripts/build-plugin.js
 
       - name: Test plugin token extraction
-        run: node --test scripts/test-plugin-tokens.mjs
+        run: node --test scripts/test-plugin-tokens.mjs scripts/test-plugin-write.mjs
 
       - name: Build target binary
         run: cargo build --release --target ${{ matrix.target }}

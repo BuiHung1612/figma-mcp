@@ -88,7 +88,8 @@ handlers.query = async (params) => {
     scope = parent;
   }
   if (!type && !name) {
-    var allChildren = scope.children || [];
+    // deep: every descendant (e.g. ids inside a frame); default stays direct children.
+    var allChildren = params.deep ? scope.findAll(function() { return true; }) : (scope.children || []);
     return allChildren.slice(0, limit).map(nodeToInfo);
   }
   const results = scope.findAll(n => {
@@ -122,7 +123,7 @@ function applyAutoLayout(node, params) {
   if (params.counterAxisAlignItems === "STRETCH") {
     throw new Error(
       "counterAxisAlignItems does not support \"STRETCH\". " +
-      "Set counterAxisAlignItems: \"MIN\" on the container and layoutAlign: \"STRETCH\" on each child."
+      "Set counterAxisAlignItems: \"MIN\" on the container and layoutSizingHorizontal/Vertical: \"FILL\" on each child."
     );
   }
   if (params.primaryAxisAlignItems) node.primaryAxisAlignItems = params.primaryAxisAlignItems;
@@ -139,31 +140,95 @@ function applyAutoLayout(node, params) {
   if (params.paddingRight  !== undefined) node.paddingRight  = params.paddingRight;
   if (params.itemSpacing   !== undefined) node.itemSpacing   = params.itemSpacing;
 
-  node.primaryAxisSizingMode = params.primaryAxisSizingMode || "FIXED";
-  node.counterAxisSizingMode = params.counterAxisSizingMode || "FIXED";
+  // FIXED base; hugging is requested with layoutSizingHorizontal/Vertical: "HUG".
+  node.primaryAxisSizingMode = "FIXED";
+  node.counterAxisSizingMode = "FIXED";
   if (params.clipsContent !== undefined) node.clipsContent = params.clipsContent;
 }
 
-// Apply child layout props (layoutAlign, layoutGrow, layoutSizing{H,V}) — works
-// for both create and modify paths. layoutSizingHorizontal/Vertical control how
-// a child sits inside an auto-layout parent (HUG | FIXED | FILL) and are the
-// modern (post-2022) per-axis controls — they override textAutoResize for
-// auto-layout children, so without them programmatically-changed text content
-// can't push a hug-width parent to grow.
-//
-// Setting these on a node that's NOT inside an auto-layout parent throws in
-// Figma, so we guard with the `in` check + a try/catch for the edge case where
-// `in` reports true but the runtime still rejects (e.g. parent layoutMode is
-// being changed in the same call).
-function applyChildLayout(node, params) {
-  if (params.layoutAlign !== undefined && "layoutAlign" in node) node.layoutAlign = params.layoutAlign;
-  if (params.layoutGrow  !== undefined && "layoutGrow"  in node) node.layoutGrow  = params.layoutGrow;
-  if (params.layoutSizingHorizontal !== undefined && "layoutSizingHorizontal" in node) {
-    try { node.layoutSizingHorizontal = params.layoutSizingHorizontal; } catch (e) {}
+// ABSOLUTE lets a child of an auto-layout frame float (overlays, badges,
+// dropdowns). Figma rejects it outside auto-layout, so say why instead of
+// failing with a bare setter error.
+function applyLayoutPositioning(node, params) {
+  if (params.layoutPositioning === undefined) return;
+  var parent = node.parent;
+  if (!parent || !parent.layoutMode || parent.layoutMode === "NONE") {
+    if (params.layoutPositioning === "AUTO") return;
+    throw new Error("layoutPositioning needs an auto-layout parent; \"" + (parent ? parent.name : "none") +
+      "\" has no auto-layout, so set x/y directly instead");
   }
-  if (params.layoutSizingVertical !== undefined && "layoutSizingVertical" in node) {
-    try { node.layoutSizingVertical = params.layoutSizingVertical; } catch (e) {}
+  node.layoutPositioning = params.layoutPositioning;
+}
+
+// Keys each op accepts; anything else throws before the op changes the file.
+var COMMON_KEYS = [
+  "name", "key", "fill", "fills", "fillOpacity", "fontColor",
+  "stroke", "strokeColor", "strokeOpacity", "strokeWeight", "strokeAlign", "strokeDashPattern",
+  "x", "y", "width", "height", "opacity", "visible", "effects",
+  "cornerRadius", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius",
+  "content", "fontFamily", "fontWeight", "fontSize", "lineHeight",
+  "textAlign", "textAlignHorizontal", "textAlignVertical", "textAutoResize", "textDecoration", "textCase", "textTransform",
+  "layoutMode", "primaryAxisAlignItems", "counterAxisAlignItems",
+  "padding", "paddingHorizontal", "paddingVertical", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight",
+  "itemSpacing", "clipsContent", "layoutSizingHorizontal", "layoutSizingVertical", "layoutPositioning",
+  "parentId", "insertIndex",
+];
+var MODIFY_KEYS = new Set(COMMON_KEYS.concat(["id", "nodeId", "node_id", "targetId", "target_id", "nodeName", "node_name"]));
+var CREATE_KEYS = new Set(COMMON_KEYS.concat(["type", "characters", "strokeCap", "strokeJoin",
+  "svg", "d", "path", "paths", "windingRule", "arcData", "imageData", "scaleMode"]));
+
+// A known key on the wrong node type would otherwise do nothing and look applied.
+var TEXT_ONLY_KEYS = ["content", "fontFamily", "fontWeight", "fontSize", "lineHeight", "textAlign", "textAlignHorizontal",
+  "textAlignVertical", "textAutoResize", "textDecoration", "textCase", "textTransform"];
+var AUTO_LAYOUT_KEYS = ["layoutMode", "primaryAxisAlignItems", "counterAxisAlignItems", "padding", "paddingHorizontal",
+  "paddingVertical", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight", "itemSpacing"];
+function assertKeysFitNode(node, params) {
+  var wrong = [];
+  if (node.type !== "TEXT") wrong = wrong.concat(TEXT_ONLY_KEYS.filter(function(k) { return params[k] !== undefined; }));
+  if (!("layoutMode" in node)) wrong = wrong.concat(AUTO_LAYOUT_KEYS.filter(function(k) { return params[k] !== undefined; }));
+  if (wrong.length) throw new Error("modify: " + wrong.join(", ") + " do not apply to " + node.type + " \"" + node.name + "\"");
+}
+
+// fills: [] clears; entries may be hex strings, {color, opacity} or raw Figma paints.
+function buildFillsParam(fills, fillOpacity) {
+  if (!Array.isArray(fills)) throw new Error("fills must be an array");
+  return fills.map(function(f) {
+    if (typeof f === "string") return buildFillArray(f, fillOpacity)[0];
+    if (f && typeof f.color === "string") return buildFillArray(f.color, f.opacity !== undefined ? f.opacity : fillOpacity)[0];
+    return f;
+  }).filter(Boolean);
+}
+
+// Move node under parentId (or within its parent) at insertIndex.
+async function reparentNode(node, params) {
+  var parent = params.parentId ? await findNodeByIdAsync(params.parentId) : node.parent;
+  if (!parent || parent.removed) throw new Error("parentId not found: " + params.parentId);
+  if (typeof parent.insertChild !== "function") throw new Error("Node " + parent.id + " cannot have children");
+  for (var a = parent; a; a = a.parent) {
+    if (a.id === node.id) throw new Error("Cannot move a node into itself or its descendant");
   }
+  var count = parent.children.length - (node.parent === parent ? 1 : 0);
+  var at = params.insertIndex === undefined ? count : Math.max(0, Math.min(params.insertIndex, count));
+  parent.insertChild(at, node);
+}
+
+// layoutSizingHorizontal/Vertical is the one sizing control: FIXED keeps the
+// width/height, HUG shrinks an auto-layout frame or text to its content, FILL
+// stretches a child across its auto-layout parent. Errors are reported, not
+// swallowed, so a size that did not apply never looks applied.
+function applySizing(node, params) {
+  ["layoutSizingHorizontal", "layoutSizingVertical"].forEach(function(axis) {
+    if (params[axis] === undefined) return;
+    var value = String(params[axis]).toUpperCase();
+    var parent = node.parent;
+    if (value === "FILL" && !(parent && parent.layoutMode && parent.layoutMode !== "NONE")) {
+      throw new Error(axis + ": \"FILL\" needs an auto-layout parent; \"" + (parent ? parent.name : "none") + "\" has none");
+    }
+    if (value === "HUG" && node.type !== "TEXT" && !(node.layoutMode && node.layoutMode !== "NONE")) {
+      throw new Error(axis + ": \"HUG\" needs an auto-layout frame or a text node");
+    }
+    node[axis] = value;
+  });
 }
 
 // When TEXT content is changed on a node inside a hug-axis auto-layout parent,
@@ -250,10 +315,11 @@ function buildLine(params, width, stroke, strokeWeight) {
 
 async function buildText(params, width, height, fill, fontSize, fontWeight, lineHeight) {
   var content = params.content !== undefined ? params.content : (params.characters !== undefined ? params.characters : "");
-  const style = FONT_STYLE_MAP[fontWeight] || "Regular";
-  await ensureFontLoaded("Inter", style);
+  var family = params.fontFamily || "Inter";
+  var style = await resolveFontStyle(family, fontWeight);
+  await ensureFontLoaded(family, style);
   var node = figma.createText();
-  node.fontName = { family: "Inter", style };
+  node.fontName = { family: family, style: style };
   node.fontSize = fontSize;
   node.characters = content;
 
@@ -305,6 +371,8 @@ async function buildText(params, width, height, fill, fontSize, fontWeight, line
     // WIDTH_AND_HEIGHT makes the box shrink-wrap the actual rendered glyphs.
     node.textAutoResize = "WIDTH_AND_HEIGHT";
   }
+
+  if (params.textDecoration) node.textDecoration = String(params.textDecoration).toUpperCase();
 
   var tc = params.textCase || (params.textTransform ? (params.textTransform.toLowerCase() === "uppercase" ? "UPPER" : params.textTransform.toLowerCase() === "lowercase" ? "LOWER" : params.textTransform.toLowerCase() === "capitalize" ? "TITLE" : "ORIGINAL") : null);
   if (tc) {
@@ -409,6 +477,7 @@ handlers.create = async (params) => {
     var keys = Object.keys(params || {});
     throw new Error("create: 'type' is required. Received keys: [" + keys.join(", ") + "]. Use type: FRAME|RECTANGLE|ELLIPSE|LINE|TEXT|SVG|VECTOR|IMAGE");
   }
+  assertKnownKeys("create", params, CREATE_KEYS);
 
   const {
     type, parentId, name,
@@ -417,8 +486,6 @@ handlers.create = async (params) => {
     fontSize = 14, fontWeight = "Regular", lineHeight,
     opacity, visible,
   } = params;
-  // BUG-13: FRAME with layoutMode and no explicit size → hug content (AUTO sizing)
-  // Fall back to 100×100 only for non-layout nodes (RECTANGLE, ELLIPSE, etc.)
   var hasExplicitWidth  = params.width  !== undefined;
   var hasExplicitHeight = params.height !== undefined;
   var width  = hasExplicitWidth  ? params.width  : 100;
@@ -426,17 +493,29 @@ handlers.create = async (params) => {
   var fill = params.fill;
   // BUG-18/19: accept both `stroke` and `strokeColor` aliases
   var stroke = params.stroke || params.strokeColor || null;
+  var warnings = [];
 
   let parent = figma.currentPage;
   if (parentId) {
-    const p = (await findNodeByIdAsync(parentId)) || findNodeByName(parentId);
+    const p = await findNodeByIdAsync(parentId);
     if (!p) throw new Error(
       "parentId \"" + parentId + "\" not found in the current scene. " +
-      "If you just created the parent in a previous figma_write call, re-query its ID with " +
-      "figma.get_page_nodes() or figma.query() at the start of this call."
+      "If you just created the parent in a previous figma_write call, find it again with " +
+      "figma.byKey(key) or figma.query() at the start of this call."
     );
     parent = p;
   }
+  var parentAutoLayout = !!(parent.layoutMode && parent.layoutMode !== "NONE");
+  // Fail before building the node so a bad call leaves nothing behind.
+  if (params.layoutPositioning === "ABSOLUTE" && !parentAutoLayout) {
+    throw new Error("layoutPositioning needs an auto-layout parent; \"" + parent.name +
+      "\" has no auto-layout, so set x/y directly instead");
+  }
+  ["layoutSizingHorizontal", "layoutSizingVertical"].forEach(function(axis) {
+    if (String(params[axis]).toUpperCase() === "FILL" && !parentAutoLayout) {
+      throw new Error(axis + ": \"FILL\" needs an auto-layout parent; \"" + parent.name + "\" has none");
+    }
+  });
 
   let node;
   switch (type) {
@@ -476,68 +555,63 @@ handlers.create = async (params) => {
       throw new Error('Unsupported node type: "' + type + '". Use FRAME, RECTANGLE, ELLIPSE, LINE, TEXT, SVG, VECTOR, IMAGE.');
   }
 
-  // Apply node-level props before parenting (name can be set any time; opacity/visible are stable)
-  if (name)    node.name    = name;
-  if (opacity !== undefined) node.opacity = opacity;
-  if (visible !== undefined) node.visible = visible;
+  try {
+    if (name)    node.name    = name;
+    if (opacity !== undefined) node.opacity = opacity;
+    if (visible !== undefined) node.visible = visible;
+    if (params.key !== undefined) node.setPluginData(NODE_KEY_DATA, String(params.key));
 
-  // BUG-13: FRAME with layoutMode and no explicit width/height → switch to hug-content sizing
-  // Must happen before appendChild so auto-layout parent measures correct child size
-  if ((type === "FRAME" || type === "GROUP") && params.layoutMode && params.layoutMode !== "NONE") {
-    if (!hasExplicitWidth)  { node.primaryAxisSizingMode   = "AUTO"; }
-    if (!hasExplicitHeight) { node.counterAxisSizingMode   = "AUTO"; }
+    if (parent !== figma.currentPage) {
+      if (parent.removed) throw new Error("Parent node no longer exists (was it deleted?): " + params.parentId);
+      if (parentAutoLayout && params.layoutPositioning !== "ABSOLUTE" && (params.x !== undefined || params.y !== undefined)) {
+        warnings.push("x/y ignored: \"" + parent.name + "\" uses auto-layout. Add layoutPositioning: \"ABSOLUTE\" to place it freely.");
+      }
+      if (params.insertIndex !== undefined) {
+        parent.insertChild(Math.max(0, Math.min(params.insertIndex, parent.children.length)), node);
+      } else {
+        parent.appendChild(node);
+      }
+    }
+    applyLayoutPositioning(node, params);
+
+    // BUG-13/16/17/19: Re-apply TEXT sizing after appendChild — Figma auto-layout can reset
+    // textAutoResize to WIDTH_AND_HEIGHT after parenting, causing the node to flash to 100x100.
+    if (type === "TEXT") {
+      var textAutoResize = params.textAutoResize;
+      if (!textAutoResize) {
+        if (hasExplicitWidth && hasExplicitHeight) textAutoResize = "NONE";
+        else if (hasExplicitWidth)                 textAutoResize = "HEIGHT";
+        else                                       textAutoResize = "WIDTH_AND_HEIGHT";
+      }
+      node.textAutoResize = textAutoResize;
+      if (textAutoResize === "NONE" && hasExplicitWidth && hasExplicitHeight) {
+        node.resize(width, height);
+      } else if (textAutoResize === "HEIGHT" && hasExplicitWidth) {
+        node.resize(width, node.height);
+      }
+    }
+
+    // Sizing last: it must win over the text auto-resize above. An auto-layout
+    // frame without an explicit width/height hugs its content on that axis.
+    var sizing = { layoutSizingHorizontal: params.layoutSizingHorizontal, layoutSizingVertical: params.layoutSizingVertical };
+    if ((type === "FRAME" || type === "GROUP") && params.layoutMode && params.layoutMode !== "NONE") {
+      if (!hasExplicitWidth  && sizing.layoutSizingHorizontal === undefined) sizing.layoutSizingHorizontal = "HUG";
+      if (!hasExplicitHeight && sizing.layoutSizingVertical   === undefined) sizing.layoutSizingVertical   = "HUG";
+    }
+    applySizing(node, sizing);
+
+    // x/y set after appendChild — Figma resets position on reparent
+    node.x = x;
+    node.y = y;
+  } catch (e) {
+    node.remove();
+    throw e;
   }
 
-  if (parent !== figma.currentPage) {
-    if (parent.removed) {
-      node.remove();
-      throw new Error("Parent node no longer exists (was it deleted?): " + (params.parentId || params.parentName));
-    }
-
-    if (parent.layoutMode && parent.layoutMode !== "NONE" &&
-        params.x !== undefined && params.y !== undefined) {
-      figma.ui.postMessage({
-        type: "log",
-        message: "Warning: node \"" + (name || type) + "\" has explicit x/y but parent \"" + parent.name + "\" uses auto-layout (" + parent.layoutMode + "). Figma ignores x/y inside auto-layout — use layoutAlign/layoutGrow instead."
-      });
-    }
-
-    if (params.insertIndex !== undefined && typeof parent.insertChild === "function") {
-      var idx = Math.max(0, Math.min(params.insertIndex, parent.children ? parent.children.length : 0));
-      parent.insertChild(idx, node);
-    } else {
-      parent.appendChild(node);
-    }
-
-    if (parent.layoutMode && parent.layoutMode !== "NONE") {
-      applyChildLayout(node, params);
-    }
-  } else {
-    applyChildLayout(node, params);
-  }
-
-  // BUG-13/16/17/19: Re-apply TEXT sizing after appendChild — Figma auto-layout can reset
-  // textAutoResize to WIDTH_AND_HEIGHT after parenting, causing the node to flash to 100x100.
-  if (type === "TEXT") {
-    var textAutoResize = params.textAutoResize;
-    if (!textAutoResize) {
-      if (hasExplicitWidth && hasExplicitHeight) textAutoResize = "NONE";
-      else if (hasExplicitWidth)                 textAutoResize = "HEIGHT";
-      else                                       textAutoResize = "WIDTH_AND_HEIGHT";
-    }
-    node.textAutoResize = textAutoResize;
-    if (textAutoResize === "NONE" && hasExplicitWidth && hasExplicitHeight) {
-      node.resize(width, height);
-    } else if (textAutoResize === "HEIGHT" && hasExplicitWidth) {
-      node.resize(width, node.height);
-    }
-  }
-
-  // x/y set after appendChild — Figma resets position on reparent
-  node.x = x;
-  node.y = y;
-
-  return nodeToInfo(node);
+  journalCreated(params, node);
+  var info = nodeToInfo(node);
+  if (warnings.length) info.warnings = warnings;
+  return info;
 };
 
 handlers.modify = async (params) => {
@@ -549,8 +623,13 @@ handlers.modify = async (params) => {
   }
   if (node.removed) throw new Error("Node was deleted: " + nodeRef);
 
+  assertKnownKeys("modify", params, MODIFY_KEYS);
+  assertKeysFitNode(node, params);
+  if (params.key !== undefined) node.setPluginData(NODE_KEY_DATA, String(params.key));
+
   if (params.fontColor !== undefined && params.fill === undefined) params.fill = params.fontColor;
   if (params.fill     !== undefined && "fills"   in node) node.fills   = buildFillArray(params.fill, params.fillOpacity);
+  if (params.fills    !== undefined && params.fill === undefined && "fills" in node) node.fills = buildFillsParam(params.fills, params.fillOpacity);
   if (params.fillOpacity !== undefined && params.fill === undefined && "fills" in node && node.fills && node.fills.length) {
     var existingFills = JSON.parse(JSON.stringify(node.fills));
     existingFills[0].opacity = params.fillOpacity;
@@ -564,6 +643,10 @@ handlers.modify = async (params) => {
     if (params.strokeAlign !== undefined) node.strokeAlign = params.strokeAlign;
     if (params.strokeDashPattern && Array.isArray(params.strokeDashPattern)) node.dashPattern = params.strokeDashPattern;
   }
+  // Reparent and float before x/y: Figma resets position on reparent and
+  // ignores x/y for in-flow auto-layout children.
+  if (params.parentId !== undefined || params.insertIndex !== undefined) await reparentNode(node, params);
+  applyLayoutPositioning(node, params);
   if (params.x       !== undefined) node.x = params.x;
   if (params.y       !== undefined) node.y = params.y;
   if (params.opacity !== undefined) node.opacity = params.opacity;
@@ -588,7 +671,7 @@ handlers.modify = async (params) => {
   if (node.type === "TEXT") {
     if (params.content !== undefined || params.fontWeight !== undefined || params.fontFamily !== undefined) {
       const family = params.fontFamily || node.fontName.family;
-      const style = FONT_STYLE_MAP[params.fontWeight] || node.fontName.style;
+      const style = params.fontWeight !== undefined ? await resolveFontStyle(family, params.fontWeight) : node.fontName.style;
       await ensureFontLoaded(family, style);
       node.fontName = { family, style };
       if (params.content !== undefined) {
@@ -601,11 +684,15 @@ handlers.modify = async (params) => {
       }
     }
     if (params.fontSize !== undefined) node.fontSize = params.fontSize;
-    if (params.textAlign !== undefined || params.textAlignVertical !== undefined || params.lineHeight !== undefined) {
+    var textAlignH = params.textAlignHorizontal !== undefined ? params.textAlignHorizontal : params.textAlign;
+    if (textAlignH !== undefined || params.textAlignVertical !== undefined || params.lineHeight !== undefined ||
+        params.textAutoResize !== undefined || params.textDecoration !== undefined) {
       if (node.fontName && node.fontName.family) {
         await ensureFontLoaded(node.fontName.family, node.fontName.style);
       }
-      if (params.textAlign         !== undefined) node.textAlignHorizontal = params.textAlign.toUpperCase();
+      if (params.textAutoResize !== undefined) node.textAutoResize = String(params.textAutoResize).toUpperCase();
+      if (params.textDecoration !== undefined) node.textDecoration = String(params.textDecoration).toUpperCase();
+      if (textAlignH               !== undefined) node.textAlignHorizontal = String(textAlignH).toUpperCase();
       if (params.textAlignVertical !== undefined) node.textAlignVertical   = params.textAlignVertical.toUpperCase();
       if (params.lineHeight !== undefined) {
         node.lineHeight = (typeof params.lineHeight === "object" && params.lineHeight.unit)
@@ -623,8 +710,8 @@ handlers.modify = async (params) => {
     }
   }
 
-  // Auto Layout properties on FRAME
-  if (node.type === "FRAME") {
+  // Auto Layout properties (frames, components, instances)
+  if ("layoutMode" in node) {
     var removingLayout = params.layoutMode === "NONE" || params.layoutMode === null || params.layoutMode === "";
     if (params.layoutMode !== undefined) {
       node.layoutMode = removingLayout ? "NONE" : params.layoutMode;
@@ -635,7 +722,7 @@ handlers.modify = async (params) => {
       if (params.counterAxisAlignItems === "STRETCH") {
         throw new Error(
           "counterAxisAlignItems does not support \"STRETCH\". " +
-          "Set counterAxisAlignItems: \"MIN\" and layoutAlign: \"STRETCH\" on each child."
+          "Set counterAxisAlignItems: \"MIN\" and layoutSizingHorizontal/Vertical: \"FILL\" on each child."
         );
       }
       if (params.counterAxisAlignItems !== undefined) node.counterAxisAlignItems = params.counterAxisAlignItems;
@@ -650,12 +737,12 @@ handlers.modify = async (params) => {
     if (params.paddingLeft   !== undefined) node.paddingLeft   = params.paddingLeft;
     if (params.paddingRight  !== undefined) node.paddingRight  = params.paddingRight;
     if (params.itemSpacing   !== undefined) node.itemSpacing   = params.itemSpacing;
-    if (params.primaryAxisSizingMode !== undefined) node.primaryAxisSizingMode = params.primaryAxisSizingMode;
-    if (params.counterAxisSizingMode !== undefined) node.counterAxisSizingMode = params.counterAxisSizingMode;
     if (params.clipsContent  !== undefined) node.clipsContent  = params.clipsContent;
   }
 
-  applyChildLayout(node, params);
+  if (params.clipsContent !== undefined && !("layoutMode" in node) && "clipsContent" in node) node.clipsContent = params.clipsContent;
+
+  applySizing(node, params);
 
   return nodeToInfo(node);
 };
@@ -692,50 +779,26 @@ function describeDeleteImpact(node) {
 }
 
 // "delete" is a JS reserved keyword — use bracket notation
+var DELETE_KEYS = new Set(["id", "nodeId", "ids", "force"]);
+
+// Checks every target before removing any, so a blocked id leaves the rest intact.
 handlers["delete"] = async (params) => {
-  var allowComponentDelete = params && params.force === true;
-  if (params && Array.isArray(params.ids)) {
-    var results = [];
-    for (var di = 0; di < params.ids.length; di++) {
-      var targetId = params.ids[di];
-      var n = await findNodeByIdAsync(targetId);
-      if (!n || n.removed) {
-        results.push({ deleted: true, alreadyGone: true, ref: targetId });
-      } else {
-        var impact = describeDeleteImpact(n);
-        if (impact.hasComponents && !allowComponentDelete) {
-          results.push({
-            deleted: false, ref: targetId, blocked: "contains-components",
-            componentCount: impact.componentCount, componentNames: impact.componentNames,
-            hint: "Deleting this would remove " + impact.componentCount + " component master(s) " +
-                  "and break every instance in the file. Pass force:true to override."
-          });
-          continue;
-        }
-        var inf = nodeToInfo(n);
-        n.remove();
-        results.push(Object.assign({ deleted: true }, inf));
-      }
+  assertKnownKeys("delete", params, DELETE_KEYS);
+  var ids = Array.isArray(params.ids) ? params.ids : [params.id || params.nodeId];
+  if (!ids.length || !ids[0]) throw new Error("delete: pass id or ids");
+  var targets = [], alreadyGone = [];
+  for (var di = 0; di < ids.length; di++) {
+    var n = await findNodeByIdAsync(ids[di]);
+    if (!n || n.removed) { alreadyGone.push(ids[di]); continue; }
+    var impact = describeDeleteImpact(n);
+    if (impact.hasComponents && params.force !== true) {
+      throw new Error("delete: " + n.id + " contains " + impact.componentCount + " component master(s) (" +
+        impact.componentNames.join(", ") + "); deleting breaks every instance in the file. Pass force: true to override.");
     }
-    return { deleted: true, count: results.length, results: results };
+    targets.push(n);
   }
-  const node = await resolveNode(params);
-  if (!node || node.removed) {
-    var ref = params.id || params.nodeId || params.name || params.nodeName;
-    return { deleted: true, alreadyGone: true, ref: ref };
-  }
-  var impactSingle = describeDeleteImpact(node);
-  if (impactSingle.hasComponents && !allowComponentDelete) {
-    return {
-      deleted: false, ref: node.id, blocked: "contains-components",
-      componentCount: impactSingle.componentCount, componentNames: impactSingle.componentNames,
-      hint: "Deleting this would remove " + impactSingle.componentCount + " component master(s) " +
-            "and break every instance in the file. Pass force:true to override."
-    };
-  }
-  const info = nodeToInfo(node);
-  node.remove();
-  return Object.assign({ deleted: true }, info);
+  var deleted = targets.map(function(n) { var id = n.id; n.remove(); return id; });
+  return { deleted: deleted, alreadyGone: alreadyGone };
 };
 
 handlers.append = async function(params) {
@@ -767,11 +830,14 @@ handlers.loadAllPagesAsync = async function() {
   return { loaded: true, pageCount: figma.root.children.length };
 };
 
+var INSTANTIATE_KEYS = new Set(["componentId", "componentName", "parentId", "insertIndex", "x", "y", "name", "key", "overrides"]);
+var OVERRIDE_KEYS = new Set(["text", "fill", "stroke", "opacity", "visible", "fontSize", "cornerRadius"]);
+
 handlers.instantiate = async function(params) {
+  assertKnownKeys("instantiate", params, INSTANTIATE_KEYS);
   var componentId   = params.componentId   || null;
   var componentName = params.componentName || null;
   var parentId      = params.parentId      || null;
-  var parentName    = params.parentName    || null;
   var x = params.x !== undefined ? params.x : 0;
   var y = params.y !== undefined ? params.y : 0;
   var overrides = params.overrides || null;
@@ -790,13 +856,25 @@ handlers.instantiate = async function(params) {
   }
   if (!comp) throw new Error("Component " + (componentId || componentName) + " not found");
 
+  var parent = parentId ? await findNodeByIdAsync(parentId) : null;
+  if (parentId && !parent) throw new Error("parentId not found: " + parentId);
   var inst = comp.createInstance();
-  inst.x = x;
-  inst.y = y;
+  try {
+    if (parent) parent.insertChild(params.insertIndex === undefined ? parent.children.length : Math.max(0, Math.min(params.insertIndex, parent.children.length)), inst);
+    inst.x = x;
+    inst.y = y;
+    if (params.name) inst.name = params.name;
+    if (params.key !== undefined) inst.setPluginData(NODE_KEY_DATA, String(params.key));
+    await applyInstanceOverrides(inst, overrides);
+  } catch (e) {
+    inst.remove();
+    throw e;
+  }
+  journalCreated(params, inst);
+  return nodeToInfo(inst);
+};
 
-  var parent = parentId ? (await findNodeByIdAsync(parentId)) : (parentName ? findNodeByName(parentName) : null);
-  if (parent) parent.appendChild(inst);
-
+async function applyInstanceOverrides(inst, overrides) {
   if (overrides && typeof overrides === "object") {
     var overrideKeys = Object.keys(overrides);
     for (var oi = 0; oi < overrideKeys.length; oi++) {
@@ -806,7 +884,8 @@ handlers.instantiate = async function(params) {
       var target = (function(lName) {
         return inst.findOne(function(n) { return n.name === lName; });
       })(layerName);
-      if (!target) continue;
+      if (!target) throw new Error("overrides: no layer named \"" + layerName + "\" in instance of \"" + inst.name + "\"");
+      assertKnownKeys("overrides." + layerName, ov, OVERRIDE_KEYS);
 
       if (ov.text !== undefined && target.type === "TEXT") {
         if (target.fontName && target.fontName.family) {
@@ -835,9 +914,7 @@ handlers.instantiate = async function(params) {
       }
     }
   }
-
-  return nodeToInfo(inst);
-};
+}
 
 // ─── INSTANCE PROPERTY OPERATIONS ─────────────────────────────────────────────
 // These three ops were on the WRITE_OPS / READ_OPS allowlist since v2.4.0 but
@@ -848,21 +925,6 @@ handlers.instantiate = async function(params) {
 // the bound property, so auto-layout never recalculated.
 
 // getMainComponentSafe lives in utils.js — shared with the read handlers.
-
-// Resolve "label" → "label#5:0" using the already-fetched main component's
-// componentPropertyDefinitions. Caller passes `main` so we don't re-fetch it
-// per key.
-function resolvePropertyNameAgainstMain(main, propertyName) {
-  if (!main) return null;
-  var defs = main.componentPropertyDefinitions;
-  if (!defs) return null;
-  if (defs[propertyName]) return propertyName;
-  var keys = Object.keys(defs);
-  for (var i = 0; i < keys.length; i++) {
-    if (keys[i].split("#")[0] === propertyName) return keys[i];
-  }
-  return null;
-}
 
 // setComponentProperties — set property values on a component instance.
 // Wraps Figma's InstanceNode.setProperties({ "name#id": value, ... }).
@@ -883,16 +945,18 @@ handlers.setComponentProperties = async function(params) {
     throw new Error("setComponentProperties requires an INSTANCE node, got: " + node.type);
   }
 
-  // Fetch main once — dynamic-page-safe — and reuse for every property lookup
-  // plus the diagnostic on unknown names.
-  var main = await getMainComponentSafe(node);
+  // Resolve names against the instance itself: componentProperties covers
+  // variant and non-variant mains alike, while main.componentPropertyDefinitions
+  // throws for any variant.
+  var defs = {};
+  try { defs = node.componentProperties || {}; } catch (e) {}
 
   var resolvedMap = {};
   var unresolved = [];
   var keys = Object.keys(properties);
   for (var i = 0; i < keys.length; i++) {
     var name = keys[i];
-    var resolved = resolvePropertyNameAgainstMain(main, name);
+    var resolved = resolvePropertyKey(defs, name);
     if (!resolved) {
       unresolved.push(name);
       continue;
@@ -901,8 +965,7 @@ handlers.setComponentProperties = async function(params) {
   }
 
   if (unresolved.length > 0) {
-    var available = (main && main.componentPropertyDefinitions)
-      ? Object.keys(main.componentPropertyDefinitions) : [];
+    var available = Object.keys(defs);
     throw new Error(
       "Unknown component property: " + unresolved.join(", ") +
       ". Available on main component: " + (available.length ? available.join(", ") : "(none — call addComponentProperty first)")
@@ -925,7 +988,6 @@ handlers.setComponentProperties = async function(params) {
   // sizing-axes) that may merge after this one. Once both land, this block
   // can be replaced with a call to the shared autoPromoteTextHugForReflow.
   if (typeof node.findAll === "function") {
-    var defs = (main && main.componentPropertyDefinitions) || {};
     var changedKeys = Object.keys(resolvedMap);
     for (var ck = 0; ck < changedKeys.length; ck++) {
       var key = changedKeys[ck];

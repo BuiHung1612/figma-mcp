@@ -456,7 +456,7 @@ async function handlePluginRequest(request) {
   if (!handler) {
     sendBridgeReply({
       id, operation, success: false,
-      error: `Unsupported operation "${operation}" (request ${id}, runtime {{PLUGIN_VERSION}}, protocol 3). Available: ${Object.keys(handlers).join(", ")}`,
+      error: `Unsupported operation "${operation}" (request ${id}, runtime {{PLUGIN_VERSION}}, protocol 3). See figma_docs { section: "api" } for the operations.`,
     });
     return;
   }

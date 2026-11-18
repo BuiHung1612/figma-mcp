@@ -25,7 +25,8 @@ await figma.loadImage("https://images.unsplash.com/photo-xxx?w=48&h=48&fit=crop"
 
 ## figma.loadIcon(name, opts)
 
-Fetch SVG icon with 7-library auto-fallback (filled-first, iOS style preferred):
+Fetch SVG icon with 7-library auto-fallback (filled-first, iOS style preferred).
+Prefix a library to pin the style: `"lucide:map-pin"` (ionicons, fluent, bootstrap, phosphor, tabler-filled, tabler, lucide).
 
 ```js
 await figma.loadIcon("notifications", { parentId: header.id, x: 16, y: 16, size: 22, fill: "#FFFFFF" });
@@ -216,11 +217,11 @@ Figma plugin API does not support `counterAxisAlignItems: "STRETCH"`. It throws 
 await figma.create({ type: "FRAME", layoutMode: "VERTICAL",
   counterAxisAlignItems: "STRETCH" });
 
-// ✅ Use "MIN" on container + layoutAlign: "STRETCH" on each child
+// ✅ Use "MIN" on container + layoutSizingHorizontal: "FILL" on each child
 var col = await figma.create({ type: "FRAME", layoutMode: "VERTICAL",
   counterAxisAlignItems: "MIN", width: 300, height: 200 });
 await figma.create({ type: "FRAME", parentId: col.id, height: 52,
-  layoutAlign: "STRETCH" });   // ← child fills parent width
+  layoutSizingHorizontal: "FILL" });   // ← child fills parent width
 ```
 
 ---
@@ -229,28 +230,18 @@ await figma.create({ type: "FRAME", parentId: col.id, height: 52,
 
 Every `figma_write` execution runs in a **fresh JavaScript sandbox**. Variables, constants, and helper functions defined in one call are gone in the next.
 
-**Rule:** Redeclare all constants at the top of every `figma_write` call:
+**Rule:** Redeclare constants at the top of every `figma_write` call, and give nodes you will need again a `key`:
 ```js
 // Must repeat this in EVERY figma_write call that needs these values
 var COLORS = { accent: "#6C5CE7", bg: "#0F1117", text: "#E8ECF4" };
-var frameId = "123:456";   // re-query if you don't have the ID from this call
+var sheet = await figma.byKey("sheet");   // created earlier with key: "sheet"
 ```
 
 ---
 
-### BUG-09/10 — figma.getChildren / figma.read not available in sandbox
+### Reading inside figma_write
 
-`figma.getChildren(nodeId)`, `figma.getNodeChildren()`, and `figma.read(...)` are not exposed in the write sandbox. Calling them throws `figma.getChildren is not a function`.
-
-**Correct pattern:** Use separate `figma_read` tool calls:
-```js
-// ❌ Inside figma_write — crashes
-var children = await figma.getChildren("123:456");
-
-// ✅ Use figma_read tool BEFORE the figma_write call
-// figma_read({ operation: "read_nodes", nodeId: "123:456", depth: 1 })
-// → inspect children, collect IDs, then use IDs in figma_write
-```
+`figma.getChildren(id)`, `figma.getNodeById(id)` and `figma.byKey(key)` return node info (`id`, `name`, `type`, `parentId`, `childIds`, geometry). For styles, text and layout detail use `figma.getNodeDetail({ id })` or the `figma_read` tool before the write.
 
 ---
 
@@ -294,27 +285,23 @@ await figma.loadIcon("home", { parentId: tabId, size: 20, fill: "#428DE7" });
 
 ---
 
-### BUG-14 — layoutGrow:1 conflicts with primaryAxisAlignItems:"CENTER"
+### BUG-14 — a FILL child cancels primaryAxisAlignItems:"CENTER"
 
-`"CENTER"` distributes remaining space equally around children. `layoutGrow: 1` on a child consumes **all** remaining space before CENTER applies — children shift to one side instead of centering.
+`"CENTER"` distributes remaining space around children. A child with `layoutSizing…: "FILL"` on the main axis consumes **all** remaining space first — the others shift to one side instead of centering.
 
-**Rule:** Never combine `layoutGrow` with `primaryAxisAlignItems: "CENTER"`.
+**Rule:** Never combine a main-axis `"FILL"` child with `primaryAxisAlignItems: "CENTER"`.
 
 ```js
 // ❌ Spacer + CENTER — dots shift, centering broken
-await figma.create({ type: "FRAME", layoutMode: "HORIZONTAL",
-  primaryAxisAlignItems: "CENTER" });
-await figma.create({ type: "FRAME", parentId: rowId, layoutGrow: 1 }); // breaks centering
+{ type: "FRAME", layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", children: [
+  { type: "FRAME", layoutSizingHorizontal: "FILL" },   // breaks centering
+] }
 
 // ✅ Option A: SPACE_BETWEEN (distributes equally, no spacer needed)
-await figma.create({ type: "FRAME", layoutMode: "HORIZONTAL",
-  primaryAxisAlignItems: "SPACE_BETWEEN" });
+{ type: "FRAME", layoutMode: "HORIZONTAL", primaryAxisAlignItems: "SPACE_BETWEEN" }
 
 // ✅ Option B: "MIN" + paddingLeft for manual centering
-await figma.create({ type: "FRAME", layoutMode: "HORIZONTAL",
-  primaryAxisAlignItems: "MIN", paddingLeft: 60 });
-
-// ✅ Option C: absolute x positions — skip auto-layout entirely for dot rows
+{ type: "FRAME", layoutMode: "HORIZONTAL", primaryAxisAlignItems: "MIN", paddingLeft: 60 }
 ```
 
 ---

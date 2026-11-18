@@ -95,9 +95,23 @@ pub(super) async fn figma_read(bridge: BridgeHandle, args: Value) -> ToolResult 
         let query = args["query"].as_str().unwrap_or("");
         let node_type = args.get("type").or_else(|| args.get("nodeType")).and_then(Value::as_str);
         let limit = clamp_limit(&args, 30, 100);
-        let results = bridge.search_index_nodes(session_id, query, node_type, limit).await;
         let stats = bridge.get_index_stats(session_id).await;
+        let indexed_complete = stats.as_ref().is_some_and(|stats| stats.complete);
+        // The index cannot scope to a subtree and may not cover a frame yet, so a
+        // nodeId search, or an empty answer from a partial index, walks the live tree.
+        let results = if op_params.get("id").is_some() { None } else { bridge.search_index_nodes(session_id, query, node_type, limit).await };
         let nodes: Vec<Value> = results.unwrap_or_default().iter().map(|n| n.search_summary()).collect();
+        if op_params.get("id").is_some() || (nodes.is_empty() && !indexed_complete) {
+            let mut live = json!({"limit": limit, "includeHidden": args["includeHidden"].as_bool().unwrap_or(false)});
+            if let Some(id) = op_params.get("id") { live["id"] = id.clone(); }
+            if !query.is_empty() { live["query"] = json!(query); }
+            if let Some(t) = node_type { live["type"] = json!(t); }
+            // An older plugin without live search keeps the cached answer below.
+            if let Ok(data) = bridge.send_operation("search_nodes", live, session_id).await {
+                return ToolResult::text(json!({"query":query,"nodes":data["results"],"count":data["total"],
+                    "cached":false,"complete":!data["truncated"].as_bool().unwrap_or(false)}).to_string());
+            }
+        }
         return ToolResult::text(json!({"query":query,"nodes":nodes,"count":nodes.len(),
             "cached":true,"scope":stats.as_ref().map(|stats| &stats.scopes),
             "complete":stats.as_ref().is_some_and(|stats| stats.complete),

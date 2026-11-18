@@ -33,6 +33,7 @@ const MAX_LOG_BYTES: usize = 16 << 10;
 pub enum HostCall {
     Op { operation: String, params: Value },
     Icon { name: String, opts: Value },
+    IconSvg { name: String, opts: Value },
     Image { url: String, opts: Value },
     Log { level: String, msg: String },
 }
@@ -119,18 +120,23 @@ async fn handle_host(call: HostCall, bridge: &BridgeHandle, sid: Option<&str>, l
             let size = opts.get("size").and_then(|v| v.as_f64()).unwrap_or(24.0);
             let fill = opts.get("fill").and_then(|v| v.as_str()).unwrap_or("#1E3150").to_string();
             let svg = fetch_svg_icon(http_client, &name, size, &fill).await?;
-            let mut create_params = json!({
-                "type": "SVG",
-                "name": opts.get("name").and_then(|v| v.as_str()).unwrap_or(&format!("icon/{}", name)),
-                "width": size,
-                "height": size,
-                "svg": svg,
-                "fill": fill,
-            });
-            if let Some(pid) = opts.get("parentId") { create_params["parentId"] = pid.clone(); }
-            if let Some(x) = opts.get("x") { create_params["x"] = x.clone(); }
-            if let Some(y) = opts.get("y") { create_params["y"] = y.clone(); }
+            // Every other option is a create() option (parentId, key, layoutPositioning…),
+            // so create's strict key check covers it.
+            let mut create_params = opts.clone();
+            let Some(obj) = create_params.as_object_mut() else { return Err("loadIcon options must be an object".into()) };
+            obj.remove("size");
+            obj.insert("type".into(), json!("SVG"));
+            obj.insert("width".into(), json!(size));
+            obj.insert("height".into(), json!(size));
+            obj.insert("svg".into(), json!(svg));
+            obj.insert("fill".into(), json!(fill));
+            obj.entry("name").or_insert_with(|| json!(format!("icon/{}", name.rsplit(':').next().unwrap_or(&name))));
             bridge.send_operation("create", create_params, sid).await
+        }
+        HostCall::IconSvg { name, opts } => {
+            let size = opts.get("size").and_then(|v| v.as_f64()).unwrap_or(24.0);
+            let fill = opts.get("fill").and_then(|v| v.as_str()).unwrap_or("#1E3150").to_string();
+            Ok(json!({ "svg": fetch_svg_icon(http_client, &name, size, &fill).await? }))
         }
         HostCall::Image { url, opts } => {
             let bytes = match http_client.get(&url).send().await {
@@ -338,6 +344,9 @@ fn eval_script(code: &str) -> ScriptOutcome {
     register(&mut context, "__host_icon", NativeFunction::from_copy_closure(|_this, args, _ctx| {
         host_result(call_host(HostCall::Icon { name: arg_string(args, 0), opts: arg_json(args, 1) }))
     }));
+    register(&mut context, "__host_icon_svg", NativeFunction::from_copy_closure(|_this, args, _ctx| {
+        host_result(call_host(HostCall::IconSvg { name: arg_string(args, 0), opts: arg_json(args, 1) }))
+    }));
     register(&mut context, "__host_image", NativeFunction::from_copy_closure(|_this, args, _ctx| {
         host_result(call_host(HostCall::Image { url: arg_string(args, 0), opts: arg_json(args, 1) }))
     }));
@@ -359,123 +368,127 @@ function __callHost(op, params = {}) {
     }
 }
 
-const ALL_OPS = [
-    "status", "listPages", "setPage", "createPage",
-    "query", "create", "modify", "delete", "append",
-    "listComponents", "instantiate",
-    "ensure_library", "get_library_tokens",
-    "createVariableCollection", "createVariable", "applyVariable",
-    "modifyVariable", "setupDesignTokens",
-    "addVariableMode", "renameVariableMode", "removeVariableMode", "setVariableValue",
-    "setFrameVariableMode", "clearFrameVariableMode",
-    "createPaintStyle", "createTextStyle", "createComponent",
-    "applyTextStyle",
-    "clone", "group", "ungroup", "flatten", "resize",
-    "set_selection", "set_viewport", "batch",
-    "setReactions", "removeReactions",
-    "setScrollBehavior",
-    "setComponentProperties", "swapComponent",
-    "addComponentProperty", "bindComponentPropertyToText", "removeComponentProperty",
-    "bindComponentProperty", "unbindComponentProperty",
-    "loadAllPagesAsync",
-    "get_selection", "get_design", "get_page_nodes",
-    "screenshot", "export_svg",
-    "get_styles", "get_local_components", "get_viewport", "get_variables",
-    "get_node_detail", "read_nodes", "export_image", "search_nodes", "scan_design",
-    "getReactions", "getComponentProperties"
-];
-
-const figma = {
-    notify: (msg) => Promise.resolve(msg),
+// The sandbox API: figma.<name>(params) → plugin operation.
+const OPS = {
+    status: "status", listPages: "listPages", setPage: "setPage", createPage: "createPage",
+    query: "query", create: "create", modify: "modify", delete: "delete", clone: "clone", resize: "resize",
+    group: "group", ungroup: "ungroup", flatten: "flatten", detach: "detach",
+    listComponents: "listComponents", instantiate: "instantiate", createComponent: "createComponent",
+    setComponentProperties: "setComponentProperties", getComponentProperties: "getComponentProperties",
+    swapComponent: "swapComponent", addComponentProperty: "addComponentProperty",
+    bindComponentPropertyToText: "bindComponentPropertyToText", removeComponentProperty: "removeComponentProperty",
+    bindComponentProperty: "bindComponentProperty", unbindComponentProperty: "unbindComponentProperty",
+    ensureLibrary: "ensure_library", getLibraryTokens: "get_library_tokens",
+    createVariableCollection: "createVariableCollection", createVariable: "createVariable", applyVariable: "applyVariable",
+    modifyVariable: "modifyVariable", setupDesignTokens: "setupDesignTokens",
+    addVariableMode: "addVariableMode", renameVariableMode: "renameVariableMode", removeVariableMode: "removeVariableMode",
+    setVariableValue: "setVariableValue", setFrameVariableMode: "setFrameVariableMode", clearFrameVariableMode: "clearFrameVariableMode",
+    createPaintStyle: "createPaintStyle", createTextStyle: "createTextStyle", applyTextStyle: "applyTextStyle",
+    setSelection: "set_selection", setViewport: "set_viewport",
+    setReactions: "setReactions", removeReactions: "removeReactions", getReactions: "getReactions", setScrollBehavior: "setScrollBehavior",
+    loadAllPages: "loadAllPagesAsync",
+    getSelection: "get_selection", getDesign: "get_design", screenshot: "screenshot",
+    exportSvg: "export_svg", exportImage: "export_image", getStyles: "get_styles", getLocalComponents: "get_local_components",
+    getViewport: "get_viewport", getVariables: "get_variables", getNodeDetail: "get_node_detail", readNodes: "read_nodes",
+    searchNodes: "search_nodes", scanDesign: "scan_design",
+    listAvailableFonts: "list_available_fonts", loadFont: "load_font", commitUndo: "commit_undo",
 };
 
-for (const op of ALL_OPS) {
-    figma[op] = async (params = {}) => __callHost(op, params);
-}
+const api = { notify: (msg) => Promise.resolve(msg) };
+for (const [name, op] of Object.entries(OPS)) api[name] = async (params = {}) => __callHost(op, params);
 
-figma.getNodeById = async (id) => __callHost("get_node_detail", { id });
-figma.getNode = async (id) => __callHost("get_node_detail", { id });
-figma.getChildren = async (nodeId) => {
-    const detail = __callHost("get_node_detail", { id: nodeId, depth: 1 });
-    return (detail && Array.isArray(detail.children)) ? detail.children : [];
+api.batch = async (operations) => __callHost("batch", { operations });
+api.getNodeById = async (id) => (__callHost("query", { id })[0] || null);
+api.getChildren = async (parentId) => __callHost("query", { parentId });
+api.getPageNodes = async () => {
+    const raw = __callHost("query", {});
+    return Array.isArray(raw) ? raw : [];
 };
-figma.zoom_to_fit = async (opts = {}) => {
+api.byKey = async (key, opts = {}) => __callHost("find_by_key", { ...opts, key });
+api.zoomToFit = async (opts = {}) => {
     const nodeIds = opts.nodeIds || (opts.nodeId ? [opts.nodeId] : []);
     return __callHost("set_viewport", { nodeId: nodeIds[0] || null });
 };
-figma.getCurrentPage = async () => __callHost("status", {});
-figma.get_page_nodes = async () => {
-    const raw = __callHost("get_page_nodes", {});
-    const arr = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.nodes) ? raw.nodes : []);
-    return arr;
+
+api.loadImage = async (url, opts = {}) => {
+    try { return JSON.parse(__host_image(url, JSON.stringify(opts))); } catch (e) { throw new Error(String(e)); }
 };
-
-figma.loadImage = async (url, opts = {}) => {
-    try {
-        const raw = __host_image(url, JSON.stringify(opts));
-        return JSON.parse(raw);
-    } catch (e) {
-        throw new Error(String(e));
-    }
+api.loadIcon = async (iconName, opts = {}) => {
+    try { return JSON.parse(__host_icon(iconName, JSON.stringify(opts))); } catch (e) { throw new Error(String(e)); }
 };
-
-figma.loadIcon = async (iconName, opts = {}) => {
-    try {
-        const raw = __host_icon(iconName, JSON.stringify(opts));
-        return JSON.parse(raw);
-    } catch (e) {
-        throw new Error(String(e));
-    }
-};
-
-figma.loadIconIn = async (iconName, opts = {}) => {
-    const cSize = opts.containerSize || 40;
-    const fill = opts.fill || "#6C5CE7";
-    const bgOpacity = opts.bgOpacity !== undefined ? opts.bgOpacity : 0.1;
-    const iSize = opts.iconSize || Math.floor(cSize / 2);
-
-    if (opts.noContainer) {
-        await figma.loadIcon(iconName, {
-            parentId: opts.parentId,
-            size: iSize,
-            fill,
-        });
-        return { id: opts.parentId };
-    }
-
-    const createParams = {
-        type: "FRAME",
-        name: opts.name || ("icon-" + iconName + "-wrap"),
-        parentId: opts.parentId,
-        x: opts.x !== undefined ? opts.x : 0,
-        y: opts.y !== undefined ? opts.y : 0,
-        width: cSize,
-        height: cSize,
-        fill,
-        fillOpacity: bgOpacity,
-        cornerRadius: Math.floor(cSize / 2),
-        layoutMode: "HORIZONTAL",
-        primaryAxisAlignItems: "CENTER",
-        counterAxisAlignItems: "CENTER",
-    };
-    if (opts.layoutAlign !== undefined) createParams.layoutAlign = opts.layoutAlign;
-    if (opts.layoutGrow !== undefined) createParams.layoutGrow = opts.layoutGrow;
-
-    const container = await figma.create(createParams);
-    await figma.loadIcon(iconName, {
-        parentId: container.id,
-        size: iSize,
-        fill,
+api.loadIconIn = async (iconName, opts = {}) => {
+    const { containerSize = 40, fill = "#6C5CE7", bgOpacity = 0.1, iconSize, noContainer, parentId, ...rest } = opts;
+    const iSize = iconSize || Math.floor(containerSize / 2);
+    if (noContainer) return api.loadIcon(iconName, { parentId, size: iSize, fill });
+    const container = await api.create({
+        type: "FRAME", name: "icon-" + iconName + "-wrap", parentId,
+        width: containerSize, height: containerSize, fill, fillOpacity: bgOpacity, cornerRadius: Math.floor(containerSize / 2),
+        layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER", ...rest,
     });
+    await api.loadIcon(iconName, { parentId: container.id, size: iSize, fill });
     return container;
 };
+
+// render(tree): one call builds a whole tree. { type: "ICON", name, size, fill }
+// nodes are fetched here (the plugin cannot reach the network) and drawn as SVG.
+api.render = async (tree, opts = {}) => {
+    const resolve = (spec) => {
+        if (!spec || typeof spec !== "object") throw new Error("render: every node must be an object");
+        let out = spec;
+        if (spec.type === "ICON") {
+            const { type, name, size = 24, fill = "#1E3150", ...rest } = spec;
+            if (!name) throw new Error("render: ICON needs a name");
+            const { svg } = JSON.parse(__host_icon_svg(name, JSON.stringify({ size, fill })));
+            out = { name: "icon/" + name.split(":").pop(), ...rest, type: "SVG", svg, width: size, height: size, fill };
+        }
+        return Array.isArray(out.children) ? { ...out, children: out.children.map(resolve) } : out;
+    };
+    let resolved;
+    try { resolved = resolve(tree); } catch (e) { throw new Error(String(e && e.message || e)); }
+    return __callHost("render", { ...opts, tree: resolved });
+};
+
+// Old names and real Plugin API calls fail with the call to use instead.
+const RENAMED = {
+    get_page_nodes: "getPageNodes()", ensure_library: "ensureLibrary()", get_library_tokens: "getLibraryTokens()",
+    set_selection: "setSelection()", set_viewport: "setViewport()", get_selection: "getSelection()", get_design: "getDesign()",
+    export_svg: "exportSvg()", export_image: "exportImage()", get_styles: "getStyles()", get_local_components: "getLocalComponents()",
+    get_viewport: "getViewport()", get_variables: "getVariables()", get_node_detail: "getNodeDetail()", read_nodes: "readNodes()",
+    search_nodes: "searchNodes()", scan_design: "scanDesign()", zoom_to_fit: "zoomToFit()", getNode: "getNodeById()",
+    loadAllPagesAsync: "loadAllPages()", loadFontAsync: "loadFont({ family, style })", getCurrentPage: "status()",
+    append: "modify({ id: childId, parentId })",
+};
+const PLUGIN_API = {
+    createFrame: 'create({ type: "FRAME", ... })', createRectangle: 'create({ type: "RECTANGLE", ... })',
+    createEllipse: 'create({ type: "ELLIPSE", ... })', createLine: 'create({ type: "LINE", ... })',
+    createText: 'create({ type: "TEXT", content, ... })', createVector: 'create({ type: "VECTOR", d, ... })',
+    createNodeFromSvg: 'create({ type: "SVG", svg, ... })', getNodeByIdAsync: "getNodeById(id)",
+    currentPage: "status() or getPageNodes()", root: "listPages()", listAvailableFontsAsync: "listAvailableFonts({ query })",
+};
+const figma = new Proxy(api, {
+    get(target, prop) {
+        if (typeof prop === "symbol" || prop in target) return target[prop];
+        if (prop === "then" || prop === "toJSON") return undefined;
+        if (RENAMED[prop]) throw new Error("figma." + prop + " was renamed: use figma." + RENAMED[prop]);
+        if (PLUGIN_API[prop]) throw new Error("figma." + prop + " is the Figma Plugin API, not this sandbox: use figma." + PLUGIN_API[prop]);
+        throw new Error("figma." + prop + " does not exist. See figma_docs { section: \"api\" }.");
+    },
+});
 "##;
 
     if let Err(e) = context.eval(Source::from_bytes(prelude)) {
         return (false, None, Some(format!("Sandbox initialization failed: {}", e)));
     }
 
-    let wrapped_code = format!("(async () => {{\n{}\n}})()", code);
+    // A failed script first removes the nodes it created (handlers.rollback), then
+    // every script commits, so each figma_write is one undo step. An older plugin
+    // without these ops just fails those calls, which are ignored. catch + rethrow,
+    // not finally: Boa rejects an async function whose try returns through a
+    // finally with the return value.
+    let wrapped_code = format!(
+        "(async () => {{ let __ok = true, __out; try {{ __out = await (async () => {{\n{}\n}})(); }} catch (e) {{ __ok = false; __out = e; try {{ const r = JSON.parse(__host_op(\"rollback\", \"{{}}\")); if (r && r.removed) __out = new Error(String(e && e.message || e) + \" — removed the \" + r.removed + \" node(s) this call created; edits to existing nodes were kept\"); }} catch (_) {{}} }} try {{ __host_op(\"commit_undo\", \"{{}}\"); }} catch (e) {{}} if (!__ok) throw __out; return __out; }})()",
+        code
+    );
     let eval_res = context.eval(Source::from_bytes(&wrapped_code)).and_then(|value| {
         // Code can close the async wrapper early, leaving a non-promise completion value.
         let Some(object) = value.as_object() else { return Ok(value) };
@@ -530,6 +543,21 @@ mod tests {
         }
         let res = super::execute_code("return { a: [1, { b: 'x' }], f() {} };", bridge, None).await;
         assert_eq!(res.result, Some(serde_json::json!({"a": [1, {"b": "x"}]})));
+    }
+
+    #[tokio::test]
+    async fn old_names_and_plugin_api_calls_fail_with_the_replacement() {
+        let bridge = crate::bridge::BridgeHandle::Direct(crate::bridge::BridgeState::new(0));
+        for (code, hint) in [
+            ("await figma.get_page_nodes();", "figma.getPageNodes()"),
+            ("figma.createFrame();", "create({ type: \"FRAME\""),
+            ("await figma.nope();", "does not exist"),
+        ] {
+            let res = super::execute_code(code, bridge.clone(), None).await;
+            assert!(res.error.as_deref().is_some_and(|e| e.contains(hint)), "{code}: {:?}", res.error);
+        }
+        let res = super::execute_code("return [typeof figma.create, typeof figma.render, typeof figma.byKey];", bridge, None).await;
+        assert_eq!(res.result, Some(serde_json::json!(["function", "function", "function"])));
     }
 
     #[tokio::test]

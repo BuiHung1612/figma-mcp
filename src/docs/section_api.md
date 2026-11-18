@@ -24,6 +24,7 @@ To implement a screen, read each frame with `figma_read { operation: "get_spec",
 await figma.query({ type: "FRAME" })                 // all frames on current page
 await figma.query({ name: "Sidebar" })               // by name
 await figma.query({ id: "123:456" })                 // by id
+await figma.query({ parentId: f.id, deep: true })    // every descendant (no filter = direct children only)
 // → [{ id, name, type, x, y, width, height, parentId }]
 ```
 
@@ -42,8 +43,9 @@ var f = await figma.create({
   layoutMode: "VERTICAL",
   primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN",
   padding: 16, itemSpacing: 12,
-  primaryAxisSizingMode: "FIXED",   // "FIXED" | "AUTO"
-  counterAxisSizingMode: "FIXED",
+  layoutSizingHorizontal: "FIXED",  // "FIXED" | "HUG" | "FILL" (FILL needs an auto-layout parent)
+  layoutSizingVertical: "HUG",      // without width/height an auto-layout frame hugs that axis
+  key: "screen",                    // find it later with figma.byKey("screen")
   // Effects (optional):
   effects: [{ type: "DROP_SHADOW", color: "#00000026", offset: {x:0,y:8}, radius: 24 }],
   // Gradient fill (optional):
@@ -81,13 +83,14 @@ await figma.create({ type: "TEXT", name: "Heading",
   parentId: f.id, x: 24, y: 24,
   content: "Total Balance",    // also accepts: characters: "..."
   fontSize: 14,
-  fontWeight: "SemiBold",      // Regular | Medium | SemiBold | Bold | Light | Heavy | Black | ExtraBold
+  fontFamily: "Inter",         // default Inter; a font that is not installed throws
+  fontWeight: "SemiBold",      // matched to the family's style names ("Semi Bold", "Demi Bold"…)
   fill: "#f8fafc",             // also accepts: fontColor, fills array
   lineHeight: 20,              // px
   textAlign: "CENTER",         // LEFT | CENTER | RIGHT (auto-sets textAutoResize: "NONE" with width)
   width: 200, height: 40,      // both specified → fixed box (textAutoResize: "NONE"), size respected
-  layoutAlign: "STRETCH",      // for wrapping text in auto-layout
-  layoutGrow: 1,               // for growing text in auto-layout
+  layoutSizingHorizontal: "FILL", // wrap across an auto-layout parent's width
+  textDecoration: "UNDERLINE",
 })
 ```
 
@@ -137,20 +140,33 @@ await figma.create({ type: "ELLIPSE", parentId: f.id,
 ## Modify
 ```js
 await figma.modify({ id: f.id, fill: "#0f172a" })
-await figma.modify({ name: "Card", width: 300, cornerRadius: 16 })
+await figma.modify({ id: card.id, width: 300, cornerRadius: 16 })
 await figma.modify({ id: "123:456", content: "New text", fontSize: 16 })
 await figma.modify({ id: "123:456", fontFamily: "SF Pro", fontWeight: "Bold" })
 await figma.modify({ id: "123:456", fontColor: "#428DE7" })  // alias for fill on text
 await figma.modify({ id: "123:456", layoutMode: "NONE" })    // remove auto-layout
+await figma.modify({ id: "1:9", parentId: "1:2", insertIndex: 0 })  // move under another parent
+await figma.modify({ id: "1:9", layoutPositioning: "ABSOLUTE", x: 16, y: 68 }) // float over auto-layout siblings
+await figma.modify({ id: "1:9", fills: [] })                 // clear fills (or ["#fff", { color, opacity }])
+await figma.modify({ id: "1:7", textAutoResize: "HEIGHT", textAlignHorizontal: "LEFT", textDecoration: "UNDERLINE" })
 ```
+
+Every write op checks its keys strictly: an unknown key, a removed one (`layoutAlign`, `layoutGrow`, `primaryAxisSizingMode`, `counterAxisSizingMode`) or one that does not fit the node (`fontSize` on a frame) throws before anything changes.
+`create` also takes `layoutPositioning: "ABSOLUTE"` (parent must use auto-layout; draw overlays last so they render on top).
+Writes return `{ id, name, type, parentId, childIds, x, y, width, height, key?, layoutPositioning?, warnings? }`; `warnings` flags things that were accepted but had no effect (x/y inside auto-layout).
+
+Each `figma_write` call is one undo step in Figma, so Ctrl+Z reverts one call at a time. A call that throws removes the nodes it created first; edits to existing nodes stay.
+
+Fonts: `await figma.listAvailableFonts({ query: "avenir" })` → `[{ family, styles }]`;
+`await figma.loadFont({ family, style })` throws if the exact font is not installed — check before editing text that uses it.
 
 ---
 
 ## Delete
 ```js
 await figma.delete({ id: "123:456" })
-await figma.delete({ name: "Old Frame" })
-await figma.delete({ ids: ["1:1", "1:2", "1:3"] })  // batch delete
+await figma.delete({ ids: ["1:1", "1:2", "1:3"] })  // all ids are checked before any is removed
+// → { deleted: ["1:1", ...], alreadyGone: [...] }; a component master throws unless force: true
 ```
 
 ---
@@ -163,20 +179,21 @@ await figma.listComponents()
 await figma.createComponent({ nodeId: "49:200", name: "btn/primary" })
 // → { id, name, key, width, height }
 
-await figma.instantiate({ componentId: comp.id, parentId: f.id, x: 0, y: 0 })
+await figma.instantiate({ componentId: comp.id, parentId: f.id, x: 0, y: 0, key: "cta" })
 await figma.instantiate({ componentName: "btn/primary", parentId: screen.id, x: 100, y: 200,
   overrides: {
     "Label":      { text: "Sign Up", fill: "#FFFFFF", fontSize: 16 },
     "Background": { fill: "#6C5CE7", cornerRadius: 8 },
-    "Icon":       { visible: false }
+    "Icon":       { visible: false }   // an override for a layer that does not exist throws
   }
 })
+await figma.detach({ id: inst.id })   // instance → plain frame, so its layers can be edited freely
 
 // Cross-page document access (documentAccess: dynamic-page)
-// listComponents and instantiate auto-call loadAllPagesAsync internally.
+// listComponents and instantiate call loadAllPages internally.
 // If you run figma.query() / figma.modify() / your own findOne against a
 // component that lives on an unvisited page, call this first or it will miss.
-await figma.loadAllPagesAsync();   // → { loaded: true, pageCount: N }
+await figma.loadAllPages();   // → { loaded: true, pageCount: N }
 ```
 
 ---
@@ -184,62 +201,79 @@ await figma.loadAllPagesAsync();   // → { loaded: true, pageCount: N }
 ## Node Operations
 ```js
 await figma.clone({ id: "123:456", x: 500, y: 0, name: "Card Copy" })
-await figma.clone({ id: "123:456", parentId: otherFrame.id })
+await figma.clone({ id: "123:456", parentId: otherFrame.id, insertIndex: 0 })
+// → { id, ..., idMap: { "<source id>": "<copy id>", ... } } — ids of every copied layer (instance internals excluded)
 
 const group = await figma.group({ nodeIds: ["1:2", "1:3"], name: "Header Group" })
 const { ungrouped } = await figma.ungroup({ id: group.id })
 
 await figma.flatten({ id: "1:2" })
 await figma.resize({ id: "1:2", width: 500, height: 300 })
-await figma.set_selection({ nodeIds: ["1:2", "1:3"] })
+await figma.setSelection({ nodeIds: ["1:2", "1:3"] })
 
-await figma.set_viewport({ nodeId: "1:2" })           // zoom to node
-await figma.set_viewport({ nodeName: "Dashboard" })
-await figma.set_viewport({ center: { x: 500, y: 300 }, zoom: 0.5 })
+await figma.setViewport({ nodeId: "1:2" })           // zoom to node
+await figma.setViewport({ nodeName: "Dashboard" })
+await figma.setViewport({ center: { x: 500, y: 300 }, zoom: 0.5 })
 
-// Sandbox helpers (v2.5.10+)
-await figma.getNodeById("89:393")                     // read node detail by ID
-await figma.zoom_to_fit({ nodeIds: ["1:2"] })         // alias for set_viewport
-await figma.getCurrentPage()                          // returns current page info
+// Sandbox helpers
+await figma.getNodeById("89:393")        // node info (same shape as writes) or null; getNodeDetail for CSS/layout detail
+await figma.getChildren("89:393")        // node info of each child
+await figma.byKey("screen")              // node created with key: "screen", or null
+await figma.zoomToFit({ nodeIds: ["1:2"] })
+await figma.status()                     // connection and current page
+```
+
+---
+
+## Render — a whole tree in one call
+```js
+const { root, ids } = await figma.render({
+  type: "FRAME", key: "sheet", layoutMode: "VERTICAL", width: 402, padding: 16, itemSpacing: 12, children: [
+    { type: "TEXT", key: "title", content: "Search location", fontSize: 22, layoutSizingHorizontal: "FILL", textAlign: "CENTER" },
+    { type: "ICON", name: "lucide:map-pin", size: 20, fill: "#000000" },   // fetched and drawn as SVG
+  ],
+}, { parentId: "1:2", insertIndex: 0 });
+// ids → { sheet: "…", title: "…" }. Up to 500 nodes; any failure removes the whole tree.
 ```
 
 ---
 
 ## Batch — up to 50 mixed operations in one round-trip
 ```js
-const result = await figma.batch([
+const results = await figma.batch([
   { operation: "create", params: { type: "RECTANGLE", parentId: f.id, width: 100, height: 100, fill: "#FF0000" } },
   { operation: "create", params: { type: "TEXT", parentId: f.id, content: "Hello", fontSize: 14, fill: "#FFFFFF" } },
   { operation: "modify", params: { id: "1:5", fill: "#00FF00" } },
   { operation: "delete", params: { id: "1:99" } },
   { operation: "delete", params: { ids: ["2:1", "2:2"] } },
 ]);
-// → { results: [{index, operation, success, data}], total: 5, succeeded: 5 }
+// → [result of op 0, result of op 1, ...]. All or nothing: the first failure throws
+//   ("batch op 3 (delete) failed: …") after removing the nodes the batch created.
 ```
 
 ---
 
 ## Read Operations (also available in figma_write for chaining)
 ```js
-var { nodes } = await figma.get_selection();
+var { nodes } = await figma.getSelection();
 var { dataUrl } = await figma.screenshot({ id: f.id, scale: 2 });
-var frames = await figma.get_page_nodes();  // returns ARRAY directly — do NOT destructure
+var frames = await figma.getPageNodes();  // node info of each top-level node
 
-var styles = await figma.get_styles();
+var styles = await figma.getStyles();
 // → { paintStyles: [{id, name, hex}], textStyles: [{id, name, fontSize, fontFamily}] }
 
-var comps = await figma.get_local_components();
+var comps = await figma.getLocalComponents();
 // → { components: [{id, name, description, variantProperties}], componentSets: [...] }
 
-var vp = await figma.get_viewport();
+var vp = await figma.getViewport();
 // → { center: {x,y}, zoom, bounds: {x,y,width,height} }
 
-var vars = await figma.get_variables();
+var vars = await figma.getVariables();
 // → { collections: [{id, name, modes: [{id,name}], variables: [{id,name,resolvedType,values}]}] }
 
 // includeHidden support (default false)
-var { nodes: all } = await figma.get_selection({ includeHidden: true });
-var { results } = await figma.search_nodes({ type: "TEXT", includeHidden: true });
+var { nodes: all } = await figma.getSelection({ includeHidden: true });
+var { results } = await figma.searchNodes({ type: "TEXT", includeHidden: true });
 ```
 
 **export_image / export_svg / screenshot:**
@@ -367,9 +401,9 @@ await figma.unbindComponentProperty({ nodeId: iconNodeId, field: "visible" });
 // ── Cross-page component lookup (dynamic-page document access) — v2.5.24 ──
 // Under documentAccess: dynamic-page, figma.root.findOne only sees pages the
 // user has visited this session. listComponents and instantiate handle this
-// automatically. For your own cross-page queries, call loadAllPagesAsync first:
-await figma.loadAllPagesAsync();
-var nodes = await figma.query({ namePattern: "btn/*" });
+// automatically. For your own cross-page queries, call figma.loadAllPages() first:
+await figma.loadAllPages();
+var nodes = await figma.query({ name: "btn/" });   // name substring
 ```
 
 ---
@@ -377,7 +411,7 @@ var nodes = await figma.query({ namePattern: "btn/*" });
 ## Workflow — Apply Existing Project Styles (read first, then apply)
 ```js
 // Read all tokens at session start
-var vars = await figma.get_variables();
+var vars = await figma.getVariables();
 var varMap = {};
 for (var ci = 0; ci < vars.collections.length; ci++)
   for (var vi = 0; vi < vars.collections[ci].variables.length; vi++) {
@@ -385,16 +419,16 @@ for (var ci = 0; ci < vars.collections.length; ci++)
     varMap[v.name] = v.id;
   }
 
-var styles = await figma.get_styles();
+var styles = await figma.getStyles();
 var colorMap = {}, textMap = {};
 styles.paintStyles.forEach(function(s) { colorMap[s.name] = s.hex; });
 styles.textStyles.forEach(function(s) { textMap[s.name] = s; });
 
-var comps = await figma.get_local_components();
+var comps = await figma.getLocalComponents();
 var compMap = {};
 comps.components.forEach(function(c) { compMap[c.name] = c.id; });
 
-var pages = await figma.get_page_nodes();
+var pages = await figma.getPageNodes();
 var frameMap = {};
 pages.forEach(function(f) { frameMap[f.name] = f.id; });
 

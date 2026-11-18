@@ -167,9 +167,11 @@ test('export_node validates format and works through batch and aliases', async (
   r.handlers.export_image = async params => ({ format: params.format });
   assert.equal((await r.resolveOperationHandler('exportNode')({ format: 'svg' })).svg, '<svg/>');
   assert.equal((await r.handlers.export_node({ format: 'jpeg' })).format, 'JPG');
-  const batch = await r.handlers.batch({ operations: [{ operation: 'export_node', params: { format: 'SVG' } }, { operation: 'export_node', params: { format: 'bad' } }] });
-  assert.equal(batch.succeeded, 1);
-  assert.match(batch.results[1].error, /supports PNG/);
+  const batch = await r.handlers.batch({ operations: [{ operation: 'export_node', params: { format: 'SVG' } }] });
+  assert.equal(batch[0].svg, '<svg/>');
+  // Batches are all-or-nothing: the first failure throws with the op index.
+  await assert.rejects(r.handlers.batch({ operations: [{ operation: 'export_node', params: { format: 'SVG' } }, { operation: 'export_node', params: { format: 'bad' } }] }),
+    /batch op 1 \(export_node\) failed: .*supports PNG/);
 });
 
 test('multiple paints: Figma bottom→top becomes CSS top-first; top-most solid wins', () => {

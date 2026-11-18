@@ -47,12 +47,12 @@ NEVER place label+value as one text string. Use separate nodes in horizontal aut
 var row = await figma.create({
   type: "FRAME", parentId: parentId, height: 36,
   layoutMode: "HORIZONTAL", primaryAxisAlignItems: "MIN",
-  counterAxisAlignItems: "CENTER", itemSpacing: 8, layoutAlign: "STRETCH"
+  counterAxisAlignItems: "CENTER", itemSpacing: 8, layoutSizingHorizontal: "FILL"
 });
 await figma.create({ type: "TEXT", parentId: row.id, content: "Name:", fontSize: 13,
   fontWeight: "Regular", fill: "#8B8FA3", width: 110 });
 await figma.create({ type: "TEXT", parentId: row.id, content: "John Doe", fontSize: 13,
-  fontWeight: "Medium", fill: "#F0F2F5", layoutGrow: 1 });
+  fontWeight: "Medium", fill: "#F0F2F5", layoutSizingHorizontal: "FILL" });
 ```
 Row height: simple key-value min 36px, with icon min 40px.
 
@@ -62,7 +62,7 @@ Row height: simple key-value min 36px, with icon min 40px.
 ```
 height = paddingTop + paddingBottom + (n × childH) + ((n-1) × spacing)
 ```
-Use `primaryAxisSizingMode: "AUTO"` to auto-grow. Always verify with screenshot.
+Leave out `height` (or set `layoutSizingVertical: "HUG"`) to auto-grow. Always verify with screenshot.
 
 ---
 
@@ -71,7 +71,7 @@ Use `primaryAxisSizingMode: "AUTO"` to auto-grow. Always verify with screenshot.
 var scoreRow = await figma.create({
   type: "FRAME", height: 32, layoutMode: "HORIZONTAL",
   primaryAxisAlignItems: "SPACE_BETWEEN", counterAxisAlignItems: "CENTER",
-  paddingLeft: 8, paddingRight: 8, layoutAlign: "STRETCH"
+  paddingLeft: 8, paddingRight: 8, layoutSizingHorizontal: "FILL"
 });
 ```
 
@@ -165,10 +165,9 @@ All semantic colors must pair with white text (#FFFFFF) for WCAG AA (4.5:1).
 // 1. Create Components frame once
 var compFrame = await figma.create({
   type: "FRAME", name: "⚙️ Components", x: -600, y: 0,
-  width: 500, height: 800, fill: "#1A1A2E",
+  width: 500, fill: "#1A1A2E",            // no height → hugs its components
   layoutMode: "VERTICAL", itemSpacing: 40,
-  paddingTop: 40, paddingLeft: 24, paddingRight: 24, paddingBottom: 40,
-  primaryAxisSizingMode: "AUTO", counterAxisSizingMode: "FIXED"
+  paddingTop: 40, paddingLeft: 24, paddingRight: 24, paddingBottom: 40
 });
 
 // 2. Build frame, then convert to component

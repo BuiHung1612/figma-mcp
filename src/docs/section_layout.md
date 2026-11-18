@@ -8,7 +8,7 @@
 ```js
 await figma.create({
   type: "FRAME", name: "Button", parentId: root.id,
-  x: 24, y: 100, width: 392, height: 52,
+  width: 392, height: 52,
   fill: "#6C5CE7", cornerRadius: 12,
   layoutMode: "HORIZONTAL",           // "HORIZONTAL" | "VERTICAL"
   primaryAxisAlignItems: "CENTER",    // main axis: "MIN"|"CENTER"|"MAX"|"SPACE_BETWEEN"
@@ -18,34 +18,58 @@ await figma.create({
 })
 ```
 
+## SIZING — `layoutSizingHorizontal` / `layoutSizingVertical`
+
+One control per axis, on any node:
+
+| Value | Means | Works on |
+|---|---|---|
+| `"FIXED"` | keep `width` / `height` | everything |
+| `"HUG"` | shrink to content | auto-layout frames, text |
+| `"FILL"` | stretch across the parent's axis | children of an auto-layout frame |
+
+- An auto-layout frame without `width` hugs horizontally; without `height` it hugs vertically. Give a size (or `"FIXED"`) to stop that.
+- Full-width child of a column: `layoutSizingHorizontal: "FILL"`. Child that takes the leftover space in a row: `layoutSizingHorizontal: "FILL"`; in a column: `layoutSizingVertical: "FILL"`.
+- Text that wraps: `layoutSizingHorizontal: "FILL"` (or a fixed `width`). Text that sizes to its words: no width.
+- `layoutAlign`, `layoutGrow`, `primaryAxisSizingMode` and `counterAxisSizingMode` were removed and throw with this table's replacement.
+
 **Common patterns:**
 ```
 // Button with centered text:
 layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER"
 
 // Card with icon + text row:
-layoutMode: "HORIZONTAL", primaryAxisAlignItems: "MIN", counterAxisAlignItems: "CENTER", paddingLeft: 16, itemSpacing: 12
+layoutMode: "HORIZONTAL", counterAxisAlignItems: "CENTER", paddingLeft: 16, itemSpacing: 12
 
-// Vertical stack:
-layoutMode: "VERTICAL", primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN", itemSpacing: 8
-// children: layoutAlign: "STRETCH"
-
-// Centered icon in circle:
-layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER"
-```
-
-**Child properties:**
-```js
-await figma.create({ ..., layoutAlign: "STRETCH" })  // fill parent width in vertical layout
-await figma.create({ ..., layoutGrow: 1 })           // grow to fill available space
-```
-
-**Modify frame to auto-layout:**
-```js
-await figma.modify({ id: frameId, layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER" })
+// Vertical stack whose children span the width:
+layoutMode: "VERTICAL", itemSpacing: 8
+// children: layoutSizingHorizontal: "FILL"
 ```
 
 **Always use Auto Layout for:** buttons, cards with icon+text rows, tab bar items, list items, badge pills.
+
+---
+
+## BUILD WHOLE SCREENS WITH `render`
+
+One call per screen or section instead of one per node. `key` names a node; the result maps keys to ids and `figma.byKey(key)` finds it in later calls.
+
+```js
+const { ids } = await figma.render({
+  type: "FRAME", key: "list-item", layoutMode: "HORIZONTAL", width: 370, padding: 12, itemSpacing: 10,
+  counterAxisAlignItems: "CENTER", fill: "#FFFFFF", cornerRadius: 8,
+  children: [
+    { type: "ICON", name: "map-pin", size: 20, fill: "#000000" },
+    { type: "FRAME", layoutMode: "VERTICAL", itemSpacing: 2, layoutSizingHorizontal: "FILL", children: [
+      { type: "TEXT", content: "The UPS Store #4521", fontWeight: "Medium", layoutSizingHorizontal: "FILL" },
+      { type: "TEXT", content: "1310 Birchwood Dr", fontSize: 12, fill: "#666666", layoutSizingHorizontal: "FILL" },
+    ] },
+    { type: "TEXT", key: "distance", content: "0.3 mi", fontWeight: "Medium" },
+  ],
+}, { parentId: screenId });
+```
+
+If any node fails, nothing from the call stays on the canvas.
 
 ---
 
@@ -59,12 +83,11 @@ await figma.create({ type: "RECTANGLE", parentId: frame.id, x: 56, y: 808, width
 await figma.create({ type: "TEXT", parentId: frame.id, x: 180, y: 827, content: "Submit" }); // not truly centered
 
 // CORRECT
-var btn = await figma.create({
-  type: "FRAME", parentId: frame.id, x: 56, y: 808, width: 488, height: 58,
-  fill: "#00C896", cornerRadius: 30,
+await figma.render({
+  type: "FRAME", width: 488, height: 58, fill: "#00C896", cornerRadius: 30,
   layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER",
-});
-await figma.create({ type: "TEXT", parentId: btn.id, content: "Submit", fill: "#fff", fontSize: 16, fontWeight: "Bold" });
+  children: [{ type: "TEXT", content: "Submit", fill: "#FFFFFF", fontSize: 16, fontWeight: "Bold" }],
+}, { parentId: frame.id });
 ```
 
 Applies to: buttons, inputs, tabs, chips, badges, nav items — ALL elements with background + content.
@@ -76,31 +99,37 @@ Applies to: buttons, inputs, tabs, chips, badges, nav items — ALL elements wit
 NEVER use absolute x/y for children inside a card. Use VERTICAL auto-layout:
 
 ```js
-// CORRECT — VERTICAL auto-layout card
-var card = await figma.create({
-  type: "FRAME", name: "Card", width: 480, height: 610,
-  layoutMode: "VERTICAL", primaryAxisAlignItems: "MIN",
-  counterAxisAlignItems: "MIN",        // NOT "STRETCH" — invalid. Use "MIN" + layoutAlign: "STRETCH" on children
-  paddingTop: 48, paddingBottom: 48, paddingLeft: 48, paddingRight: 48,
-  itemSpacing: 16,
+await figma.render({
+  type: "FRAME", name: "Card", width: 480,
+  layoutMode: "VERTICAL", padding: 48, itemSpacing: 16,   // no height → hugs content
+  children: [
+    // Full-width children: FILL, no width needed
+    { type: "FRAME", name: "Input", height: 52, layoutSizingHorizontal: "FILL",
+      layoutMode: "HORIZONTAL", counterAxisAlignItems: "CENTER", paddingLeft: 20, paddingRight: 20 },
+    // "or" divider row: lines take the leftover space
+    { type: "FRAME", height: 20, layoutSizingHorizontal: "FILL", layoutMode: "HORIZONTAL",
+      counterAxisAlignItems: "CENTER", itemSpacing: 8, children: [
+        { type: "RECTANGLE", height: 1, layoutSizingHorizontal: "FILL", fill: "#E0E0E0" },
+        { type: "TEXT", content: "or", fontSize: 12, fill: "#888888" },
+        { type: "RECTANGLE", height: 1, layoutSizingHorizontal: "FILL", fill: "#E0E0E0" },
+    ] },
+  ],
 });
-
-// Full-width children: layoutAlign STRETCH (no width needed)
-await figma.create({ type: "FRAME", name: "Input", parentId: card.id,
-  height: 52, layoutAlign: "STRETCH",
-  layoutMode: "HORIZONTAL", counterAxisAlignItems: "CENTER",
-  paddingLeft: 20, paddingRight: 20 });
-
-// "or" divider row
-var dividerRow = await figma.create({ type: "FRAME", parentId: card.id,
-  height: 20, layoutAlign: "STRETCH",
-  layoutMode: "HORIZONTAL", primaryAxisAlignItems: "SPACE_BETWEEN", counterAxisAlignItems: "CENTER" });
-await figma.create({ type: "RECTANGLE", parentId: dividerRow.id, height: 1, layoutGrow: 1, fill: "#E0E0E0" });
-await figma.create({ type: "TEXT", parentId: dividerRow.id, content: "or", fontSize: 12, fill: "#888" });
-await figma.create({ type: "RECTANGLE", parentId: dividerRow.id, height: 1, layoutGrow: 1, fill: "#E0E0E0" });
 ```
 
-**Card build order:** create frame → add children without x/y → full-width: `layoutAlign: "STRETCH"` → growing spacers: `layoutGrow: 1`
+---
+
+## OVERLAYS — DROPDOWNS, BADGES, TOOLTIPS
+
+An overlay must not push its siblings. Draw it last in the auto-layout frame with `layoutPositioning: "ABSOLUTE"` and x/y relative to that frame:
+
+```js
+await figma.create({ type: "FRAME", key: "suggestions", parentId: formId, layoutPositioning: "ABSOLUTE",
+  x: 0, y: 68, width: 370, layoutMode: "VERTICAL", fill: "#FFFFFF", stroke: "#A7A7A7", cornerRadius: 4,
+  effects: [{ type: "DROP_SHADOW", color: "#0000001F", offset: { x: 0, y: 6 }, radius: 16 }] });
+```
+
+Move an existing node with `modify({ id, parentId, insertIndex })`.
 
 ---
 
@@ -124,44 +153,34 @@ icon paddingTop = (textLineHeight - iconSize) / 2
 ## PROGRESS BAR RULE (CRITICAL)
 
 Progress bars = TWO overlapping rectangles. Auto-layout stacks them side-by-side, NOT overlapping.
-**ALWAYS wrap in a non-auto-layout frame:**
+**Wrap them in a frame without layoutMode:**
 
 ```js
-// CORRECT — no layoutMode on wrapper → children overlap via absolute x,y
-var pbWrap = await figma.create({
-  type: "FRAME", name: "progress-bar", parentId: autoLayoutParent.id,
-  width: 352, height: 6   // NO layoutMode
-});
-await figma.create({ type: "RECTANGLE", parentId: pbWrap.id, x: 0, y: 0, width: 352, height: 6, fill: "#E7EAF0", cornerRadius: 3 });
-await figma.create({ type: "RECTANGLE", parentId: pbWrap.id, x: 0, y: 0, width: 211, height: 6, fill: "#6C5CE7", cornerRadius: 3 });
-
-// WRONG — inside auto-layout: 352 + 211 = 563px total, not overlapping!
+await figma.render({
+  type: "FRAME", name: "progress-bar", width: 352, height: 6,   // NO layoutMode → children overlap via x,y
+  children: [
+    { type: "RECTANGLE", x: 0, y: 0, width: 352, height: 6, fill: "#E7EAF0", cornerRadius: 3 },
+    { type: "RECTANGLE", x: 0, y: 0, width: 211, height: 6, fill: "#6C5CE7", cornerRadius: 3 },
+  ],
+}, { parentId: autoLayoutParent.id });
 ```
 
-Applies to: progress bars, score rings, slider tracks, overlay badges.
+Applies to: progress bars, score rings, slider tracks.
 
 ---
 
 ## BADGE / PILL / TAG RULE
 
-**Concern 1 — Text inside badge: use auto-layout CENTER/CENTER**
+**Text inside badge: use auto-layout CENTER/CENTER**
 ```js
-var badge = await figma.create({
-  type: "FRAME", name: "badge", parentId: parent.id,
-  x: 100, y: 10, width: 64, height: 20, fill: "#E8FBF5", cornerRadius: 10,
-  layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER"
-});
-await figma.create({ type: "TEXT", parentId: badge.id, content: "Free", fontSize: 10, fontWeight: "SemiBold", fill: "#00B894" });
+await figma.render({
+  type: "FRAME", name: "badge", height: 20, fill: "#E8FBF5", cornerRadius: 10, paddingLeft: 8, paddingRight: 8,
+  layoutMode: "HORIZONTAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER",
+  children: [{ type: "TEXT", content: "Free", fontSize: 10, fontWeight: "SemiBold", fill: "#00B894" }],
+}, { parentId: parent.id });
 ```
 
-**Concern 2 — Badge position on card corner: parent is ROOT, not the card**
-```js
-// badgeX = cardX + cardWidth - badgeWidth - 6
-// badgeY = cardY + 6
-var badge = await figma.create({ ..., parentId: rootFrame.id,
-  x: cardX + cardWidth - 64 - 6, y: cardY + 6, ... });
-// Badge is sibling of card, overlapping top-right corner via absolute positioning
-```
+**Badge on a card corner:** make it a child of the card with `layoutPositioning: "ABSOLUTE"`, `x: cardWidth - badgeWidth - 6`, `y: 6`.
 
 ---
 
@@ -178,59 +197,22 @@ NEVER hardcode y for bottom elements without calculating from frameHeight.
 
 ---
 
-## HUG vs STRETCH CONFLICT RULE
-
-HORIZONTAL child in VERTICAL parent that should fill width must use `primaryAxisSizingMode: "FIXED"`:
-```js
-// CORRECT — child stretches in parent
-await figma.create({ type: "FRAME", layoutMode: "HORIZONTAL",
-  primaryAxisSizingMode: "FIXED",   // accept parent width
-  layoutAlign: "STRETCH" });        // fill parent cross-axis
-
-// WRONG — AUTO overrides STRETCH
-await figma.create({ type: "FRAME", layoutMode: "HORIZONTAL",
-  primaryAxisSizingMode: "AUTO",    // hugs content → ignores STRETCH
-  layoutAlign: "STRETCH" });
-```
-
----
-
 ## CENTERED CONTENT MUST USE AUTO-LAYOUT
 
 NEVER use manual `x = (containerW - childW) / 2` — it breaks when content changes.
 
 ```js
 // CORRECT
-var card = await figma.create({ type: "FRAME", width: 108, height: 108, fill: "#0D1229", cornerRadius: 18,
+await figma.render({ type: "FRAME", width: 108, height: 108, fill: "#0D1229", cornerRadius: 18,
   layoutMode: "VERTICAL", primaryAxisAlignItems: "CENTER", counterAxisAlignItems: "CENTER",
-  paddingTop: 16, paddingBottom: 14, itemSpacing: 8 });
-// Children added without x/y — auto-centered
-
-// WRONG
-var card = await figma.create({ type: "FRAME", width: 108, height: 108 }); // no layoutMode
-await figma.create({ type: "FRAME", parentId: card.id, x: 34, y: 16, ... }); // manual math = fragile
+  paddingTop: 16, paddingBottom: 14, itemSpacing: 8, children: [/* no x/y */] });
 ```
 
 ---
 
 ## ILLUSTRATION CENTERING + LAYER ORDER RULE
 
-**Draw order: background → rings → center icon (last = on top)**
-```js
-var centerX = 140, centerY = 130;
-
-// 1. Rings FIRST (bottom layers)
-await figma.create({ type: "ELLIPSE", parentId: area.id,
-  x: centerX - 110, y: centerY - 110, width: 220, height: 220 });
-await figma.create({ type: "ELLIPSE", parentId: area.id,
-  x: centerX - 80,  y: centerY - 80,  width: 160, height: 160 });
-
-// 2. Center icon LAST (top layer)
-await figma.create({ type: "FRAME", parentId: area.id,
-  x: centerX - 50, y: centerY - 50, width: 100, height: 100 });
-```
-
-**Centering formula:**
+**Draw order: background → rings → center icon (last = on top)**, inside a frame without layoutMode:
 ```
 element_x = centerX - (element_width / 2)
 element_y = centerY - (element_height / 2)
@@ -238,57 +220,46 @@ element_y = centerY - (element_height / 2)
 
 ---
 
-## TEXT ALIGN vs LAYOUT ALIGN RULE
+## TEXT ALIGN vs SIZING RULE
 
-`layoutAlign: "STRETCH"` controls box size. `textAlign: "CENTER"` controls content. Both must be set:
+`layoutSizingHorizontal: "FILL"` controls the box. `textAlign: "CENTER"` controls the content. Both must be set:
 
 ```js
 // CORRECT — box fills width AND content is centered
-await figma.create({ type: "TEXT", parentId: card.id,
-  content: "Centered heading", fontSize: 18, fill: "#FFFFFF",
-  textAlign: "CENTER",    // content alignment
-  layoutAlign: "STRETCH", // box fills parent width
-  lineHeight: 26 });
+{ type: "TEXT", content: "Centered heading", fontSize: 18, fill: "#FFFFFF",
+  textAlign: "CENTER", layoutSizingHorizontal: "FILL", lineHeight: 26 }
 
-// WRONG — box stretches but content stays LEFT (default)
-await figma.create({ type: "TEXT", parentId: card.id,
-  content: "Should center but won't", layoutAlign: "STRETCH" });
+// WRONG — box hugs the words, so there is nothing to center within
+{ type: "TEXT", content: "Should center but won't", textAlign: "CENTER" }
 ```
 
 ---
 
 ## TEXT WRAPPING IN AUTO-LAYOUT RULE
 
-Text inside auto-layout overflows unless constrained. Always use `layoutAlign: "STRETCH"` on text that should wrap:
+Text without a width grows on one line and overflows. Give text that should wrap a width:
 
 ```js
 // CORRECT
-await figma.create({ type: "TEXT", parentId: textFrame.id,
-  content: "Long text...", fontSize: 13, fill: "#E0E6F0", lineHeight: 18,
-  layoutAlign: "STRETCH"  // constrains width → enables wrapping
-});
+{ type: "TEXT", content: "Long text...", fontSize: 13, fill: "#E0E6F0", lineHeight: 18, layoutSizingHorizontal: "FILL" }
 
-// WRONG — text renders at natural width, overflows parent
-await figma.create({ type: "TEXT", parentId: textFrame.id,
-  content: "Long text...", fontSize: 13 });  // no layoutAlign
+// WRONG — renders at natural width, overflows the parent
+{ type: "TEXT", content: "Long text...", fontSize: 13 }
 ```
-
-Use `layoutAlign: "STRETCH"` on: multi-line descriptions, paragraphs, text inside `layoutGrow: 1` parents.
 
 ---
 
 ## HEADER TITLE CENTERING RULE
 
-Pattern [Left action] [Title] [Right action] — title must use `layoutGrow: 1` + `textAlign: "CENTER"`:
+Pattern [Left action] [Title] [Right action] — the title fills the middle and centers its text:
 
 ```js
-var header = await figma.create({ type: "FRAME", layoutMode: "HORIZONTAL",
-  primaryAxisAlignItems: "SPACE_BETWEEN", counterAxisAlignItems: "CENTER" });
-await figma.create({ type: "FRAME", parentId: header.id, width: 32, height: 32 }); // Left action
-await figma.create({ type: "TEXT", parentId: header.id, content: "Title",
-  fontSize: 17, fontWeight: "Bold", fill: "#FFFFFF",
-  textAlign: "CENTER", layoutGrow: 1 });     // BOTH needed
-await figma.create({ type: "FRAME", parentId: header.id, width: 77 });              // Right action
+await figma.render({ type: "FRAME", layoutMode: "HORIZONTAL", layoutSizingHorizontal: "FILL", height: 48,
+  counterAxisAlignItems: "CENTER", children: [
+    { type: "ICON", name: "chevron-back", size: 24 },
+    { type: "TEXT", content: "Title", fontSize: 17, fontWeight: "Bold", textAlign: "CENTER", layoutSizingHorizontal: "FILL" },
+    { type: "FRAME", width: 24, height: 24 },   // balances the left action
+  ] }, { parentId: screenId });
 ```
 
 Applies to: modal headers, nav bars, any [action][title][action] pattern.

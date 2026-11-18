@@ -410,6 +410,7 @@ handlers.search_nodes = async function(params) {
   var criteria = {
     type: p.type || null,               // "TEXT", "FRAME", "RECTANGLE", etc.
     namePattern: p.namePattern || null,  // wildcard pattern: "*header*"
+    query: p.query ? String(p.query).toLowerCase() : null, // substring of name or TEXT content
     fill: p.fill || null,               // hex color: "#FF0000"
     fontFamily: p.fontFamily || null,    // "Inter"
     fontWeight: p.fontWeight || null,    // "Bold"
@@ -442,6 +443,8 @@ handlers.search_nodes = async function(params) {
   function matchNode(node) {
     if (criteria.type && node.type !== criteria.type) return false;
     if (criteria.namePattern && !matchName(node.name, criteria.namePattern)) return false;
+    if (criteria.query && node.name.toLowerCase().indexOf(criteria.query) === -1 &&
+        !(node.type === "TEXT" && String(node.characters).toLowerCase().indexOf(criteria.query) !== -1)) return false;
     if (criteria.fill) {
       var nodeFill = getFillHex(node);
       if (!nodeFill || nodeFill.toLowerCase() !== criteria.fill.toLowerCase()) return false;

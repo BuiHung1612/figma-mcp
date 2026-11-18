@@ -177,10 +177,10 @@ await figma.createTextStyle({ name: "text/heading-xl",
 ## ensure_library & get_library_tokens
 
 ```js
-const lib = await figma.ensure_library();
+const lib = await figma.ensureLibrary();
 // → { id, existed } — creates "🎨 Design Library" frame if not present
 
-const tokens = await figma.get_library_tokens();
+const tokens = await figma.getLibraryTokens();
 // → { colors: [{name, hex}], textStyles: [{name, fontSize, fontWeight, fill}] }
 ```
 

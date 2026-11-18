@@ -35,7 +35,7 @@ jobs:
         run: node scripts/build-plugin.js --check
 
       - name: Test plugin token extraction and version
-        run: node --test scripts/test-plugin-tokens.mjs scripts/test-bench.mjs
+        run: node --test scripts/test-plugin-tokens.mjs scripts/test-plugin-write.mjs scripts/test-bench.mjs
 
       - name: Rust regression tests
         run: cargo test

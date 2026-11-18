@@ -102,6 +102,7 @@ handlers.read_nodes = async function(params) {
   var maxBytes = p.maxBytes;
   if (maxBytes !== undefined && (!Number.isInteger(maxBytes) || maxBytes < 1024 || maxBytes > 1000000)) throw new Error("maxBytes must be an integer from 1024 to 1000000");
   var state;
+  if (p.cursor === "" || p.cursor === null) p = Object.assign({}, p, { cursor: undefined });
   if (p.cursor !== undefined) {
     if (typeof p.cursor !== "string" || !nodeReadCursors.has(p.cursor)) throw new Error("Cursor expired; start a new read_nodes request");
     state = nodeReadCursors.get(p.cursor);

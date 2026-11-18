@@ -272,23 +272,51 @@ async function getMainComponentSafe(instance) {
 
 // SVG path helpers (normalizeSvgPath, arcToCubicSegments) live in svg-path-helpers.js.
 
-const FONT_STYLE_MAP = {
-  Regular: "Regular", Medium: "Medium",
-  SemiBold: "Semi Bold", Bold: "Bold", Light: "Light",
-  Thin: "Thin", Heavy: "Heavy",
-  // BUG-02 fix: map "Black" and aliases to nearest available Inter weight
-  Black: "Bold", ExtraBold: "Extra Bold", UltraBold: "Extra Bold",
-  "Extra Bold": "Extra Bold", "Ultra Bold": "Extra Bold",
-  "Semi Bold": "Semi Bold",
-  "Condensed Heavy": "Condensed Heavy",
-  "Thin Italic": "Thin Italic",
-  "Light Italic": "Light Italic",
+// fontWeight → style names families actually use. Families disagree ("Semi Bold"
+// in Inter, "Demi Bold" in Avenir Next), so the first one the family has wins.
+const FONT_STYLE_CANDIDATES = {
+  Thin: ["Thin", "Hairline"], ExtraLight: ["Extra Light", "ExtraLight", "Ultra Light", "UltraLight"],
+  Light: ["Light"], Regular: ["Regular", "Roman", "Book", "Normal"], Medium: ["Medium"],
+  SemiBold: ["Semi Bold", "SemiBold", "Demi Bold", "DemiBold", "Demi"],
+  Bold: ["Bold"], ExtraBold: ["Extra Bold", "ExtraBold", "Ultra Bold", "UltraBold"],
+  Heavy: ["Heavy"], Black: ["Black"],
 };
+FONT_STYLE_CANDIDATES["Semi Bold"] = FONT_STYLE_CANDIDATES["Demi Bold"] = FONT_STYLE_CANDIDATES.DemiBold = FONT_STYLE_CANDIDATES.SemiBold;
+FONT_STYLE_CANDIDATES["Extra Bold"] = FONT_STYLE_CANDIDATES.UltraBold = FONT_STYLE_CANDIDATES.ExtraBold;
+
+var availableFontStyles = null; // family → [style], loaded once per plugin session
+async function fontStylesFor(family) {
+  if (!availableFontStyles) {
+    availableFontStyles = new Map();
+    var fonts = typeof figma.listAvailableFontsAsync === "function" ? await figma.listAvailableFontsAsync() : [];
+    for (var i = 0; i < fonts.length; i++) {
+      var f = fonts[i].fontName;
+      if (!availableFontStyles.has(f.family)) availableFontStyles.set(f.family, []);
+      availableFontStyles.get(f.family).push(f.style);
+    }
+  }
+  return availableFontStyles.get(family) || null;
+}
+
+// Resolve a fontWeight ("SemiBold") or literal style ("Demi Bold") to a style
+// the family has. Throws instead of substituting another weight or family.
+async function resolveFontStyle(family, weight) {
+  var wanted = weight || "Regular";
+  var styles = await fontStylesFor(family);
+  if (!styles) return (FONT_STYLE_CANDIDATES[wanted] || [wanted])[0]; // unknown list: trust the caller
+  var candidates = [wanted].concat(FONT_STYLE_CANDIDATES[wanted] || []);
+  for (var i = 0; i < candidates.length; i++) {
+    if (styles.indexOf(candidates[i]) !== -1) return candidates[i];
+  }
+  throw new Error("Font \"" + family + "\" has no " + wanted + " style. Available: " + styles.join(", "));
+}
 
 // ── Font Loading Cache ────────────────────────────────────────────────────────
 var loadedFonts = new Set();
 var fontLoadingPromises = new Map();
 
+// Loads exactly family/style or throws. No fallback: a silent swap to Inter
+// produced the wrong font while reporting success.
 async function ensureFontLoaded(family, style) {
   if (!family) family = "Inter";
   if (!style) style = "Regular";
@@ -301,16 +329,9 @@ async function ensureFontLoaded(family, style) {
       await figma.loadFontAsync({ family: family, style: style });
       loadedFonts.add(key);
     } catch (e) {
-      // If specific style fails, try Regular or fallback to Inter
-      try {
-        await figma.loadFontAsync({ family: family, style: "Regular" });
-        loadedFonts.add(family + ":Regular");
-      } catch (e2) {
-        try {
-          await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-          loadedFonts.add("Inter:Regular");
-        } catch (e3) {}
-      }
+      var styles = await fontStylesFor(family);
+      throw new Error("Font \"" + family + " " + style + "\" is not available. " +
+        (styles ? "Styles of " + family + ": " + styles.join(", ") : "Family \"" + family + "\" is not installed; use figma.listAvailableFonts({ query })") + ".");
     } finally {
       fontLoadingPromises.delete(key);
     }
@@ -476,7 +497,31 @@ async function resolveNode(params) {
   return node;
 }
 
+// Component properties live on the COMPONENT_SET for variants; Figma throws when
+// componentPropertyDefinitions is read on a variant, so hop to the set first.
+function propertyOwner(node) {
+  return node && node.type === "COMPONENT" && node.parent && node.parent.type === "COMPONENT_SET" ? node.parent : node;
+}
 
+function propertyDefinitions(node) {
+  var owner = propertyOwner(node);
+  try { return (owner && owner.componentPropertyDefinitions) || {}; } catch (e) { return {}; }
+}
+
+// Resolve a bare property name ("Label") to Figma's qualified key ("Label#132:39").
+function resolvePropertyKey(defs, propertyName) {
+  if (!defs) return null;
+  if (defs[propertyName]) return propertyName;
+  var keys = Object.keys(defs);
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i].split("#")[0] === propertyName) return keys[i];
+  }
+  return null;
+}
+
+
+// The one node shape every write op and query returns.
+var NODE_KEY_DATA = "mcpKey";
 function nodeToInfo(node) {
   if (!node) return null;
   const info = {
@@ -489,7 +534,50 @@ function nodeToInfo(node) {
   if ("y" in node)      info.y = Math.round(node.y);
   if ("width" in node)  info.width  = Math.round(node.width);
   if ("height" in node) info.height = Math.round(node.height);
+  if (node.children) info.childIds = node.children.map(function(c) { return c.id; });
+  if (node.layoutPositioning === "ABSOLUTE") info.layoutPositioning = "ABSOLUTE";
+  try { var key = node.getPluginData && node.getPluginData(NODE_KEY_DATA); if (key) info.key = key; } catch (e) {}
   return info;
+}
+
+// ── Strict parameters ─────────────────────────────────────────────────────────
+// Legacy layout keys get a migration hint instead of the generic message.
+var LEGACY_KEY_HINTS = {
+  layoutAlign: "layoutAlign was removed: use layoutSizingHorizontal/Vertical: \"FILL\" (stretch) on the child",
+  layoutGrow: "layoutGrow was removed: use layoutSizingHorizontal (row) or layoutSizingVertical (column): \"FILL\"",
+  primaryAxisSizingMode: "primaryAxisSizingMode was removed: use layoutSizingHorizontal/Vertical: \"HUG\" or \"FIXED\" on the frame",
+  counterAxisSizingMode: "counterAxisSizingMode was removed: use layoutSizingHorizontal/Vertical: \"HUG\" or \"FIXED\" on the frame",
+};
+
+// Throws before anything is applied, so a call either does everything it was
+// asked or nothing. Keys starting with "_" are internal (e.g. _taskId).
+function assertKnownKeys(op, params, allowed) {
+  var bad = Object.keys(params || {}).filter(function(k) { return !allowed.has(k) && k.charAt(0) !== "_"; });
+  if (!bad.length) return;
+  var hints = bad.map(function(k) { return LEGACY_KEY_HINTS[k]; }).filter(Boolean);
+  throw new Error(op + ": unsupported " + (bad.length > 1 ? "keys " : "key ") + bad.join(", ") + "." +
+    (hints.length ? " " + hints.join(". ") + "." : "") + " See figma_docs { section: \"api\" }.");
+}
+
+// ── Created-node journal ──────────────────────────────────────────────────────
+// Nodes created since the last commit_undo, per task, so a failed figma_write
+// or batch can remove what it drew. Edits to existing nodes are not journaled:
+// Figma gives plugins no way to undo them.
+var createdJournal = new Map();
+function journalFor(params) {
+  var key = (params && params._taskId) || "";
+  if (!createdJournal.has(key)) createdJournal.set(key, []);
+  return createdJournal.get(key);
+}
+function journalCreated(params, node) { journalFor(params).push(node); }
+function rollbackJournal(params, from) {
+  var list = journalFor(params), removed = 0;
+  for (var i = list.length - 1; i >= (from || 0); i--) {
+    var n = list[i];
+    try { if (n && !n.removed) { n.remove(); removed++; } } catch (e) {}
+  }
+  list.length = from || 0;
+  return removed;
 }
 
 // Yield execution back to Figma main thread loop so UI never freezes/blocks

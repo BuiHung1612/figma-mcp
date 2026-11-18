@@ -10,7 +10,8 @@ function taskReadOperation(operation) {
     "getpagenodes", "getnodedetail", "getdesigncontext", "getcss", "getcomponentmap", "getunmappedcomponents",
     "getstyles", "getvariables", "getvariabletokens", "gettokens", "getlocalcomponents", "getviewport",
     "screenshot", "exportsvg", "exportimage", "exportassets", "scandesign", "searchnodes", "indexscan",
-    "getcomponentproperties", "getreactions", "readnodes"].indexOf(operationKey(operation)) !== -1;
+    "getcomponentproperties", "getreactions", "readnodes",
+    "commitundo", "listavailablefonts", "loadfont", "findbykey"].indexOf(operationKey(operation)) !== -1;
 }
 
 handlers.task_start = async function(params) {
@@ -96,6 +97,20 @@ async function validateTaskOperation(operation, params, taskId, depth) {
     }
     params.parentId = params.parentId || frameId;
     await taskNode(params.parentId, root, true);
+  } else if (key === "render") {
+    params.parentId = params.parentId || frameId;
+    await taskNode(params.parentId, root, true);
+    var specs = [params.tree], seen = 0;
+    while (specs.length) {
+      var spec = specs.pop();
+      if (!spec || ["FRAME", "GROUP", "RECTANGLE", "ELLIPSE", "LINE", "TEXT", "SVG", "VECTOR", "IMAGE"].indexOf(spec.type) === -1) {
+        throw new Error("Task render type is not supported: " + (spec && spec.type));
+      }
+      if (++seen > 500) throw new Error("render: more than 500 nodes; split the tree");
+      (spec.children || []).forEach(function(child) { specs.push(child); });
+    }
+  } else if (key === "rollback") {
+    // Removes only nodes this task created (journal is per task).
   } else if (key === "append") {
     await taskNode(params.parentId, root, true);
     await taskNode(params.childId, root, false);
@@ -103,7 +118,7 @@ async function validateTaskOperation(operation, params, taskId, depth) {
   } else if (key === "group") {
     if (!Array.isArray(params.nodeIds) || !params.nodeIds.length) throw new Error("Task group requires nodeIds");
     for (var gi = 0; gi < params.nodeIds.length; gi++) await taskNode(params.nodeIds[gi], root, false);
-  } else if (["modify", "resize", "clone", "delete", "remove", "ungroup", "flatten", "setcomponentproperties", "swapcomponent"].indexOf(key) !== -1) {
+  } else if (["modify", "resize", "clone", "delete", "remove", "ungroup", "flatten", "setcomponentproperties", "swapcomponent", "detach"].indexOf(key) !== -1) {
     var ids = params.ids || [params.id || params.nodeId || params.targetId || params.target_id];
     if (!Array.isArray(ids) || !ids.length) throw new Error("Invalid task node IDs");
     for (var ni = 0; ni < ids.length; ni++) await taskNode(ids[ni], root, key === "modify" || key === "resize" || key === "setcomponentproperties" || key === "swapcomponent");
